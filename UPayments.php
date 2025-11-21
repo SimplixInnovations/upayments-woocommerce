@@ -332,6 +332,7 @@ function woocommerce_upayments_init()
            
             <?php
            
+            $icons = null;
             $total = "0";
             $total = WC()->cart->get_total('');
             $language=get_locale();
