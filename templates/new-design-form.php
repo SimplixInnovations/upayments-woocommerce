@@ -60,7 +60,7 @@ defined( 'ABSPATH' ) || exit;
             <?php
             // Retrieve Saved Cards
             $loggedInUser = $gateway->get_logged_in_user_phone_number(); // Use $gateway
-            if($loggedInUser['success']) {
+            if($loggedInUser['success']  && $save_card_enabled) {
             ?>
                 <input id="save_card" type="hidden" name="save_card" value="1"/>
                 <?php
