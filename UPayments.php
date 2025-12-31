@@ -3,7 +3,7 @@
  * Plugin Name: UPayments
  * Plugin URI: [Your Plugin Website URL]
  * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant.
- * Version: 3.0.2
+ * Version: 3.0.3
  * Author: <a href="https://upayments.com/>UPayments Company</a>  
  * Author URI: https://upayments.com/
  * Requires at least: 5.6
