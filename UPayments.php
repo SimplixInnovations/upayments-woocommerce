@@ -98,7 +98,6 @@ function woocommerceUpaymentsInit() {
             add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
             
             // Custom hooks for front-end rendering, scripts, etc.
-            add_action("woocommerce_checkout_update_order_review", array( $this, "update_order_review"));
             add_filter("woocommerce_get_order_item_totals", [$this, "add_order_item_totals"], 10, 3);
             // add_action("woocommerce_thankyou_" . $this->id, [$this, "thankyou_page", ]);
             add_action("woocommerce_api_" . strtolower("WC_UPayments") , [$this, "check_ipn_response", ]);
@@ -112,83 +111,6 @@ function woocommerceUpaymentsInit() {
 
             add_action("woocommerce_thankyou_" . $this->id, function ($order_id) {
                 $this->thankyou_page($order_id);
-            });
-
-            add_action('update_option_woocommerce_upayments_enable_block_checkout', function ($old, $new) {
-
-                $block_page_id = get_option('upayments_block_checkout_page_id');
-
-                if ($new === 'yes' && $block_page_id) {
-                    update_option('woocommerce_checkout_page_id', (int) $block_page_id);
-                }
-
-            }, 10, 2);
-
-            add_action('admin_init', function () {
-
-                if (get_option('woocommerce_upayments_enable_block_checkout') !== 'yes') {
-                    return;
-                }
-
-                if (!$this->upayments_is_block_checkout_supported()) {
-                    update_option('woocommerce_upayments_enable_block_checkout', 'no');
-
-                    add_action('admin_notices', function () {
-                        ?>
-                        <div class="notice notice-error">
-                            <p>
-                                <strong>Block Checkout Disabled:</strong>
-                                Your WooCommerce version does not support Checkout Blocks.
-                            </p>
-                        </div>
-                        <?php
-                    });
-                }
-            });
-
-            add_action('before_woocommerce_init', function () {
-
-                if (!class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
-                    return;
-                }
-
-                \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
-                    'cart_checkout_blocks',
-                    __FILE__,
-                    true
-                );
-            });
-
-            add_action('woocommerce_blocks_loaded', function () {
-
-                $this->log("woocommerce block");
-
-                if (!class_exists('\Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType')) {
-                    return;
-                }
-
-                require_once __DIR__ . '/class-upayments-block-gateway.php';
-
-                add_action(
-                    'woocommerce_blocks_payment_method_type_registration',
-                    function ($registry) {
-                        $registry->register(new UpaymentsBlockGateway);
-                    }
-                );
-
-                add_action(
-                    'woocommerce_blocks_order_confirmation_additional_information',
-                    function ( $order ) {
-
-                        if ( ! $order ) {
-                            return;
-                        }
-
-                        echo '<p><strong>Payment Status:</strong> ' .
-                            esc_html( wc_get_order_status_name( $order->get_status() ) ) .
-                        '</p>';
-                    }
-                );
             });
         }
 
@@ -1602,89 +1524,6 @@ function woocommerceUpaymentsInit() {
                 fclose($fp);
             }
         }
-
-        public function upayments_is_block_checkout_supported(): bool {
-
-            // WooCommerce Blocks package
-            if (!class_exists('\Automattic\WooCommerce\Blocks\Package')) {
-                return false;
-            }
-
-            // Minimum WooCommerce version
-            if (!defined('WC_VERSION') || version_compare(WC_VERSION, '6.9', '<')) {
-                return false;
-            }
-
-            return true;
-        }
-    }
-}
-
-// add_action('before_woocommerce_init', 'upayments_declare_block_compatibility');
-// function upayments_declare_block_compatibility() {
-//     if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
-//         // Use the correct gateway ID in the option name
-//         $gateway_settings = get_option( 'woocommerce_upayments_settings', array() ); 
-        
-//         $enabled = isset( $gateway_settings['enable_block_checkout'] ) && $gateway_settings['enable_block_checkout'] == 'yes';
-//         // Declare compatibility with the new cart/checkout blocks feature
-//         \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 
-//             'cart_checkout_blocks', 
-//             __FILE__, // This is the file that is declaring compatibility
-//             $enabled
-//         );
-//     }
-// }
-
-// add_action('woocommerce_blocks_loaded', 'upayments_register_block_integration');
-// function upayments_register_block_integration() {
-//     // This runs when woocommerce_blocks_loaded fires
-//     if (class_exists('WCGatewayUPaymentsBlocks') && class_exists('Automattic\WooCommerce\Blocks\Payments\PaymentMethodRegistry')) {
-//         include '/includes/class-wc-gateway-upayments-blocks.php'; 
-        
-//         // Use the correct hook to register the block payment method
-//         add_action( 
-//             'woocommerce_blocks_payment_method_type_registration', 
-//             function( \Automattic\WooCommerce\Blocks\Payments\PaymentMethodRegistry $payment_method_registry ) use ( $integration ) {
-//                 $payment_method_registry->register( new WCGatewayUPaymentsBlocks() );
-//             }
-//         );
-//     }
-// }
-
-// Plugin Activation/Upgrade Hook
-register_activation_hook( __FILE__, 'uPaymentsV3UpgradeRoutines' );
-function uPaymentsV3UpgradeRoutines() {
-    $current_version = get_option( 'your_gateway_version', '0.0.0' );
-
-    // Only run if upgrading from a V2.x version
-    if ( version_compare( $current_version, '3.0.0', '<' ) ) {
-        // --- Tokenization/Save Card Migration ---
-        // Verify that existing tokenization data (from V2.2.1) is compatible 
-        // with the token class usage in V3.0.0.
-        // If necessary, add a routine to check and update meta keys/data structure.
-        
-        // --- Default Settings Migration (CRITICAL) ---
-        // Ensure that new V3.0.0 settings are initialized correctly for existing users.
-        $settings_key = 'woocommerce_your_gateway_id_settings';
-        $settings = get_option( $settings_key, array() );
-
-        // If an old V2.x version existed, ensure new toggles are set to expected defaults.
-        if ( ! isset( $settings['enable_save_card'] ) ) {
-            // Assume old V2.2.1 users had save card implicitly ON
-            $settings['enable_save_card'] = 'yes';
-        }
-        if ( ! isset( $settings['use_new_design'] ) ) {
-            // V2.1.5 and V2.2.1 were 'New Design'; V2.0.8 was 'Old Design'.
-            // Safest default for an *upgrade* is 'yes'.
-            $settings['use_new_design'] = 'yes'; 
-        }
-
-        // Add defaults for brand new V3.0.0 settings
-        $settings['enable_multimerchant'] = 'no'; 
-        $settings['enable_block_checkout'] = 'yes';
-
-        update_option( $settings_key, $settings );
     }
 }
 
@@ -1718,37 +1557,6 @@ function enableUpaymentsGateway($available_gateways)
     return $available_gateways;
 }
 
-register_activation_hook(__FILE__, function () {
-
-    // Check if already created
-    if (get_option('upayments_block_checkout_page_id')) {
-        return;
-    }
-
-    $page_id = wp_insert_post([
-        'post_title'   => 'Checkout (Block)',
-        'post_status'  => 'publish',
-        'post_type'    => 'page',
-        'post_content' => '<!-- wp:woocommerce/checkout /-->',
-    ]);
-
-    if (!is_wp_error($page_id)) {
-        update_option('upayments_block_checkout_page_id', $page_id);
-    }
-});
-
-add_filter('woocommerce_get_checkout_page_id', function ($page_id) {
-
-    $enable_block = get_option('woocommerce_upayments_enable_block_checkout');
-    $block_page_id = get_option('upayments_block_checkout_page_id');
-
-    if ($enable_block == 'yes' && $block_page_id) {
-        return (int) $block_page_id;
-    }
-
-    return $page_id;
-});
-
 add_action('admin_head', function () {
     ?>
     <style>
@@ -1758,32 +1566,4 @@ add_action('admin_head', function () {
         }
     </style>
     <?php
-});
-
-add_action('admin_notices', function () {
-
-    if (!current_user_can('manage_woocommerce')) {
-        return;
-    }
-
-    $enable_block = get_option('woocommerce_upayments_enable_block_checkout');
-    $block_page_id = get_option('upayments_block_checkout_page_id');
-
-    if ($enable_block === 'yes' && (!$block_page_id || get_post_status($block_page_id) !== 'publish')) {
-        ?>
-        <div class="notice notice-error">
-            <p>
-                <strong>WooCommerce Block Checkout Error:</strong><br>
-                Block Checkout is enabled, but the checkout block page is missing.
-                Please re-save plugin settings or re-activate the plugin.
-            </p>
-        </div>
-        <?php
-    }
-});
-
-add_action('init', function () {
-    if (!function_exists('has_block')) {
-        return;
-    }
 });
