@@ -1,0 +1,26 @@
+#multimerchant_repeater_container {
+    padding: 10px 0;
+}
+
+.wc_input_multimerchant_repeater {
+    width: 100%;
+    margin-top: 10px;
+}
+
+.wc_input_multimerchant_repeater input[type="text"],
+.wc_input_multimerchant_repeater input[type="password"],
+.wc_input_multimerchant_repeater select {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.wc_input_multimerchant_repeater th,
+.wc_input_multimerchant_repeater td {
+    padding: 8px;
+    vertical-align: top;
+    border-bottom: 1px solid #c3c4c7;
+}
+
+.multimerchant-row-template {
+    display: none; /* Hide the template row */
+}
