@@ -3,7 +3,7 @@
  * Plugin Name: UPayments
  * Plugin URI: [Your Plugin Website URL]
  * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant.
- * Version: 3.0.0
+ * Version: 3.0.1
  * Author: <a href="https://upayments.com/>UPayments Company</a>  
  * Author URI: https://upayments.com/
  * Requires at least: 5.6
@@ -1580,7 +1580,7 @@ function woocommerceUpaymentsInit() {
                 if($payment_methods['knet'] == 1){ $methods['payment']['knet'] = __('KNET', $this->domain);}
                 if(isset($payment_methods['apple_pay_knet']) && $payment_methods['apple_pay_knet'] == 1){$methods['payment']['apple-pay-knet'] = __('Apple Pay Knet', $this->domain);}
                 if($payment_methods['credit_card'] == 1){$methods['payment']['cc'] = __('Credit Card', $this->domain);}
-                if($payment_methods['apple_pay'] == 1){$methods['payment']['apple-pay'] = __('Apple Pay Credit card', $this->domain);}
+                if($payment_methods['apple_pay'] == 1){$methods['payment']['apple-pay'] = __('Apple Pay Credit Card', $this->domain);}
                 if($payment_methods['samsung_pay'] == 1){$methods['payment']['samsung-pay'] = __('Samsung Pay', $this->domain); }
                 if($payment_methods['google_pay'] == 1){$methods['payment']['google-pay'] = __('Google Pay', $this->domain);}
                 $methods['whitelabled'] = $whitelabled;
@@ -1686,9 +1686,6 @@ function uPaymentsV3UpgradeRoutines() {
 
         update_option( $settings_key, $settings );
     }
-
-    // Always update the stored version number
-    update_option( 'your_gateway_version', '3.0.0' );
 }
 
 add_filter("woocommerce_payment_gateways", "add_upayments_gateway_class");
