@@ -3,7 +3,7 @@
  * Plugin Name: UPayments
  * Plugin URI: [Your Plugin Website URL]
  * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant.
- * Version: 3.0.3
+ * Version: 3.0.4
  * Author: <a href="https://upayments.com/>UPayments Company</a>  
  * Author URI: https://upayments.com/
  * Requires at least: 5.6
@@ -709,6 +709,7 @@ function woocommerceUpaymentsInit() {
                 $active_price = $product->get_price();
                 $regular_price = $product->get_sale_price();
                 $sale_price = $product->get_regular_price();
+                $sale_price = !empty($sale_price) ? $sale_price : 0;
 
                 $item_data = $item->get_data();
                 $product_name[] = $item->get_name();
