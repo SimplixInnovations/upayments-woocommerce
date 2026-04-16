@@ -806,6 +806,7 @@ function woocommerceUpaymentsInit() {
                 /** @var WC_Order_Item_Product $item */
                 $product = $item->get_product();
                 $sale_price = $product->get_regular_price();
+                $sale_price = !empty($sale_price) ? $sale_price : 0;
                 
                 $item_data = $item->get_data();
                 $product_name[] = $item->get_name();
