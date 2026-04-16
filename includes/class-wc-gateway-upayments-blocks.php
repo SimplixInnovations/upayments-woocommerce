@@ -115,7 +115,7 @@ final class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
      * @param string $name The gateway ID (e.g., 'upayments').
      */
     public function __construct() {
-        $this->gateway = new WCUpayments(); 
+        $this->gateway = new WC_Upayments(); 
     }
 
     // --- Implementation of AbstractPaymentMethodType (Payment Processing) ---
@@ -249,14 +249,5 @@ final class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
             ]
         ];
         // Pass any necessary configuration or custom data to the frontend JS here.
-        return [
-            'title'       => $this->get_setting( 'title' ),
-            'description' => $this->get_setting( 'description' ),
-            'icon'        => $this->get_setting( 'icon_url' ),
-            'supports'    => $this->get_supported_features(),
-            // Pass the feature flags here:
-            'saveCardEnabled' => $this->get_setting( 'enable_save_card' ) == 'yes',
-            'useNewDesign'    => $this->get_setting( 'use_new_design' ) == 'yes',
-        ];
     }
 }

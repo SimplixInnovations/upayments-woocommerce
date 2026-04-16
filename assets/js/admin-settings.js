@@ -48,7 +48,4 @@ jQuery(document).ready(function($) {
 
     // Initial state
     toggleMultiMerchantState();
-
-    // On checkbox change
-    $multiMerchantCheckbox.on('change', toggleMultiMerchantState);
 });

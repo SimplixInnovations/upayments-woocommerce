@@ -1,0 +1,188 @@
+/** Unsubscribe Button Styles */
+.upay-subscription-actions {
+    display: inline-block;
+    margin-top: 15px;
+}
+
+.woocommerce .order-again {
+    display: inline-block;
+    margin-top: 15px;
+    margin-right: 12px;
+}
+
+.upay-unsubscribe-button {
+    background: #e12c2c;
+    color: #fff;
+    display: inline-block;
+    text-align: center;
+    word-break: break-word;
+    padding: 0.85rem 1.87rem;
+    text-decoration: none;
+    font-size: medium;
+    cursor: pointer;
+}
+
+.upay-unsubscribe-button:hover {
+    background: #fff;
+    color: #0b0b0b;
+    border: 0.9px solid #000000;
+    padding: 0.85rem 1.87rem;
+}
+
+.upay-pause-resume-button{
+    background: #007cba;
+    color: #fff;
+    display: inline-block;
+    text-align: center;
+    word-break: break-word;
+    padding: 0.85rem 1.87rem;
+    text-decoration: none;
+    font-size: medium;
+    cursor: pointer;
+}
+
+.upay-pause-resume-button:hover {
+    background: #fff;
+    color: #0b0b0b;
+    border: 0.9px solid #000000;
+    padding: 0.85rem 1.87rem;
+}
+
+.woocommerce-account .woocommerce-MyAccount-content{
+    width: 83% !important;
+}
+.woocommerce-page table.shop_table_responsive{
+    border: 2px solid #000 !important;
+}
+
+/* Sidebar container */
+.woocommerce-account .woocommerce-MyAccount-navigation {
+    width: 15% !important;
+    background: #ffffff;
+    border: 1px solid #e6f4ea;
+    border-radius: 10px;
+    padding: 4px 4px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+}
+
+/* Menu list */
+.woocommerce-account .woocommerce-MyAccount-navigation ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+/* List items */
+.woocommerce-account .woocommerce-MyAccount-navigation li {
+    padding: 7px 0;
+}
+
+/* Links */
+.woocommerce-account .woocommerce-MyAccount-navigation a {
+    display: flex;
+    align-items: center;
+    padding: 5px 5px;
+    border-radius: 8px;
+    color: #000;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    font-size: 18px;
+}
+
+/* Hover */
+.woocommerce-account .woocommerce-MyAccount-navigation a:hover {
+    background: #a3a6a5;
+    color: #dde6e2;
+    transform: translateX(2px);
+}
+
+/* Active item */
+.woocommerce-account .woocommerce-MyAccount-navigation .is-active > a {
+    background: linear-gradient(135deg, #656e69, #191e1c);
+    color: #f0f0f0;
+    font-weight: 600;
+    box-shadow: 0 6px 12px rgba(152, 166, 160, 0.25);
+}
+
+
+/* Custom CSS of Subscription Order Filter in My account */
+.upay-orders-filter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: #f3f3f3;
+    border: 1px solid #e2f3ea;
+    border-radius: 10px;
+    width: fit-content;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.04);
+}
+
+/* Label */
+.upay-orders-filter label {
+    font-weight: 600;
+    color: #242927;
+    margin: 0;
+}
+
+/* Select */
+.upay-orders-filter select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+
+    background: #ffffff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%232d6a4f' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 5.5l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+    background-size: 12px;
+
+    border: 1px solid #b7e4c7;
+    border-radius: 8px;
+    padding: 8px 34px 8px 12px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #242927;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+/* Hover */
+.upay-orders-filter select:hover {
+    border-color: #242927;
+}
+
+/* Focus */
+.upay-orders-filter select:focus {
+    outline: none;
+    border-color: #242927;
+    box-shadow: 0 0 0 3px rgba(36, 41, 39, 0.15);
+}
+
+/* Mobile friendly */
+@media (max-width: 768px) {
+    .upay-orders-filter {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .upay-orders-filter select {
+        flex: 1;
+    }
+}
+
+.woocommerce ul.products li.product {
+    position: relative;
+}
+
+.upay-subscription-badge {
+    top: 10px;
+    right: 10px;
+    background: #ffb703; 
+    color: #000;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    z-index: 9;
+    text-transform: uppercase;
+    border-radius: 3px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
