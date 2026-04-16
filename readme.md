@@ -3,8 +3,7 @@ Contributors: UPayments
 Tags: UPayments payments, woocommerce, payment gateway, UPayments, pay with UPayments, credit card, knet, samsung pay, Apple Pay, Google Pay
 Requires at least: 4.0
 Tested up to: 6.3.1
-Stable tag: 2.1.2 (Updated Design)
-Stable tag: 2.0.7 (Default Design)
+Stable tag: 2.2.0
 PHP requires  at least: 5.5
 PHP tested up to: 8.2.9
 WC requires at least: 2.4
@@ -110,9 +109,38 @@ Supported currency codes are: KWD, SAR, USD, BHD, EUR, OMR, QAR, AED
 = 2.0.5 =
 -IP whitelisting issue is resolved
 
-= 2.0.6 =
--Default design
+= 2.1.0 =
+-Design updates
 
-= 2.0.7 =
-- Stable with default Design updates
+= 2.1.1 =
+- Payment failed for suspected fraud issue is resolved for latest woocommerce version
+- Customer unique token validation accept with 0.
 
+= 2.1.2 =
+- Payment Confirmation Mail - Product name issue fixed.
+
+= 2.1.4 =
+- Order Status Issue Fixed.
+
+= 2.2.0 =
+-Added saved card feature
+
+= 2.2.1 =
+-Apple Debit Card Option Added
+
+= 3.0.0 =
+-Switch between modern and classic design
+-Save card(Tokenization) feature
+-Multi-merchant configuration
+
+= 3.0.1 =
+Retrieve Card Updates
+
+= 3.0.2 =
+Multimerchant configuration updates
+
+= 3.0.3 =
+Multimerchant Admin configuration updates
+
+= 3.0.4 =
+Booking Product price issue fixed
