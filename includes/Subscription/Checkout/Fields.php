@@ -21,22 +21,23 @@ class Fields
     public static function validate()
     {
         $gateway = self::getGateway();
-        if (empty($_POST['upay_subscription_plan'])) {
+        $enable_subscription = $gateway->get_option('enable_subscriptions') === 'yes' ? true : false;
+        if ($enable_subscription && empty($_POST['upay_subscription_plan'])) {
             wc_add_notice(__('Please select a payment type.', $gateway->id), 'error');
             return;
         }
 
         // One-time payment requires no interval
-        if (sanitize_text_field($_POST['upay_subscription_plan']) === 'one_time') {
+        if ($enable_subscription && sanitize_text_field($_POST['upay_subscription_plan']) === 'one_time') {
             return;
         }
 
-        if (empty($_POST['upay_subscription_interval'])) {
+        if ($enable_subscription && empty($_POST['upay_subscription_interval'])) {
             wc_add_notice(__('Please select a billing interval.', $gateway->id), 'error');
             return;
         }
 
-        if (!in_array($_POST['upay_subscription_interval'], ['', '1', '3', '6'], true)) {
+        if ($enable_subscription && !in_array($_POST['upay_subscription_interval'], ['', '1', '2', '3', '6'], true)) {
             wc_add_notice(__('Invalid billing interval selected.', $gateway->id), 'error');
         }
 

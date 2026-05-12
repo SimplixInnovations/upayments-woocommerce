@@ -2,8 +2,8 @@
 /**
  * Plugin Name: UPayments
  * Plugin URI: [Your Plugin Website URL]
- * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, Multimerchant and Auto Deduction for Subscriptions.
- * Version: 3.0.4
+ * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant. Supports Block Checkout, Auto Deduction for Subscriptions.
+ * Version: 3.1.0
  * Author: <a href="https://upayments.com/>UPayments Company</a>  
  * Author URI: https://upayments.com/
  * Requires at least: 5.6
@@ -20,6 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 define("UP_PLUGIN_URL", plugin_dir_url(__FILE__));
 define("UP_PLUGIN_PATH", plugin_dir_path(__FILE__));
+define('UPAYMENTS_PLUGIN_FILE', __FILE__ );
 
 require_once __DIR__ . '/vendor/plugin-update-checker/plugin-update-checker.php';
 
@@ -64,7 +65,8 @@ function woocommerceUpaymentsInit() {
             $this->id                 = 'upayments';
             $this->icon = UP_PLUGIN_URL . "assets/images/logo.png";
             $this->method_title       = __("UPayments", $this->domain);
-            $this->method_description = __("UPayments Plugin allows merchants to accept KNET, Cards, Samsung Pay, Apple Pay, Google Pay Payments.", $this->domain);
+            $this->method_description = __("UPayments Plugin allows merchants to accept KNET, Cards, Samsung Pay, Apple Pay, Google Pay Payments. 
+            Supports Block Checkout, Auto Deduction for Subscriptions.", $this->domain);
             $this->has_fields         = true; // Required for custom forms like Save Card/Design variations.
 
             // Define user set variables
@@ -116,6 +118,10 @@ function woocommerceUpaymentsInit() {
             // My Account link for Login users to view their orders and saved cards
             add_action('woocommerce_before_checkout_form', function () {
 
+                if (!function_exists('WC') || !WC()->session) {
+                    return;
+                }
+
                 $account_url = wc_get_page_permalink('myaccount');
 
                 echo '<div class="checkout-my-account-link">';
@@ -123,7 +129,18 @@ function woocommerceUpaymentsInit() {
                 echo __('Go to My Account', 'woocommerce');
                 echo '</a>';
                 echo '</div>';
-
+                
+                $gateways = WC()->payment_gateways()->get_available_payment_gateways();
+                
+                if (!isset($gateways['upayments'])) {
+                    return;
+                }
+                
+                $upay = $gateways['upayments'];
+                
+                if (WC()->session->get('chosen_payment_method') === 'upayments' && $upay->get_option('make_default_gateway') === 'no') {
+                    WC()->session->set('chosen_payment_method', null);
+                }
             }, 5);
             // Save Card & Subscriptions validation
             add_filter('woocommerce_settings_api_sanitized_fields_upayments', function ($settings) {
@@ -139,6 +156,7 @@ function woocommerceUpaymentsInit() {
 
                 return $settings;
             });
+
             // Ensure phone number is required for Save Card functionality to work smoothly
             add_filter('woocommerce_checkout_fields', function ($fields) {
 
@@ -150,7 +168,6 @@ function woocommerceUpaymentsInit() {
 
                 return $fields;
             });
-
             // Additional validation for phone number format to ensure Save Card functionality works smoothly
             add_filter('woocommerce_billing_fields', function ($fields) {
                 $fields['billing_phone']['required'] = true;
@@ -173,12 +190,18 @@ function woocommerceUpaymentsInit() {
                 }
             }, 10, 2);
 
-            // Hide Cash on Delivery if Auto Deduction is enabled to prevent conflicts with Subscriptions
-            add_filter('woocommerce_available_payment_gateways', function ($gateways) {
-                if (is_checkout() && isset($gateways['cod']) && $this->autoDeduction === 'yes') {
-                    unset($gateways['cod']);
+            add_filter('woocommerce_default_gateway', function ($default) {
+                wc_get_logger()->info(
+                    'Default gateway filter hit. Current default: ' . $default,
+                    ['source' => 'upayments-debug']
+                );
+
+                if ($this->get_option('make_default_gateway') === 'yes') {
+                    wc_get_logger()->info('UPayments set as default', ['source' => 'upayments-debug']);
+                    return 'upayments';
                 }
-                return $gateways;
+
+                return $default;
             });
 
             add_filter('woocommerce_add_to_cart_validation', [$this, 'restrictMixedCartProducts'], 10, 3);
@@ -193,6 +216,13 @@ function woocommerceUpaymentsInit() {
                     "label" => __(" ", $this->domain) , 
                     "default" => "yes"
                 ), 
+                'make_default_gateway' => [
+                    'title'       => __('Default Gateway', $this->domain),
+                    'type'        => 'checkbox',
+                    'label'       => __('Make UPayments the default payment method at checkout', $this->domain),
+                    'default'     => 'no',
+                    'description' => __('If enabled, UPayments will be preselected at checkout. Merchants can still reorder gateways.', $this->domain),
+                ],
                 "title" => array(
                     "title" => __("Title", $this->domain) , 
                     "type" => "text", 
@@ -253,6 +283,12 @@ function woocommerceUpaymentsInit() {
                 //     'title' => __( 'WooCommerce Block Checkout', $this->domain ),
                 //     'type'  => 'title',
                 // ),
+                // 'enable_block_checkout' => array(
+                //     'title'   => __( 'Enable Block Checkout', $this->domain ),
+                //     'type'    => 'text',
+                //     'description'   => __( 'Enable compatibility with the new WooCommerce Checkout Block', $this->domain ),
+                // ),
+                //disabled block setting for now.
                 // 'enable_block_checkout' => array(
                 //     'title'   => __( 'Enable Block Checkout', $this->domain ),
                 //     'type'    => 'checkbox',
@@ -511,7 +547,6 @@ function woocommerceUpaymentsInit() {
             if (!isset($_GET["wc_order_id"])){
                 $status_message = __("No shop reference received from UPayments.", $this->domain);
                 $this->log($status_message);
-                $order->update_status("failed", $status_message, $this->domain);
                 wp_redirect(add_query_arg("suspected", "true", wc_get_checkout_url()));
                 exit();
             }else{
@@ -750,38 +785,8 @@ function woocommerceUpaymentsInit() {
 
         // Process payment (must use feature flags to route API calls)
         public function process_payment( $order_id ) {
-            $order = wc_get_order( $order_id );
             global $woocommerce;
             $whitelabled = false;
-            if($this->paymentData == null ) {
-                $payment_data = $this->getPaymentIcons();
-            } else {
-                $payment_data = $this->paymentData;
-            }
-            if($payment_data){
-                $whitelabled = $payment_data['whitelabled'];
-            }
-            $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
-            if ($whitelabled && !isset($_POST["upayment_payment_type"])){
-                WC()->session->set("refresh_totals", true);
-                wc_add_notice(__("Please select a UPayments Payment Type.", $this->domain) , "error");
-                return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
-            }
-
-            $subscription_plan = 'one_time';
-            $subscription_interval = 0;
-
-            if (isset($_POST['upay_subscription_plan'])) {
-                $subscription_plan = sanitize_text_field($_POST['upay_subscription_plan']);
-            }
-            if (isset($_POST['upay_subscription_interval'])) {
-                $subscription_interval = (int) sanitize_text_field($_POST['upay_subscription_interval']);
-            }
-
-            if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
-                wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
-                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-            }
 
             $order = wc_get_order($order_id);
             $order_data = $order->get_data();
@@ -798,6 +803,7 @@ function woocommerceUpaymentsInit() {
             $product_type = [];
 
             $productArrayNew = [];
+            $cart_has_custom_product = false;
 
             $i=0;
 
@@ -807,6 +813,9 @@ function woocommerceUpaymentsInit() {
                 $product = $item->get_product();
                 $sale_price = $product->get_regular_price();
                 $sale_price = !empty($sale_price) ? $sale_price : 0;
+                if($product->get_type() === 'custom_type'){
+                    $cart_has_custom_product = true;
+                }
                 
                 $item_data = $item->get_data();
                 $product_name[] = $item->get_name();
@@ -822,21 +831,116 @@ function woocommerceUpaymentsInit() {
                 $i++;
             }
 
-            $src = "knet";
-            $cardToken = null;
-            $isSaveCard = false;
-            $isSaveCardRequested = sanitize_text_field($_POST["save_card"]) == 1 ? true : false;
-            if ($whitelabled){
-                $whitelabled = true;
-                $upayment_payment_type = sanitize_text_field($_POST["upayment_payment_type"]);
-                    if (!empty($upayment_payment_type)){
-                        $src = $upayment_payment_type;
-                        $order->delete_meta_data("UPayments_Checkout_Selected");
-                        $order->add_meta_data("UPayments_Checkout_Selected", $upayment_payment_type);
-                    }
-                $cardToken = sanitize_text_field($_POST["card_token"]);
-                $isSaveCard = $src == 'cc' && $isSaveCardRequested;
+            if($this->paymentData == null ) {
+                $payment_data = $this->getPaymentIcons();
+            } else {
+                $payment_data = $this->paymentData;
             }
+            if($payment_data){
+                $whitelabled = $payment_data['whitelabled'];
+            }
+
+            // 1. Get Extension Data from the Blocks Checkout
+            // WooCommerce Blocks sends this data in the request body, not $_POST
+            $request_data = json_decode(file_get_contents('php://input'), true);
+            $extension_data = isset($request_data['extensions']['upayments']) ? $request_data['extensions']['upayments'] : [];
+
+            if(!empty($extension_data)){
+                $src = '';
+                if (isset($extension_data['upayment_payment_type'])) {
+                    $src = sanitize_text_field($extension_data['upayment_payment_type']);
+                }
+
+                $cardToken = '';
+                if(isset($extension_data['card_token'])){
+                    $cardToken = sanitize_text_field($extension_data['card_token']);
+                }
+
+                $isSaveCard = false;
+                if(isset($extension_data['save_card'])){
+                    $isSaveCardRequested = $extension_data['save_card'] == 1 ? true : false;
+                }
+
+                if ($whitelabled){
+                    $whitelabled = true;
+                    $upayment_payment_type = sanitize_text_field($extension_data['upayment_payment_type']);
+                        if (!empty($upayment_payment_type)){
+                            $src = $upayment_payment_type;
+                            $order->delete_meta_data("UPayments_Checkout_Selected");
+                            $order->add_meta_data("UPayments_Checkout_Selected", $upayment_payment_type);
+                        }
+                    $cardToken = sanitize_text_field($extension_data['card_token']);
+                    $isSaveCard = $src == 'cc' && $isSaveCardRequested;
+                }
+
+                // Checck if Upayments Payment type is empty then return error.
+                if ($whitelabled && empty($src)){
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a UPayments Payment Type.", $this->domain) , "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
+                }
+
+                // Check if Auto Deduction Feature is on and save card toggle is disabled then return error.
+                if($this->autoDeduction === 'yes' && (!$isSaveCardRequested) && $cart_has_custom_product) {
+                    $this->log("Auto Deduction Enabled and Save Card Toggle Disabled");
+                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain) , "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                if(isset($extension_data['upay_subscription_plan'])){
+                    $subscription_plan = $extension_data['upay_subscription_plan'];
+                }
+                if(isset($extension_data['upay_subscription_interval'])){
+                    $subscription_interval = $extension_data['upay_subscription_interval'];
+                }
+
+                if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
+                    wc_add_notice(__("Please select a valid Billing Intervallllll.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+            } else {
+                $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
+                if ($whitelabled && !isset($_POST["upayment_payment_type"])){
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a UPayments Payment Type.", $this->domain) , "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
+                }
+
+                $src = "knet";
+                $cardToken = null;
+                $isSaveCard = false;
+                $isSaveCardRequested = sanitize_text_field($_POST["save_card"]) == 1 ? true : false;
+                if ($whitelabled){
+                    $whitelabled = true;
+                    $upayment_payment_type = sanitize_text_field($_POST["upayment_payment_type"]);
+                        if (!empty($upayment_payment_type)){
+                            $src = $upayment_payment_type;
+                            $order->delete_meta_data("UPayments_Checkout_Selected");
+                            $order->add_meta_data("UPayments_Checkout_Selected", $upayment_payment_type);
+                        }
+                    $cardToken = sanitize_text_field($_POST["card_token"]);
+                    $isSaveCard = $src == 'cc' && $isSaveCardRequested;
+                }
+
+                if (isset($_POST['upay_subscription_plan'])) {
+                    $subscription_plan = sanitize_text_field($_POST['upay_subscription_plan']);
+                }
+                if (isset($_POST['upay_subscription_interval'])) {
+                    $subscription_interval = (int) sanitize_text_field($_POST['upay_subscription_interval']);
+                }
+
+                if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
+                    wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                if($this->autoDeduction === 'yes' && (!$isSaveCardRequested) && $cart_has_custom_product) {
+                    $this->log("Auto Deduction Enabled and Save Card Toggle Disabled");
+                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain) , "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+            }
+            
             $customer_unq_token = null;
             $credit_card_token = $cardToken;
             $phone = str_replace(' ', '', $order_data["billing"]["phone"]); // Replaces all spaces with hyphens.
@@ -852,13 +956,7 @@ function woocommerceUpaymentsInit() {
                 $customer_unq_token = '1' . substr($customer_unq_token, 1);
             }
 
-            if($this->autoDeduction === 'yes' && (!$isSaveCardRequested)) {
-                $this->log("Auto Deduction Enabled and Save Card Toggle Disabled");
-                wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain) , "error");
-                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-            }
-
-            if($this->saveCardEnabled === 'yes') {
+            if($this->saveCardEnabled === 'yes' && $isSaveCard) {
                 $customerUnqToken = $this->getCustomerUniqueToken($customer_unq_token);
             } else {
                 $customerUnqToken = null;
@@ -894,7 +992,7 @@ function woocommerceUpaymentsInit() {
                 $this->log("extraMerchantData");
                 $this->log($extraMerchantData);
             }
-            
+
             $params = json_encode([
                 "returnUrl" => $success_url, 
                 "cancelUrl" => $error_url, 
@@ -938,8 +1036,7 @@ function woocommerceUpaymentsInit() {
                     ], 
                 ], 
                 "extraMerchantData" => $extraMerchantData,
-                
-            ]);            
+            ]);
 
             $this->log(__("Create Payment Request:", $this->domain));
             $this->log($params);
@@ -958,7 +1055,8 @@ function woocommerceUpaymentsInit() {
             curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer " . $this->apiKey, "Accept: application/json", "Content-Type: application/json", ]);
 
             $response = curl_exec($ch);
-            curl_close($ch);            
+            $this->log('Response: ', $response);
+            curl_close($ch);
 
             try
             {
@@ -999,6 +1097,8 @@ function woocommerceUpaymentsInit() {
                             $order->add_meta_data('_upay_subscription_interval', $subscription_interval);
                             $order->delete_meta_data('_upay_subscription_status');
                             $order->add_meta_data('_upay_subscription_status', 'active');
+                            $order->delete_meta_data('UPayments_AutoDeduction');
+                            $order->add_meta_data('UPayments_AutoDeduction', 'no');
                             $order->save_meta_data();
                         }
                         if ($result["data"]["link"]){
@@ -1039,12 +1139,13 @@ function woocommerceUpaymentsInit() {
             $template_args = array('gateway' => $this,'save_card_enabled' => ('yes' == $save_card_enabled));
             // Check setting for design toggle
             $use_new_design = ($this->get_option('use_new_design') == 'yes') ? true : false;
+            
             wc_get_template( 
-                    $use_new_design ? 'new-design-form.php' : 'old-design-form.php', 
-                    $template_args, 
-                    $this->domain, 
-                    untrailingslashit( plugin_dir_path( __FILE__ ) ) . '/templates/' 
-                );
+                $use_new_design ? 'new-design-form.php' : 'old-design-form.php', 
+                $template_args, 
+                $this->domain, 
+                untrailingslashit( plugin_dir_path( __FILE__ ) ) . '/templates/' 
+            );
         }
         
         /**
@@ -1079,8 +1180,7 @@ function woocommerceUpaymentsInit() {
                     'isLoggedIn' => is_user_logged_in(),
                     'userId'     => get_current_user_id(),
                 ]);
-            }
-            
+            }            
             
             // Localize data needed by the JavaScript (e.g., API keys, environment settings)
             wp_localize_script( 'your-gateway-core', 'YourGatewayParams', array(
@@ -1601,7 +1701,7 @@ function woocommerceUpaymentsInit() {
                 $whitelabled     = $data['isWhiteLabel'];
                 $methods         = [];
 
-                // If ONLY normal products in cart ? allow all methods
+                // If ONLY normal products in cart → allow all methods
                 if (!$isSubscriptionContext) {
                     if ($payment_methods['knet'] == 1) {
                         $methods['payment']['knet'] = __('KNET', $this->domain);
@@ -1626,14 +1726,14 @@ function woocommerceUpaymentsInit() {
                     if ($payment_methods['google_pay'] == 1) {
                         $methods['payment']['google-pay'] = __('Google Pay', $this->domain);
                     }
-                }else{ // If subscription product in cart ? ONLY CC allowed (per API requirement)
+                }else{ // If subscription product in cart → ONLY CC allowed (per API requirement)
                     if ($payment_methods['credit_card'] == 1) {
                         $methods['payment']['cc'] = __('Credit Card', $this->domain);
                     }
                 }
                 $methods['whitelabled'] = $whitelabled;
                 return $methods;
-            }       
+            }            
         }
 
         public function log($content)
@@ -1713,7 +1813,7 @@ function woocommerceUpaymentsInit() {
         public function render_subscription_summary($order)
         {
             $plan     = $order->get_meta('_upay_subscription_plan');
-            $interval = $order->get_meta('_upay_subscription_interval');
+            $interval = (int) $order->get_meta('_upay_subscription_interval');
             $autoDeduction = $order->get_meta('UPayments_AutoDeduction');
             $lastBilled = $order->get_meta('_upay_last_billed_at');
             $order_date = $order->get_date_created();
@@ -1729,7 +1829,6 @@ function woocommerceUpaymentsInit() {
             
             // Calculate next billing
             $next_billing_dt = Scheduler::getNextBillingDate($started_at, $plan, $interval);
-
 
             $SubscriptionStatus = $order->get_meta('_upay_subscription_status');
             if($SubscriptionStatus === 'active') {
@@ -1759,7 +1858,7 @@ function woocommerceUpaymentsInit() {
 
             echo '<div class="upay-subscription-summary">';
             echo '<h4>' . esc_html__('Subscription Details', 'upayments') . '</h4>';
-            if(!$autoDeduction){
+            if($autoDeduction === 'no'){
                 echo '<p><strong>Subscription Status:</strong> ' . wp_kses_post($SubscriptionStatus) . '</p>';
             }
             echo '<p><strong>Plan:</strong> ' . esc_html(ucfirst($plan)) . '</p>';
@@ -1770,11 +1869,13 @@ function woocommerceUpaymentsInit() {
                 if($SubscriptionStatus !== 'cancelled') {
                     echo '<p><strong>Next Billing Date:</strong> ' . esc_html($next_billing_dt->format('Y-m-d H:i:s')) . '</p>';
                 }
-                echo '<p><strong>Last Billed at:</strong> ' . esc_html($last_billed_dt->format('Y-m-d H:i:s')) . '</p>';
+                if(!empty($last_billed_dt)){ 
+                    echo '<p><strong>Last Billed at:</strong> ' . esc_html($last_billed_dt->format('Y-m-d H:i:s')) . '</p>';
+                }
             }
             echo '</div>';
         }
-        
+
         /**
          * restrictMixedCartProducts
          * Function to restrict adding subscription products together with normal products in the cart
@@ -1820,7 +1921,12 @@ function woocommerceUpaymentsInit() {
 
             return $passed;
         }
-
+        
+        /**
+         * renderSubscriptionBadgeInProductList
+         * Function to render subscription badge in product list if the product is subscription type
+         * @return void
+         */
         public function renderSubscriptionBadgeInProductList()
         {
             global $product;
@@ -1833,7 +1939,7 @@ function woocommerceUpaymentsInit() {
                 return;
             }
 
-            echo '<span class="upay-subscription-badge"><strong>?? Subscription</strong></span>';
+            echo '<span class="upay-subscription-badge"><strong>🔁 Subscription</strong></span>';
         }
     }
 }
@@ -1853,10 +1959,23 @@ function enableUpaymentsGateway($available_gateways)
     }
 
     if (isset($available_gateways["upayments"])){
+        // Move UPayments to the end unless merchant explicitly reordered
+        $upay = $available_gateways['upayments'];
+        unset($available_gateways['upayments']);
+        $available_gateways['upayments'] = $upay;
+
         $settings = get_option("woocommerce_upayments_settings");
 
         if (empty($settings["api_key"])){
             unset($available_gateways["upayments"]);
+        }
+
+        if (is_checkout() && isset($available_gateways['cod']) && $settings['enable_autodeduction'] === 'yes') {
+            unset($available_gateways['cod']);
+        }
+
+        if (WC()->session->get('chosen_payment_method') === 'upayments' && $settings['make_default_gateway'] !== 'yes') {
+            WC()->session->set('chosen_payment_method', null);
         }
     }
 
@@ -1864,7 +1983,7 @@ function enableUpaymentsGateway($available_gateways)
     if (!in_array(get_woocommerce_currency() , $supported_currencies)){
         unset($available_gateways["upayments"]);
     }
-
+    
     return $available_gateways;
 }
 
@@ -1882,15 +2001,63 @@ add_action('admin_head', function () {
     <?php
 });
 
+// Declare compatibility with WooCommerce's Cart & Checkout blocks (WooBlocks)
+add_action( 'before_woocommerce_init', function() {
+    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'cart_checkout_blocks',
+            __FILE__,
+            true
+        );
+    }
+});
+
+// payment method registry
+add_action( 'woocommerce_blocks_loaded', function() {
+    add_action( 'woocommerce_blocks_payment_method_type_registration', function( $payment_method_registry ) {
+        require_once __DIR__ . '/includes/class-wc-gateway-upayments-blocks.php';
+        $payment_method_registry->register(
+            new WCGatewayUPaymentsBlocks( __FILE__ )
+        );
+    });
+});
+
+register_activation_hook(__FILE__, 'myPaymentPluginSetupCheckout');
+function myPaymentPluginSetupCheckout() {
+    $checkout_page_id = wc_get_page_id('checkout');
+    
+    if ($checkout_page_id) {
+        $post = get_post($checkout_page_id);
+        // remove setting check of block checkout for now
+        // $use_blocks = false;
+        // $settings = get_option("woocommerce_upayments_settings");
+        // if (isset($settings['enable_block_checkout']) && $settings['enable_block_checkout'] === 'yes') {
+        //     $use_blocks = true;
+        // }
+
+        if (!has_shortcode($post->post_content, 'woocommerce_checkout') && !has_block('woocommerce/checkout', $post->post_content)) {
+            wp_update_post(array(
+                'ID'           => $checkout_page_id,
+                'post_content' => '[woocommerce_checkout]',
+            ));
+        } else {
+            wp_update_post(array(
+                'ID'           => $checkout_page_id,
+                'post_content' => '<!-- wp:woocommerce/checkout /-->',
+            ));
+            
+        }
+    }
+}
+
 /* Subscription Product Data Handler from product Data Page - Start */
-add_action( 'init', 'registerCustomProductTypeClass' );
-function registerCustomProductTypeClass() {
+add_action( 'init', function () {
     class WCProductCustomType extends WC_Product_Simple {
         public function get_type() {
             return 'custom_type';
         }
     }
-}
+});
 
 add_filter( 'product_type_selector', 'addCustomProductType' );
 function addCustomProductType( $types ){
@@ -2058,7 +2225,7 @@ add_action('woocommerce_order_details_after_order_table', function ($order) {
     // Calculate next billing
     $next_billing_dt = Scheduler::getNextBillingDate($started_at, $plan, $interval);
 
-    // Not a subscription order ? don�t show anything
+    // Not a subscription order → don’t show anything
     if (!$plan || !$interval) {
         return;
     }
@@ -2219,7 +2386,7 @@ add_action('woocommerce_my_account_my_orders_column_order_type', function ($orde
 add_action('woocommerce_my_account_my_orders_column_order_status', function ($order) {
     $status = $order->get_meta('_upay_subscription_status');
     if (!$status) {
-        echo '�';
+        echo '—';
         return;
     }
     echo '<span class="upay-status upay-status-' . esc_attr($status) . '">' . esc_html(ucfirst($status)) . '</span>';
@@ -2233,6 +2400,7 @@ add_action('woocommerce_init', function () {
 
 add_action('init', 'runCustomCron');
 function runCustomCron() {
+    update_option('woocommerce_checkout_phone_field', 'required');
     if (isset($_GET['run_cron']) && $_GET['run_cron'] === 'yes') {
         error_log(' Manual cron trigger hit');
         $run_date = null;

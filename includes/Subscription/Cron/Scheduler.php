@@ -105,13 +105,15 @@ class Scheduler
                         ?: $order_paid_date
                         ?: $order_completed_date 
                         ?: $order_date;
+                        
+                        
 
                     if (!$start_date) {
                         break;
                     }
 
-                    $start_date = new DateTime($start_date->date('Y-m-d H:i:s'), wp_timezone());
-                    
+                    // $start_date = new DateTime($start_date->date('Y-m-d H:i:s'), wp_timezone());
+
                     // Prevent invalid configs
                     if ((!$subscriptionPlan || $subscriptionInterval < 1) || $subscriptionPlan === 'one_time') {
                         break;
@@ -123,9 +125,8 @@ class Scheduler
                         $subscriptionPlan,
                         $subscriptionInterval
                     );
-                    
+                                        
                     if(!$isAutoDeductionOrder && $subscriptionStatus !== 'cancelled' && $now >= $next_billing_date) {
-                        
                         $credit_card_token = $order->get_meta('_upay_credit_card_token');
                         if(empty($credit_card_token)){
                             $savedCards = $gateway->getSavedCards($customerUnqToken);
@@ -188,7 +189,7 @@ class Scheduler
                         curl_setopt($ch, CURLOPT_URL, $gateway->getApiUrl('auto-deduct'));
                         curl_setopt($ch, CURLOPT_POST, 1);
                         curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-                        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                        // curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
                         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
                         curl_setopt($ch, CURLOPT_USERAGENT, $gateway->getUserAgent());

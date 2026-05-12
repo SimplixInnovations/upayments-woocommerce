@@ -1,0 +1,584 @@
+
+2026-04-22 12:24:56: Create Payment Request:
+2026-04-22 12:24:56: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=231","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=231","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=231","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"2dab1fc5b8d147455285334987f399ec"},"reference":{"id":"231"},"customer":{"uniqueId":"","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":""},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":""},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-22 12:24:56: API key:
+2026-04-22 12:24:56: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-22 12:24:56: Response: 
+2026-04-22 12:24:56: Create Payment Response:
+2026-04-22 12:24:56: Array
+(
+    [message] => The tokens.customer unique token field is required when is save card is true.
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => The tokens.customer unique token field is required when is save card is true.
+                )
+
+        )
+
+)
+
+2026-04-22 13:47:08: Create Payment Request:
+2026-04-22 13:47:08: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=233","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=233","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=233","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"3043b7ff62e37fc1df25f286908f135b"},"reference":{"id":"233"},"customer":{"uniqueId":"","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":""},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":""},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-22 13:47:08: API key:
+2026-04-22 13:47:08: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-22 13:47:08: Response: 
+2026-04-22 13:47:08: Create Payment Response:
+2026-04-22 13:47:08: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794691953f60851780e75ca2a3ad98fecd5cf73ba1bdb6cd72885f85aa8bc02e81e8cbad8a6dad9354a8b1e55403c86c86dc678502d4b9968e369c3a157e63650d25d30e07ec8a9115abbc4b31f3c7f48dc24a1434b26c621c4edfaaa240f81adda1c81639b50492befeb89dd10958e0a82dfcf233a5bb6e2859c17c1e40f44465d9dcfd0652dbe29b6359d55626e7fa0c173f8b45cbe235ce8ff79e2b954b3579757d977218833405e7af1a780e9d52421d7a58dc655b88a325a21e31cb3415c25f56d1c7a51fc1bd72b65bcb492c5e2ebd4a6024a3ecb25bf8dafbf48a0b863c4e9b8a600610e0414d8a414694b7e08216e29581009967965071417712c4d3e934230c34a51649fcbc35aebe6ef289d4001b1f7135dccb852929e5721b67fa0499b105f21835e69f2ecc01e5ad2305c2f8e69fb418c6cda29eb30ca23aec8797d6245fee8242a31d5d03af803082e42b4917829ee49e77aa8dc9ffc78e11ef70e43ed3f1a850d4dfa1cf5951dcf0c063dc3d171ec487b2978774944d61cd37b8e23fa03d90b8a8e2d2075351406378332baad4658f6704d7262201da310f55a471eec824a6c25e7db81871c65f2abed7fb9&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019db571d140c80b974fcb8166e8d2fb/A8Rb6qnM8E/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019db571d140c80b974fcb8166e8d2fb/A8Rb6qnM8E/uapi/knet
+            [trackId] => 019db571d140c80b974fcb8166e8d2fcv2
+        )
+
+)
+
+2026-04-22 13:48:22: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-04-27 04:51:43: Whitelabled: true
+2026-04-27 04:52:46: Whitelabled: true
+2026-04-27 04:54:22: Whitelabled: true
+2026-04-27 04:55:37: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-04-27 08:39:16: Create Payment Request:
+2026-04-27 08:39:16: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=238","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=238","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=238","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"38e7977b9b5057e05b210162a816572e"},"reference":{"id":"238"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-27 08:39:16: API key:
+2026-04-27 08:39:16: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-27 08:39:17: Response: 
+2026-04-27 08:39:17: Create Payment Response:
+2026-04-27 08:39:17: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
+
+2026-04-28 06:07:23: Whitelabled: true
+2026-04-28 06:07:23: Create Payment Request:
+2026-04-28 06:07:23: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=240","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=240","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=240","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"3ffd1fa43f10c06cf29870c3f27da1ef"},"reference":{"id":"240"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-28 06:07:23: API key:
+2026-04-28 06:07:23: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 06:07:23: Response: 
+2026-04-28 06:07:23: Create Payment Response: curl error => SSL certificate problem: unable to get local issuer certificate
+2026-04-28 06:07:52: Whitelabled: true
+2026-04-28 06:07:52: Create Payment Request:
+2026-04-28 06:07:52: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=240","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=240","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=240","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"5da4de0d2961326254054571c37e7a69"},"reference":{"id":"240"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-28 06:07:52: API key:
+2026-04-28 06:07:52: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 06:07:53: Response: 
+2026-04-28 06:07:53: Create Payment Response:
+2026-04-28 06:07:53: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://dev-apiv2.upayments.com/merchant/?session_id=20260907522804082448298264983365096211287317859164
+            [trackId] => 019dd2b37f12c733a63d7a4d5be270de
+        )
+
+)
+
+2026-04-28 06:08:39: Ret Order Id Received: 240?payment_id=SESSION0002035590344E34104780E9
+2026-04-28 06:08:39: Ret Order Result set.
+2026-04-28 06:08:39: Ret Upayments Order Id Received: 5da4de0d2961326254054571c37e7a69
+2026-04-28 06:08:39: Ret Order references matched.
+2026-04-28 06:08:39: Ret Order CAPTURED Status
+2026-04-28 06:43:46: Create Payment Request:
+2026-04-28 06:43:46: {"order":{"id":"240","amount":"8.00","currency":"KWD","description":"Woocommerce Auto Deduction Order: 240","reference":"Uniq Order ID: 240"},"reference":{"id":"019dd2b3f4ceea577262138238cb6270"},"customer":{"name":"Support Upayments","email":"support@upayments.com","mobile":"92536000","uniqueToken":"925360003"},"language":"en","card":{"token":"9023967809877909"}}
+2026-04-28 06:43:46: API key:
+2026-04-28 06:43:46: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 07:38:16: Create Payment Request:
+2026-04-28 07:38:16: {"order":{"id":"240","amount":"8.00","currency":"KWD","description":"Woocommerce Auto Deduction Order: 240","reference":"Uniq Order ID: 240"},"reference":{"id":"019dd2b3f4ceea577262138238cb6270"},"customer":{"name":"Support Upayments","email":"support@upayments.com","mobile":"92536000","uniqueToken":"925360003"},"language":"en","card":{"token":"9023967809877909"}}
+2026-04-28 07:38:16: API key:
+2026-04-28 07:38:16: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 07:45:35: Create Payment Request:
+2026-04-28 07:45:35: {"order":{"id":"240","amount":"8.00","currency":"KWD","description":"Woocommerce Auto Deduction Order: 240","reference":"Uniq Order ID: 240"},"reference":{"id":"019dd2b3f4ceea577262138238cb6270"},"customer":{"name":"Support Upayments","email":"support@upayments.com","mobile":"92536000","uniqueToken":"925360003"},"language":"en","card":{"token":"9023967809877909"}}
+2026-04-28 07:45:35: API key:
+2026-04-28 07:45:35: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 10:25:51: Whitelabled: true
+2026-04-28 10:25:51: Create Payment Request:
+2026-04-28 10:25:51: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=242","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=242","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=242","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"3af3adacb0ecc14ddd2db93fbd3427a5"},"reference":{"id":"242"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-28 10:25:51: API key:
+2026-04-28 10:25:51: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 10:25:52: Response: 
+2026-04-28 10:25:52: Create Payment Response:
+2026-04-28 10:25:52: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794691953f60851780e75ca2a3ad98fecd5cf6c7303bb2dce97657623f50b534da5d2a29cb46b888c3d9bbf0b79bd91cba884cfc6f651819bdac551c3442be9c0f009c8502d3eb901644833f6b68d65f325c68f6917c9dc497ffd793fdc621c0b9d3e90b36dcde86c5828265645490d8b093a5cf59713a63f35aec2320c121a3e5f911470b6bffc4c21d704a7817764d34dde58f8e8a121ecb9b2efcc1c64ada0729a6308c1365eccf859903e794bbeb65f23ee3739e1985488da5efb435ed2496795ca1547a3639500096ca6f199787a2f803b50c9aa79ef4bd0c507b1abd825c6849930c56c0f8e838ce5ae4d4d486418ca04be1113fd0f7c4ea159ec9529ad441e9da11e4f73801f5597eae1461794c9d02c03fd987af55fbb1f763c6590dc495213136bcb1d6555b48c2e809e5feab092793e0d6ebfc434171ea3daea0278b39654a2e356f88d2fd2e69c59169993b70bc2d6a9062c77d572e90205961c98d8a22da0b459d79df08506df89c27d455dc017281dbb844bdf877924224c2f891c9df5247bddbfd26fba0eb94561c28959eb26127ae7f0da45242073f6fd8ee121cda164e67f965d94012c3b6a8e31004a7a496937744ab01c0b78817157d0d86f74&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019dd39fb50b479c0e22301b73c7c006/g8eqBaNr85/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019dd39fb50b479c0e22301b73c7c006/g8eqBaNr85/uapi/knet
+            [trackId] => 019dd39fb50b479c0e22301b73c7c007v2
+        )
+
+)
+
+2026-04-28 10:28:50: Whitelabled: true
+2026-04-28 10:28:50: Create Payment Request:
+2026-04-28 10:28:50: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=242","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=242","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=242","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"d90ed8e1a0dc471af176523b162cfa50"},"reference":{"id":"242"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-04-28 10:28:50: API key:
+2026-04-28 10:28:50: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-04-28 10:28:51: Response: 
+2026-04-28 10:28:51: Create Payment Response:
+2026-04-28 10:28:51: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://dev-apiv2.upayments.com/merchant/?session_id=20261328512804012190685911549718000574099657323
+            [trackId] => 019dd3a26ec497bfc55146a9b6030335
+        )
+
+)
+
+2026-05-05 05:08:43: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-05 11:21:53: Create Payment Request:
+2026-05-05 11:21:53: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=248","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=248","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=248","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"adbbe1abb34de3628a29efda0fe205e1"},"reference":{"id":"248"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 11:21:53: API key:
+2026-05-05 11:21:53: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 11:21:53: Response: 
+2026-05-05 11:21:53: Create Payment Response:
+2026-05-05 11:21:53: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://dev-apiv2.upayments.com/merchant/?session_id=20261421530505182652196251510870449921113519948465
+            [trackId] => 019df7df811e5d75b46bed0ddff09899
+        )
+
+)
+
+2026-05-05 12:49:03: Ret Order Id Received: 248?payment_id=SESSION0002764090040F9556333H97
+2026-05-05 12:49:03: Ret Order Result set.
+2026-05-05 12:49:03: Ret Upayments Order Id Received: adbbe1abb34de3628a29efda0fe205e1
+2026-05-05 12:49:03: Ret Order references matched.
+2026-05-05 12:49:03: Ret Order CAPTURED Status
+2026-05-05 13:08:04: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-05 13:08:29: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-05 13:23:25: Create Payment Request:
+2026-05-05 13:23:25: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=250","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=250","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=250","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"2a242b1b5340ab400658096d9dbdb69d"},"reference":{"id":"250"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 13:23:25: API key:
+2026-05-05 13:23:25: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 13:23:25: Response: 
+2026-05-05 13:23:25: Create Payment Response:
+2026-05-05 13:23:25: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://dev-apiv2.upayments.com/merchant/?session_id=2026162325050544608819657206928783314667032984429
+            [trackId] => 019df84ec68535a0175cea7a0076ae8b
+        )
+
+)
+
+2026-05-05 13:24:00: Ret Order Id Received: 250?payment_id=SESSION0002568217437M4102518E93
+2026-05-05 13:24:00: Ret Order Result set.
+2026-05-05 13:24:00: Ret Upayments Order Id Received: 2a242b1b5340ab400658096d9dbdb69d
+2026-05-05 13:24:00: Ret Order references matched.
+2026-05-05 13:24:00: Ret Order CAPTURED Status
+2026-05-05 13:25:18: Create Payment Request:
+2026-05-05 13:25:18: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=251","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=251","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=251","products":[{"name":"Wp Swings","description":"Wp Swings","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"163c73fa7ab7a12dd2372ae90cf612b1"},"reference":{"id":"251"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"9023967809877909","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 13:25:18: API key:
+2026-05-05 13:25:18: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 13:25:23: Response: 
+2026-05-05 13:25:23: Create Payment Response:
+2026-05-05 13:25:23: Array
+(
+    [status] => 1
+    [message] => Data received successfully
+    [data] => Array
+        (
+            [payMit] => Array
+                (
+                    [result] => SUCCESS
+                    [order] => Array
+                        (
+                            [status] => CAPTURED
+                        )
+
+                )
+
+            [updateSessionTokenMitData] => 
+            [transactionData] => Array
+                (
+                    [redirect_url] => http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=251?payment_id=019df850812e989aa8a37c25808126c1&result=CAPTURED&post_date=2026-05-05T13:25:21.846Z&tran_id=&ref=019df8508131093c8f1d984ae54202fc&track_id=019df850812e989aa8a37c25808126c3v2&auth=116703&order_id=019df850812e989aa8a37c25808126c2&requested_order_id=163c73fa7ab7a12dd2372ae90cf612b1&refund_order_id=019df850812e989aa8a37c25808126c2&payment_type=card&invoice_id=19125826&transaction_date=2026-05-05 04:05:25&receipt_id=019df850812e989aa8a37c25808126c2
+                )
+
+        )
+
+)
+
+2026-05-05 13:25:23: http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=251?payment_id=019df850812e989aa8a37c25808126c1&result=CAPTURED&post_date=2026-05-05T13:25:21.846Z&tran_id=&ref=019df8508131093c8f1d984ae54202fc&track_id=019df850812e989aa8a37c25808126c3v2&auth=116703&order_id=019df850812e989aa8a37c25808126c2&requested_order_id=163c73fa7ab7a12dd2372ae90cf612b1&refund_order_id=019df850812e989aa8a37c25808126c2&payment_type=card&invoice_id=19125826&transaction_date=2026-05-05 04:05:25&receipt_id=019df850812e989aa8a37c25808126c2
+2026-05-05 13:25:24: Ret Order Id Received: 251?payment_id=019df850812e989aa8a37c25808126c1
+2026-05-05 13:25:24: Ret Order Result set.
+2026-05-05 13:25:24: Ret Upayments Order Id Received: 163c73fa7ab7a12dd2372ae90cf612b1
+2026-05-05 13:25:24: Ret Order references matched.
+2026-05-05 13:25:24: Ret Order CAPTURED Status
+2026-05-05 13:34:53: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-05 13:55:22: Create Payment Request:
+2026-05-05 13:55:22: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=253","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=253","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=253","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"cd9d7a5d862b58b32b8e629e9723fbc8"},"reference":{"id":"253"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 13:55:22: API key:
+2026-05-05 13:55:22: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 13:55:24: Response: 
+2026-05-05 13:55:24: Create Payment Response:
+2026-05-05 13:55:24: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e1e95f95cef9fe91767fe171786868a7f8982821e3adb0c40c2dabb6b04d7e9d6461234b9f2d568c942a4747f6cf7d02dd2a38aa501bcaa39081be0b120e4f7f301f1f6aa96e38f03c250b1a64bda682f520bc802b021e467ee8531042c72391d03dbfba49cb716dce20b939e2a7e34ce120d93ad05a3ac41f52ccfac2da8ae5d4bf1d28b838b717e5ebf6e85252deedb2dcbc78dfe1e0b34b710c080e2a143a0f6f77ff8946f14f72289896afb1e9778ab19a467020cbb5ec6e9d5244e85eb4b12ba2a0799a2f96a917f35e42d6b68cf9283743454dd87c2c129bf773a5891408a21b6f98eba27b779858d7740e3c4b41b295e7d553863f823ec8b68df4e4d9a5b6a46684b0ac6b0345c2566594173d77f6712401001899b9e51f62330413f9c1cc5e2809b92e04f3b9a08b7a7498c8e61c975e1142dd086f4d1a558723f84b9d05ad50d464f266f84b145b7e2b0a630e56428f279afacd15141e8b844d78de8b264537c844739ba0df07087627ed49e635c05f9f92de308f8ca77cea9f55dd06b882f1a3cd87035cc0d0d754fca13c3daacb4eda7fbd7486c285b52150aa439e7f5f90c7cc6b342b51d07f293afbd003&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019df86c0960f6aeaa29afea967731b6/p86AOjEm9k/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019df86c0960f6aeaa29afea967731b6/p86AOjEm9k/uapi/knet
+            [trackId] => 019df86c0960f6aeaa29afea967731b7v2
+        )
+
+)
+
+2026-05-05 13:59:42: Create Payment Request:
+2026-05-05 13:59:42: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=253","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=253","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=253","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"d797ddd919797847ec42a46cd3e5479e"},"reference":{"id":"253"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 13:59:42: API key:
+2026-05-05 13:59:42: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 13:59:43: Response: 
+2026-05-05 13:59:43: Create Payment Response:
+2026-05-05 13:59:43: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e17fa7c18af011bad234be2fb50e4e5059e7d80e691cdc768f2523a5f4a8971cf4a3f24ed1e47b75ff48c052287905004699e47e43a2ef6015b685124240db7ab20970f90928233041c8967081091f338d70c9d90fa382a49fe98bdd8ca0e7340ac13f07ca886039f1069f8515cc17f4ef3619b9af7e605dd2e3d9e310456be323131ddae789071049dcd16018584d9c2291665899ab14964eeb201f575f7d0e75c759fad32d16e67a352f713d05d2f67cb2e7866d10920fe11275239ca272354857fe8a63ddaa442027ad18726197db52ce619945564cf1db8e90779966e6b95e57ebfcd8d1634307ad7ccd1515a19eda168fa052a692ef1aff2f38178bbd2ab01b142f593aa28362a54ae40e062ebe9eebe1341b64c586f273e06acdf2f91f2fb4cbb5dc51c234ae757fc8e8dd8f5f2e4a25c74064313290da45000c8804373da01e3f61b6c9e763910aacfa7c9fa5ec7849fec2dbaa550de559947124eae148594a3cf2c7dbdbe4db7cdb76b8b96dcfabaecde9f2893758c29f07705851c51521a76c50161e138e84bb366b00f696a97bf33ed20bd1730d0d5e845721b36b9ae3fbd10afc9bb89733b39ebc8b4eff79&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019df86ffd917b0f77840780f23e534d/lLj5pPQ68N/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019df86ffd917b0f77840780f23e534d/lLj5pPQ68N/uapi/knet
+            [trackId] => 019df86ffd917b0f77840780f23e534ev2
+        )
+
+)
+
+2026-05-05 14:07:45: Create Payment Request:
+2026-05-05 14:07:45: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=253","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=253","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=253","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"e1a548a51f4f9ae90c52e58160be09ac"},"reference":{"id":"253"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-05 14:07:45: API key:
+2026-05-05 14:07:45: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-05 14:07:47: Response: 
+2026-05-05 14:07:47: Create Payment Response:
+2026-05-05 14:07:47: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e107b8205945c2c318fa3862550f0831878c0152dc8cda771f5d5b7964c7bdff4f0ce0e41ddad0545bd4d5662c39a136669307b6f83a97e36dc6583fb376714133e185458c48bc551ac1b64ccd6a03deaeaa37ebd5b95230d8c277ae75358b1b4e3cf38801a2c4b75e8b8764a0ea62bef77733df421ba4dbda84a80861c1f0bfc7cd862e87abbe9ff16b1621124caa552cd12b455c926f34b2311cfa8fb5aa169209f8a09e328691cb360a12911709961e235b894e89e6235486a4b8d9a8b297d832143ff7d6b50ceda323fc0a2599bf9301770fd42a9081d882a74d01d70f8c86a36da6852cbfcd581c0367c030f6744677bf8c5a3cb8a325b88da36bf739ab624e76d28ccffcf425d3fbff4ebf35f9d4a181b3259ca7683f8e877152f5fd68b9382c73f517a74a3448295ccd07055f06c8db88ed5846f4e30d4b8448dc00624e6168b91ef0cf7f2210dc5efbbeb5125a6f453d951399cfe69f9ebfafdebf2c6cda794149253cdb3c875079103d3ccdd0fadd8cfffe6f2883dacfcad4112d870e6291430b220414a11ce0e143e6eca80c39e47d1449ffdf125516b8cd18c86e4211d6e5ecb56f83ab95c7f5c290784e47&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019df8775fe83fb041c5b5b5843e0872/78Xv6kArZ1/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019df8775fe83fb041c5b5b5843e0872/78Xv6kArZ1/uapi/knet
+            [trackId] => 019df8775fe83fb041c5b5b5843e0873v2
+        )
+
+)
+
+2026-05-06 07:43:31: Create Payment Request:
+2026-05-06 07:43:31: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=254","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=254","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=254","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"5f773e59c541fef16e98d7379cc71fe4"},"reference":{"id":"254"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-06 07:43:31: API key:
+2026-05-06 07:43:31: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-06 07:43:32: Response: 
+2026-05-06 07:43:32: Create Payment Response:
+2026-05-06 07:43:32: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e194e2e8934227bf1056ba3c5910f602b2b9187058b06f696896a4864b710433201fef2c6cecfe3cc1c4c84c2013f65ceaf91eb44b13ac6a43a98e4822ce6ce7d84f15b0e1691233a5498e56b40ecd1c29dfc53d3b328893ec2b0d1a5a01d2953257750a9a74b96ec9dc8b49747e58282251c0902f5d11d2f1d7477c7e249886bd19d68d907c3c6a29cc4de8af0a4691d8b3e502ed5688a6639f64a4697d7083628641576af6966bfe981b2dfac094958bda1a8e25759d8f5ca9fb42159d161b785127d4f1c59ed18155f0c466ae981f88de5a740e7a7066f6c0faaf898ba6874f607df300b3b1c2392ce04066453a3f67d9ba558db49209f5eef5590e88e96594c45cf3b5a0c4009a053fa9f312606b18cc9d009cda2b221d9c514b3eda99bc234f0d38ebf7d3bd5a15ccc41649247e640b42bc0edde2456a623020138f53881252e7fe24515e01e9c8fa69d84c2800623f3e155ad5fd0c4cb60edd78a836852472749cd4f42a848d66d8a782acf367f7d246a6905c8c3247064eb6fe87522c42b679e9f06529750dc47c9900955d9525e0ab6023d2b92429d855d36a6c812bde76058776867eea363e75a5ab37712e68&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc3df01979842e2b3a8a54e00fb5/YZvOWKNw9y/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc3df01979842e2b3a8a54e00fb5/YZvOWKNw9y/uapi/knet
+            [trackId] => 019dfc3df01979842e2b3a8a54e00fb6v2
+        )
+
+)
+
+2026-05-06 08:29:05: Create Payment Request:
+2026-05-06 08:29:05: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=254","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=254","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=254","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"f38e8a119ea2fe86f445f2416c346f31"},"reference":{"id":"254"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-06 08:29:05: API key:
+2026-05-06 08:29:05: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-06 08:29:06: Response: 
+2026-05-06 08:29:06: Create Payment Response:
+2026-05-06 08:29:06: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e152abf810cbb8e94e78df05f6235ff737382747d5f39d56ff8023733a85b02bb9df30214a9ad4f2fa6eae6380c9e6cf954ec9b6ae0c6851891a1f2e4ec838eaa04926f47579d3b5cfb3aca502f18f2446910bf46b4386a8e2075475e9e169b71773c8fb5536a9ed2a6f052ba63c9d683a35b3b8f547341d2cda5dc68bd284d04f8dee98a5c0b859fe2444db35ceee936454d4d2399fac539320cd843762f62b6cabcf3adf438e452fa68406441f9718fae95c1e4c4aa26bfed98e11ee145989fcc593b33e1eeb98a68ad083e4f0a78678da3ca8a375e250160bd0bab74ab1bec4d8a3b01b326986e99d9c9e325b9828415f0536486c666d4d9814ea9fc2c86b928d680381302250eb5672d752afcd4887013f6e66918e644d0e0cbf57661e40fb1771f6863c860be9340532a803e284a511f1df38660474dd30c230d731fc89b5a2dc491fef7701b33b882d5dea15b2a75a08c10a991b24e97fef8fcc579510dd22d16e18bb41171d1fa67417c3d826371296eda53f535a9c285c77004d711f5f6310560e6efe8a603c43b8415e5d6f07868881842939a0630f552e43471a45f0505c51d70864785fedd19fad98051be0&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc67a7032500cec07f3971cbf2d0/a8ED5xw59n/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc67a7032500cec07f3971cbf2d0/a8ED5xw59n/uapi/knet
+            [trackId] => 019dfc67a7032500cec07f3971cbf2d1v2
+        )
+
+)
+
+2026-05-06 08:32:41: Create Payment Request:
+2026-05-06 08:32:41: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=255","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=255","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=255","products":[{"name":"Album","description":"Album","price":"15","quantity":1,"type":"simple"}],"order":{"amount":"15.00","currency":"KWD","id":"d814979fe67d8bcf8f49ccb858fd70c4"},"reference":{"id":"255"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-06 08:32:41: API key:
+2026-05-06 08:32:41: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-06 08:32:41: Response: 
+2026-05-06 08:32:41: Create Payment Response:
+2026-05-06 08:32:41: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794695ec2a59679d69a918970d5ce83db07e18a9d7b2a893be3e140e9f507021b5f3ca1e9c6372c7a28f6a2342cd83592a6350051f994cb49e419baf9ec2dd5d926fa7d1cd767260b0cce6423678e2a80fad47c5885d4b4d1dd5d03dd96d29f35d593ac648b6a26d336a2134bf7f1556553560213899bff3debcf182f22dc0300ec5ae5a9e59b0d485b1c7dcf9fba950b7862ab8384d841935a1dc032db929aaa6383e3806f359d637d610ee97035c240920b1850b28e0bebb37ee4aacb361f9ffae0a0d228155f527a898fbafcd345f6fab8d979082cf2fa40f72286d39ca074fc024d0fa78365312a5900742cd3f01b28f2c6bcb9dc43cfe435f758ea9bf2e7949c0cdae7cd0a9e2a7810f570951742c7d488ce951f006912ed76be1c54d018a1b9221d117456206306200065395174da8cfbc6fad5beddd7754fda9b9c051e2ec32a15f448e0f928bc28f5a99699b6722fd4f8fe0dc17cb64228b580452d49b1b4ccf3a64c6a439000bb71d2fd4172a01d2d105283df6c99af3df79948b952a0eefdbcb79819d441b4289dcdb742a8905edf6627e9acf29a73898ec273d71319286388a82c0600eebbf38703a6d4b4efcd87f16b24c589a056598e8977f0ae2e08&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc6af1c2fec7b1ac150b2f17e2b9/0Zzb3dAbZK/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019dfc6af1c2fec7b1ac150b2f17e2b9/0Zzb3dAbZK/uapi/knet
+            [trackId] => 019dfc6af1c2fec7b1ac150b2f17e2bav2
+        )
+
+)
+
+2026-05-06 08:34:27: Whitelabled: true
+2026-05-08 05:46:05: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-08 06:00:09: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-08 06:06:55: Create Payment Request:
+2026-05-08 06:06:55: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=260","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=260","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=260","products":[{"name":"CHANEL Perfumes","description":"CHANEL Perfumes","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"b5aec6e6b959e7eb8edd10490ed8f9bd"},"reference":{"id":"260"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"9023967809877909","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:06:55: API key:
+2026-05-08 06:06:55: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:07:00: Response: 
+2026-05-08 06:07:00: Create Payment Response:
+2026-05-08 06:07:00: Array
+(
+    [status] => 1
+    [message] => Data received successfully
+    [data] => Array
+        (
+            [payMit] => Array
+                (
+                    [result] => SUCCESS
+                    [order] => Array
+                        (
+                            [status] => CAPTURED
+                        )
+
+                )
+
+            [updateSessionTokenMitData] => 
+            [transactionData] => Array
+                (
+                    [redirect_url] => http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=260?payment_id=019e063236d4a7dc2137971e8199dbe6&result=CAPTURED&post_date=2026-05-08T06:06:57.022Z&tran_id=&ref=019e063236d78f69f42fd6b28c2516d2&track_id=019e063236d4a7dc2137971e8199dbe8v2&auth=085180&order_id=019e063236d4a7dc2137971e8199dbe7&requested_order_id=b5aec6e6b959e7eb8edd10490ed8f9bd&refund_order_id=019e063236d4a7dc2137971e8199dbe7&payment_type=card&invoice_id=19125899&transaction_date=2026-05-08 09:05:06&receipt_id=019e063236d4a7dc2137971e8199dbe7
+                )
+
+        )
+
+)
+
+2026-05-08 06:07:00: http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=260?payment_id=019e063236d4a7dc2137971e8199dbe6&result=CAPTURED&post_date=2026-05-08T06:06:57.022Z&tran_id=&ref=019e063236d78f69f42fd6b28c2516d2&track_id=019e063236d4a7dc2137971e8199dbe8v2&auth=085180&order_id=019e063236d4a7dc2137971e8199dbe7&requested_order_id=b5aec6e6b959e7eb8edd10490ed8f9bd&refund_order_id=019e063236d4a7dc2137971e8199dbe7&payment_type=card&invoice_id=19125899&transaction_date=2026-05-08 09:05:06&receipt_id=019e063236d4a7dc2137971e8199dbe7
+2026-05-08 06:07:01: Ret Order Id Received: 260?payment_id=019e063236d4a7dc2137971e8199dbe6
+2026-05-08 06:07:01: Ret Order Result set.
+2026-05-08 06:07:01: Ret Upayments Order Id Received: b5aec6e6b959e7eb8edd10490ed8f9bd
+2026-05-08 06:07:01: Ret Order references matched.
+2026-05-08 06:07:01: Ret Order CAPTURED Status
+2026-05-08 06:07:51: Create Payment Request:
+2026-05-08 06:07:51: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=261","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=261","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=261","products":[{"name":"CHANEL Perfumes","description":"CHANEL Perfumes","price":"10","quantity":1,"type":"custom_type"}],"order":{"amount":"8.00","currency":"KWD","id":"df15765a89554e2821829f798da38fc1"},"reference":{"id":"261"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"9408139501623594","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:07:51: API key:
+2026-05-08 06:07:51: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:07:55: Response: 
+2026-05-08 06:07:55: Create Payment Response:
+2026-05-08 06:07:55: Array
+(
+    [status] => 1
+    [message] => Data received successfully
+    [data] => Array
+        (
+            [payMit] => Array
+                (
+                    [result] => SUCCESS
+                    [order] => Array
+                        (
+                            [status] => CAPTURED
+                        )
+
+                )
+
+            [updateSessionTokenMitData] => 
+            [transactionData] => Array
+                (
+                    [redirect_url] => http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=261?payment_id=019e0633115612553f0a4d8acbdef153&result=CAPTURED&post_date=2026-05-08T06:07:52.661Z&tran_id=&ref=019e0633115a78a1c0da785b01ec76bd&track_id=019e0633115612553f0a4d8acbdef155v2&auth=086260&order_id=019e0633115612553f0a4d8acbdef154&requested_order_id=df15765a89554e2821829f798da38fc1&refund_order_id=019e0633115612553f0a4d8acbdef154&payment_type=card&invoice_id=19125900&transaction_date=2026-05-08 09:05:07&receipt_id=019e0633115612553f0a4d8acbdef154
+                )
+
+        )
+
+)
+
+2026-05-08 06:07:55: http://localhost/wordpress/upayments/?wc-api=wc_upayments&page=success&wc_order_id=261?payment_id=019e0633115612553f0a4d8acbdef153&result=CAPTURED&post_date=2026-05-08T06:07:52.661Z&tran_id=&ref=019e0633115a78a1c0da785b01ec76bd&track_id=019e0633115612553f0a4d8acbdef155v2&auth=086260&order_id=019e0633115612553f0a4d8acbdef154&requested_order_id=df15765a89554e2821829f798da38fc1&refund_order_id=019e0633115612553f0a4d8acbdef154&payment_type=card&invoice_id=19125900&transaction_date=2026-05-08 09:05:07&receipt_id=019e0633115612553f0a4d8acbdef154
+2026-05-08 06:07:56: Ret Order Id Received: 261?payment_id=019e0633115612553f0a4d8acbdef153
+2026-05-08 06:07:56: Ret Order Result set.
+2026-05-08 06:07:56: Ret Upayments Order Id Received: df15765a89554e2821829f798da38fc1
+2026-05-08 06:07:56: Ret Order references matched.
+2026-05-08 06:07:56: Ret Order CAPTURED Status
+2026-05-08 06:08:45: Create Payment Request:
+2026-05-08 06:08:45: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=262","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=262","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=262","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"4b7cdd5cdcca4b52083261a8a7267ad1"},"reference":{"id":"262"},"customer":{"uniqueId":"925360003","name":"Support Upayments","email":"support@upayments.com","mobile":"92536000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"925360003"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:08:45: API key:
+2026-05-08 06:08:45: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:08:46: Response: 
+2026-05-08 06:08:46: Create Payment Response:
+2026-05-08 06:08:46: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794699e01b5c6d9f38d03f8c5499366c23e6abe91382bdec7df32ca307e7ea75b72a3103348e288b4557989ba1e527e306b89e17cbc7346cc42a28fcf4812d502d2c02bc4bac2a9b1cdda74b5a3fbbad048c91943127a8b4504f5b2bff7c2b0f086420370295160549930d0cf2b6eadfbc1ec91e2ce2c7309937f4096f7ea39f23a9ac1ff555fe55f5b2eec0755558975af5dab89b500c2546d3bd4a20f2720b4a97218f2d2ff05b45b82ec31a2e7951c7daab47ed54f8f6d5e1b47a8b016ab0303d666aae45f53cf22e7a53335ffac83e66c55bdba3937ab5f73f38e7956ccee8a27de4bfa047d5a5bc58e6b34e43228a45fb8144f941a26d9838ed55c94025e4dfe5fca49505ba9bc0295a431c388f58474a51c9b71f5cae4502d5ea216b0575958706509e3c5422db165cab1f18fe5fa2ff463065df5524c23d348bf7241d51d38e21f60b0d78cceb8d06e16986f02921c5a1ff015efb578710177d6a4f73fd621a28a04f84efd02c533fcc43ee8bdbc76b39162a9914a81b8c50fbea1a348944141783a456f15668842929d80034c73c1d2a0084bc9d63eab86992770d7f8a2f9b30ebcfddea5f2f8aa351f08bbb0862b752eccd2590f79748fe77256c60df5d6&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019e0633e37bb41f21a2318e41179cfb/n8PWvxYg9x/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019e0633e37bb41f21a2318e41179cfb/n8PWvxYg9x/uapi/knet
+            [trackId] => 019e0633e37bb41f21a2318e41179cfcv2
+        )
+
+)
+
+2026-05-08 06:09:18: Ret Order Id Received: 262?payment_id=100612820000001771
+2026-05-08 06:09:18: Ret Order Result set.
+2026-05-08 06:09:18: Ret Upayments Order Id Received: 4b7cdd5cdcca4b52083261a8a7267ad1
+2026-05-08 06:09:18: Ret Order references matched.
+2026-05-08 06:09:18: Ret Order CAPTURED Status
+2026-05-08 06:11:51: Auto Deduction Enabled and Save Card Toggle Disabled
+2026-05-08 06:12:48: Create Payment Request:
+2026-05-08 06:12:48: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=264","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=264","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=264","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"a7d2cdf7078e0e6eee22c851e04f6d83"},"reference":{"id":"264"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"95682000"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:12:48: API key:
+2026-05-08 06:12:48: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:12:48: Response: 
+2026-05-08 06:12:48: Create Payment Response:
+2026-05-08 06:12:48: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
+
+2026-05-08 06:25:04: Create Payment Request:
+2026-05-08 06:25:04: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=264","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=264","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=264","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"a54310ca9885d322d2dca1e194fbb697"},"reference":{"id":"264"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"95682000"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:25:04: API key:
+2026-05-08 06:25:04: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:25:05: Response: 
+2026-05-08 06:25:05: Create Payment Response:
+2026-05-08 06:25:05: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
+
+2026-05-08 06:29:51: Create Payment Request:
+2026-05-08 06:29:51: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=264","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=264","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=264","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"2195058ce0319035244b63d3076eafab"},"reference":{"id":"264"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":"95682000"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:29:51: API key:
+2026-05-08 06:29:51: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:29:51: Response: 
+2026-05-08 06:29:51: Create Payment Response:
+2026-05-08 06:29:51: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
+
+2026-05-08 06:31:23: Create Payment Request:
+2026-05-08 06:31:23: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=264","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=264","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=264","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"54a84668f9e3e016f41e97410c302427"},"reference":{"id":"264"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":null},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:31:23: API key:
+2026-05-08 06:31:23: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:31:23: Response: 
+2026-05-08 06:31:23: Create Payment Response:
+2026-05-08 06:31:23: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794699e01b5c6d9f38d03f8c5499366c23e6a034002351ca456a6d09395c0ba57b8f525f7e6b420b7196e7b19b65a8dc1015b65635298b61621dd29740de9471a0173cbcf313e93d49dfbaceee06d1cfe533430e2d39b35707d0dac4c888226a01e6293fe2dd1e785d60c786c4602e218d90dbec1f1dbc6bff7033e3a0befc679f864a7b9ce568283751d6769b35a37e2124f32890494f8a2ce1908878198f54265fa2639a07f7a3b20bd6215349ad2d399bc4c912156ca0c6b256d6498e8546bb01a618ef4ded0439b64e64aef4f008a7f63b5b73d4f378814fd2ca682bd2f42b384658ece1a7a4dfbc53a0113454fe3be4719d4081b8130137452b4874994aac9ec89cbc595a18daa8541872215d1811981d3b9eca325c41a44f76f5bba88f91de51a837c37379759bd3a34c7f430b175c705710232845920b4dd94ca66fe598c7dcba1403cf8cf4e3abdc24c14831184900eb1678b3a5aabf223e185ec3abe9a4e44dc0d635908e096239f20a5cddedff5e7ce2ab8ca5e6ec03ab1673252fab3e229ee2dc039f5f8fb2fca46f2c8bba14870f53283a74ae43760dd7ec0847439a65ceeb5f48bb1db54189d69b64d82c445&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019e0648997172b1f5ab26a54984b1bd/GLpOoRMw8K/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019e0648997172b1f5ab26a54984b1bd/GLpOoRMw8K/uapi/knet
+            [trackId] => 019e0648997172b1f5ab26a54984b1bev2
+        )
+
+)
+
+2026-05-08 06:36:32: Create Payment Request:
+2026-05-08 06:36:32: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=264","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=264","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=264","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"eb649f9e9784a6230792c5f14d7b4436"},"reference":{"id":"264"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":false,"paymentGateway":{"src":"knet"},"tokens":{"creditCard":"","customerUniqueToken":null},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:36:32: API key:
+2026-05-08 06:36:32: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:36:32: Response: 
+2026-05-08 06:36:32: Create Payment Response:
+2026-05-08 06:36:32: Array
+(
+    [status] => 1
+    [message] => Payment link generated successfully
+    [data] => Array
+        (
+            [link] => https://kpaytest.com.kw/kpg/PaymentHTTP.htm?param=paymentInit&trandata=289fcbaef51ccc9a9aa478fb5a70575de524e3e384bacc6189f99ff4495794699e01b5c6d9f38d03f8c5499366c23e6aaa2a23e8fb2ead102b77c922dede01e6eee9a5c18e079f8a6d8d50a6a3afdfc5f6a54de6596435e268722790d6382c1c00677a5e876e07c5e67cf86fb197444c1d7823126221cfee50a2194a5aace5bdf435638ab86afe46bad308202b4e318715b5a8a6bfd56220ba26c6a4ebe72131bfa00b58d27f92581c04261d58428a5995b0f6ee75875bff072daef9f7743a9f26fc2c798cb8bc4c8dd0b1f28a59a025a794ba2f8b498aa5539601d2a9b06c0ae1be3ad87182aac31e513691007759eee5a512e20e194b63f6fa3378fe350ae0f060924b920d100b74b480de82fc29c566dc31cf70710b88500b4d29f67b916a4b6daf6d0c4a1522edc757bdf79bbd4d451389ad5652b19b357b05d133e25c6c3dc793182e7cb14c541d8a173925b150c60c6842d32d8132619edc4156d46824172e46e683cc76eb6ff415a00417f7ebd2e1841d7b58fbcdc1c26b8dac254525f23e6a277795b06e39789dd3b467e2a23811c858de9bf6a82ef76ce0beb7b9b16fee60d7da05316478632b1d4b339adfef9c779cff35f1b8ae41e04e92fffd9d50d9fbab83bdbca4f35d882aaca3d7ea&tranportalId=570301&responseURL=https://dev-cps.upayments.com/api/v1/payment-response/019e064d51688ed8913f809ae8a5baa4/68nlMb6YZn/uapi/knet&errorURL=https://dev-cps.upayments.com/api/v1/payment-response/019e064d51688ed8913f809ae8a5baa4/68nlMb6YZn/uapi/knet
+            [trackId] => 019e064d51688ed8913f809ae8a5baa5v2
+        )
+
+)
+
+2026-05-08 06:36:59: Ret Order Id Received: 264?payment_id=100612820000002227
+2026-05-08 06:36:59: Ret Order Result set.
+2026-05-08 06:36:59: Ret Upayments Order Id Received: eb649f9e9784a6230792c5f14d7b4436
+2026-05-08 06:36:59: Ret Order references matched.
+2026-05-08 06:36:59: Ret Order CAPTURED Status
+2026-05-08 06:38:44: Create Payment Request:
+2026-05-08 06:38:44: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=265","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=265","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=265","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"ab722a755e8979e954b2dd2484d20576"},"reference":{"id":"265"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"95682000"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:38:44: API key:
+2026-05-08 06:38:44: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:38:44: Response: 
+2026-05-08 06:38:44: Create Payment Response:
+2026-05-08 06:38:44: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
+
+2026-05-08 06:44:44: Create Payment Request:
+2026-05-08 06:44:44: {"returnUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=success&wc_order_id=265","cancelUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&page=error&wc_order_id=265","notificationUrl":"http:\/\/localhost\/wordpress\/upayments\/?wc-api=wc_upayments&wc_order_id=265","products":[{"name":"Normal Product","description":"Normal Product","price":"1","quantity":1,"type":"simple"}],"order":{"amount":"1.00","currency":"KWD","id":"177556dec2116c37ce15a30347dd19ba"},"reference":{"id":"265"},"customer":{"uniqueId":"95682000","name":"Yagnik Diyora","email":"yagnik.diyora@upayments.com","mobile":"95682000"},"plugin":{"src":"woocommerce"},"is_whitelabled":true,"language":"en","isSaveCard":true,"paymentGateway":{"src":"cc"},"tokens":{"creditCard":"","customerUniqueToken":"95682000"},"device":{"browser":"Mozilla\/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit\/537.36 (KHTML, like Gecko) Chrome\/107.0.0.0 Safari\/537.36 OPR\/93.0.0.0","browserDetails":{"screenWidth":"1920","screenHeight":"1080","colorDepth":"24","javaEnabled":"false","language":"en","timeZone":"-180","3DSecureChallengeWindowSize":"500_X_600"}},"extraMerchantData":null}
+2026-05-08 06:44:44: API key:
+2026-05-08 06:44:44: Al0ce5ac8890809e8314ad0564887d74197a4cc623sha
+2026-05-08 06:44:44: Response: 
+2026-05-08 06:44:44: Create Payment Response:
+2026-05-08 06:44:44: Array
+(
+    [message] => Customer unique token not found for this merchant
+    [errors] => Array
+        (
+            [tokens.customerUniqueToken] => Array
+                (
+                    [0] => Customer unique token not found for this merchant
+                )
+
+        )
+
+)
