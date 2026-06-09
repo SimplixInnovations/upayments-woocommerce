@@ -86,15 +86,35 @@ function submitSavedCard(objButton) {
 }
 
 function toggleSaveCard(loggedUser) {
-    if (!loggedUser) {
-        document.getElementById("chkSaveCard").checked = false;
-        jQuery('#save_card').val('0');
-        alert("Please Login to use Save Card feature")
-    } else {
-        if (document.getElementById('chkSaveCard').checked) {
-            jQuery('#save_card').val('1');
-        } else {
-            jQuery('#save_card').val('0');
-        }
+    let checkbox = document.getElementById('chkSaveCard');
+    let saveCardInput = jQuery('#save_card');
+
+    if (loggedUser === false) {
+        checkbox.checked = false;
+        saveCardInput.val('0');
+        showToast('Please Login to use the Save Card feature.', 3000);
+        return;
     }
+    
+    let phone = document.getElementById('billing_phone').value;
+    if (phone === '') {
+        checkbox.checked = false;
+        saveCardInput.val('0');
+        showToast('Please update your mobile number to use the Save Card feature.', 3000);
+        return;
+    }
+
+    // User logged in
+    saveCardInput.val(checkbox.checked ? '1' : '0');
+}
+
+function showToast(message, duration = 3000) {
+    const toast = document.getElementById('wc-toast');
+
+    toast.innerHTML = message;
+    toast.classList.add('show');
+
+    setTimeout(() => {
+        toast.classList.remove('show');
+    }, duration);
 }
