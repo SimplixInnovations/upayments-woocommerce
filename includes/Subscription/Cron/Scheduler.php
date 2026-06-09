@@ -17,18 +17,10 @@ class Scheduler
      */
     public static function init()
     {
-        add_action('woocommerce_init', [__CLASS__, 'schedule']);
-        add_action(self::CRON_HOOK, [__CLASS__, 'process']);
-    }
-
-    /**
-     * Schedule cron if not already scheduled
-     */
-    public static function schedule()
-    {
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time(), 'hourly', self::CRON_HOOK);
         }
+        add_action(self::CRON_HOOK, [__CLASS__, 'process']);
     }
 
     /**
@@ -40,11 +32,11 @@ class Scheduler
         $context = ['source' => 'upayments-cron'];
 
         // Prevent duplicate execution
-        // if (get_transient(self::LOCK_KEY)) {
-        //     $logger->warning('Cron skipped due to active lock', $context);
-        //     return;
-        // }
-        // set_transient(self::LOCK_KEY, true, 60);
+        if (get_transient(self::LOCK_KEY)) {
+            $logger->warning('Cron skipped due to active lock', $context);
+            return;
+        }
+        set_transient(self::LOCK_KEY, true, 60);
 
         try {
             $gateway = self::getGateway();
@@ -345,7 +337,7 @@ class Scheduler
             );
         } finally {
             // temp
-            // delete_transient(self::LOCK_KEY);
+            delete_transient(self::LOCK_KEY);
         }
     }
 

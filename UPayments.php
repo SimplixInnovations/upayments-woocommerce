@@ -1,10 +1,10 @@
 <?php
 /**
  * Plugin Name: UPayments
- * Plugin URI: [Your Plugin Website URL]
- * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant. Supports Block Checkout, Auto Deduction for Subscriptions.
+ * Plugin URI: https://upayments.com/
+ * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant. Supports Block Checkout, Auto Deduction for Subscriptions, Bookable Products.
  * Version: 3.1.0
- * Author: <a href="https://upayments.com/>UPayments Company</a>  
+ * Author: <a href="https://upayments.com/" target="_blank">UPayments Company</a>
  * Author URI: https://upayments.com/
  * Requires at least: 5.6
  * Requires PHP: 7.2
@@ -40,7 +40,10 @@ $updateChecker->getVcsApi()->enableReleaseAssets();
 
 add_action( 'plugins_loaded', 'woocommerceUpaymentsInit' );
 function woocommerceUpaymentsInit() {
-    
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        add_action( 'admin_notices', 'upaymentsMissingWcNotice' );
+        return;
+    }
     class WC_Upayments extends WC_Payment_Gateway {
         public $domain;
         public $debug;
@@ -895,7 +898,7 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
-                    wc_add_notice(__("Please select a valid Billing Intervallllll.", $this->domain), "error");
+                    wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
             } else {
@@ -1503,7 +1506,7 @@ function woocommerceUpaymentsInit() {
         {   
             $url = "https://apiv2api.upayments.com/api/v1/" . $apiRoute;
             if ($this->getMode()) {
-                $url = "https://dev-apiv2api.upayments.com/api/v1/" . $apiRoute;
+                $url = "https://sandboxapi.upayments.com/api/v1/" . $apiRoute;
             }
             return $url;
         }
@@ -1760,11 +1763,12 @@ function woocommerceUpaymentsInit() {
             // Always load classes (they self-check enable flag)
             require_once __DIR__ . '/includes/Subscription/Checkout/Fields.php';
             require_once __DIR__ . '/includes/Subscription/Manager.php';
-            require_once __DIR__ . '/includes/Subscription/Cron/Scheduler.php';
             require_once __DIR__ . '/includes/Subscription/Helpers/Utils.php';            
             Fields::init();
             Manager::init();
-            Scheduler::init();
+            // commenting out because we are now using WP Cron for scheduling, and the Scheduler class is not needed to be initialized on every page load
+            // require_once __DIR__ . '/includes/Subscription/Cron/Scheduler.php';
+            // Scheduler::init();
         }
 
         /**
@@ -1944,6 +1948,19 @@ function woocommerceUpaymentsInit() {
     }
 }
 
+/**
+ * upaymentsMissingWcNotice
+ * If Woocommerce Plugin is not active/installed show admin notice to install/activate Woocommerce
+ * @return void
+ */
+function upaymentsMissingWcNotice() {
+    ?>
+    <div class="error notice">
+        <p><?php _e( '<b>UPayments Gateway</b> requires WooCommerce to be installed and active!', 'upayments' ); ?></p>
+    </div>
+    <?php
+}
+
 add_filter("woocommerce_payment_gateways", "addUpaymentsGatewayClass");
 function addUpaymentsGatewayClass($methods)
 {
@@ -2052,9 +2069,14 @@ function myPaymentPluginSetupCheckout() {
 
 /* Subscription Product Data Handler from product Data Page - Start */
 add_action( 'init', function () {
-    class WCProductCustomType extends WC_Product_Simple {
-        public function get_type() {
-            return 'custom_type';
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return;
+    }
+    if ( class_exists( 'WC_Product_Simple' ) ) {
+        class WCProductCustomType extends WC_Product_Simple {
+            public function get_type() {
+                return 'custom_type';
+            }
         }
     }
 });
@@ -2397,6 +2419,7 @@ add_action('woocommerce_init', function () {
     require_once __DIR__ . '/includes/Subscription/Cron/Scheduler.php';
     Scheduler::init();
 });
+
 
 add_action('init', 'runCustomCron');
 function runCustomCron() {
