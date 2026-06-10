@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: UPayments
- * Plugin URI: https://upayments.com/
+ * Plugin URI: https://developers.upayments.com/reference/woocommerce
  * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant. Supports Block Checkout, Auto Deduction for Subscriptions, Bookable Products.
  * Version: 3.1.0
  * Author: <a href="https://upayments.com/" target="_blank">UPayments Company</a>
