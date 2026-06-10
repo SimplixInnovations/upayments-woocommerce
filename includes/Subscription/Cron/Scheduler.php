@@ -26,10 +26,11 @@ class Scheduler
     /**
      * Main cron logic
      */
-    public static function process(?DateTime $now = null)
+    public static function process()
     {
         $logger  = wc_get_logger();
         $context = ['source' => 'upayments-cron'];
+        $now = new DateTime('now', wp_timezone());
 
         // Prevent duplicate execution
         if (get_transient(self::LOCK_KEY)) {
@@ -103,8 +104,6 @@ class Scheduler
                     if (!$start_date) {
                         break;
                     }
-
-                    // $start_date = new DateTime($start_date->date('Y-m-d H:i:s'), wp_timezone());
 
                     // Prevent invalid configs
                     if ((!$subscriptionPlan || $subscriptionInterval < 1) || $subscriptionPlan === 'one_time') {

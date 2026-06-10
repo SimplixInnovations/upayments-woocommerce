@@ -2420,25 +2420,10 @@ add_action('woocommerce_init', function () {
     Scheduler::init();
 });
 
-
-add_action('init', 'runCustomCron');
-function runCustomCron() {
+add_action('init', function () {
     update_option('woocommerce_checkout_phone_field', 'required');
-    if (isset($_GET['run_cron']) && $_GET['run_cron'] === 'yes') {
-        error_log(' Manual cron trigger hit');
-        $run_date = null;
-
-        if (!empty($_GET['run_date'])) {
-            $raw = sanitize_text_field($_GET['run_date']);
-
-            try {
-                $run_date = new DateTime($raw, wp_timezone());
-            } catch (Exception $e) {
-                error_log('Invalid run_date passed: ' . $raw);
-            }
-        }
-        do_action('upay_process_subscriptions', $run_date);
-        wp_die('Cron execution finished');
+    if (!wp_next_scheduled('upay_hourly_cron_job')) {
+        wp_schedule_event(time(), 'hourly', 'upay_hourly_cron_job');
     }
 
     $action = isset($_GET['upay_action']) ? $_GET['upay_action'] : '';
@@ -2483,4 +2468,10 @@ function runCustomCron() {
         wp_safe_redirect(wc_get_account_endpoint_url('view-order') . $order_id);
         exit;
     }
+});
+
+add_action('upay_hourly_cron_job', 'runCustomCron');
+function runCustomCron() {    
+    error_log('cron Execution started at ' . current_time('Y-m-d H:i:s'));
+    do_action('upay_process_subscriptions');
 }
