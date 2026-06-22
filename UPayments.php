@@ -4,10 +4,10 @@
  * Plugin URI: https://developers.upayments.com/reference/woocommerce
  * Description: UPayments Plugin with Unified payment gateway supporting Old/New design, Save Card, and Multimerchant. Supports Block Checkout, Auto Deduction for Subscriptions, Bookable Products.
  * Version: 3.1.0
- * Author: <a href="https://upayments.com/" target="_blank">UPayments Company</a>
- * Author URI: https://upayments.com/
+ * Author: <a href="https://developers.upayments.com/reference/woocommerce" target="_blank">UPayments Company</a>
+ * Author URI: https://developers.upayments.com/reference/woocommerce
  * Requires at least: 5.6
- * Requires PHP: 7.2
+ * Requires PHP: 7.2+
  * License: MIT
  * Text Domain: https://upayments.com/
  * Domain Path: /languages
@@ -147,8 +147,8 @@ function woocommerceUpaymentsInit() {
             }, 5);
             // Save Card & Subscriptions validation
             add_filter('woocommerce_settings_api_sanitized_fields_upayments', function ($settings) {
-                $save_card      = !empty($settings['enable_save_card']);
-                $subscriptions  = !empty($settings['enable_subscriptions']);
+                $save_card      = isset($settings['enable_save_card']) && !empty($settings['enable_save_card']);
+                $subscriptions  = isset($settings['enable_subscriptions']) && !empty($settings['enable_subscriptions']);
                 if ($subscriptions && !$save_card) {
                     wc_add_notice(
                         __('Save Card must be enabled when Subscriptions are enabled.', 'woocommerce'),
@@ -1987,11 +1987,11 @@ function enableUpaymentsGateway($available_gateways)
             unset($available_gateways["upayments"]);
         }
 
-        if (is_checkout() && isset($available_gateways['cod']) && $settings['enable_autodeduction'] === 'yes') {
+        if (is_checkout() && isset($available_gateways['cod']) && (isset($settings['enable_autodeduction']) && $settings['enable_autodeduction'] === 'yes')) {
             unset($available_gateways['cod']);
         }
 
-        if (WC()->session->get('chosen_payment_method') === 'upayments' && $settings['make_default_gateway'] !== 'yes') {
+        if (WC()->session->get('chosen_payment_method') === 'upayments' && (isset($settings['make_default_gateway']) && $settings['make_default_gateway'] !== 'yes')) {
             WC()->session->set('chosen_payment_method', null);
         }
     }
