@@ -116,7 +116,6 @@ function woocommerceUpaymentsInit() {
             
             // Handlers for Subscription Module
             $this->initializeSubscriptionModule();
-            add_action('woocommerce_admin_order_data_after_billing_address',[$this, 'render_subscription_summary'], 10, 3);
             
             // My Account link for Login users to view their orders and saved cards
             add_action('woocommerce_before_checkout_form', function () {
@@ -1946,6 +1945,15 @@ function woocommerceUpaymentsInit() {
             echo '<span class="upay-subscription-badge"><strong>🔁 Subscription</strong></span>';
         }
     }
+
+    add_action(
+        'woocommerce_admin_order_data_after_billing_address',
+        function($order) {
+            $gateway = new WC_Upayments();
+            $gateway->render_subscription_summary($order);
+        },
+        10, 1
+    );
 }
 
 /**
@@ -2042,28 +2050,29 @@ add_action( 'woocommerce_blocks_loaded', function() {
 register_activation_hook(__FILE__, 'myPaymentPluginSetupCheckout');
 function myPaymentPluginSetupCheckout() {
     $checkout_page_id = wc_get_page_id('checkout');
-    
-    if ($checkout_page_id) {
-        $post = get_post($checkout_page_id);
-        // remove setting check of block checkout for now
-        // $use_blocks = false;
-        // $settings = get_option("woocommerce_upayments_settings");
-        // if (isset($settings['enable_block_checkout']) && $settings['enable_block_checkout'] === 'yes') {
-        //     $use_blocks = true;
-        // }
+    if (!$checkout_page_id) {
+        return;
+    }
 
-        if (!has_shortcode($post->post_content, 'woocommerce_checkout') && !has_block('woocommerce/checkout', $post->post_content)) {
-            wp_update_post(array(
-                'ID'           => $checkout_page_id,
-                'post_content' => '[woocommerce_checkout]',
-            ));
-        } else {
-            wp_update_post(array(
-                'ID'           => $checkout_page_id,
-                'post_content' => '<!-- wp:woocommerce/checkout /-->',
-            ));
-            
-        }
+    $post = get_post($checkout_page_id);
+    if (!$post) {
+        return;
+    }
+
+    $has_shortcode = has_shortcode($post->post_content, 'woocommerce_checkout');
+    $has_block     = has_block('woocommerce/checkout', $post->post_content);
+
+    $use_blocks = false;
+    $settings = get_option("woocommerce_upayments_settings");
+    if (isset($settings['enable_block_checkout']) && $settings['enable_block_checkout'] === 'yes') {
+        $use_blocks = true;
+    }
+
+    if (!$has_shortcode && !$has_block && !$use_blocks) {
+        wp_update_post([
+            'ID'           => $checkout_page_id,
+            'post_content' => '[woocommerce_checkout]', // default: classic
+        ]);
     }
 }
 
