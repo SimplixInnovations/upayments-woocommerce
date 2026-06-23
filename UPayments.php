@@ -2049,6 +2049,10 @@ add_action( 'woocommerce_blocks_loaded', function() {
 
 register_activation_hook(__FILE__, 'myPaymentPluginSetupCheckout');
 function myPaymentPluginSetupCheckout() {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        add_action( 'admin_notices', 'upaymentsMissingWcNotice' );
+        return;
+    }
     $checkout_page_id = wc_get_page_id('checkout');
     if (!$checkout_page_id) {
         return;
