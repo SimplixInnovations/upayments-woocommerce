@@ -355,8 +355,11 @@ class Scheduler
         return $gateways['upayments'] ?? null;
     }
 
-    public static function getNextBillingDate(DateTime $start, string $plan, int $interval): DateTime
+    public static function getNextBillingDate(?DateTime $start, string $plan, int $interval): ?DateTime
     {
+        if (!$start) {
+            return null;
+        }
         $date = clone $start;
 
         switch ($plan) {

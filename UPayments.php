@@ -1824,7 +1824,10 @@ function woocommerceUpaymentsInit() {
             $order_completed_date = $order->get_date_completed();
             
             $started_at = $order_paid_date ?: $order_completed_date ?: $order_date;
-            
+            if (!$started_at) {
+                return;
+            }
+
             // Dates
             $timezone = wp_timezone();
             
@@ -1832,6 +1835,9 @@ function woocommerceUpaymentsInit() {
             
             // Calculate next billing
             $next_billing_dt = Scheduler::getNextBillingDate($started_at, $plan, $interval);
+            if (!$next_billing_dt) {
+                return;
+            }
 
             $SubscriptionStatus = $order->get_meta('_upay_subscription_status');
             if($SubscriptionStatus === 'active') {
