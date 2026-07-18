@@ -1765,9 +1765,6 @@ function woocommerceUpaymentsInit() {
             require_once __DIR__ . '/includes/Subscription/Helpers/Utils.php';            
             Fields::init();
             Manager::init();
-            // commenting out because we are now using WP Cron for scheduling, and the Scheduler class is not needed to be initialized on every page load
-            // require_once __DIR__ . '/includes/Subscription/Cron/Scheduler.php';
-            // Scheduler::init();
         }
 
         /**
@@ -2257,6 +2254,9 @@ add_action('woocommerce_order_details_after_order_table', function ($order) {
     $last_billed = $order->get_meta('_upay_last_billed_at');
     $isAutoDeduction = $order->get_meta('UPayments_AutoDeduction') === 'yes' ? true : false;
     $started_at = $order_paid_date ?: $order_completed_date ?: $order_date;
+    if (!$started_at) {
+        return;
+    }
     
     // Dates
     $timezone = wp_timezone();
@@ -2265,6 +2265,9 @@ add_action('woocommerce_order_details_after_order_table', function ($order) {
         
     // Calculate next billing
     $next_billing_dt = Scheduler::getNextBillingDate($started_at, $plan, $interval);
+    if (!$next_billing_dt) {
+        return;
+    }
 
     // Not a subscription order → don’t show anything
     if (!$plan || !$interval) {
