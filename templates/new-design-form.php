@@ -10,6 +10,28 @@
 
 defined( 'ABSPATH' ) || exit;
 ?>
+<style>
+    .wc-toast {
+    position: fixed;
+    top: 30px;
+    right: 30px;
+    background: #F23232;
+    color: #fff;
+    padding: 12px 18px;
+    border-radius: 6px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(10px);
+    transition: all 0.3s ease;
+    z-index: 99999;
+}
+
+.wc-toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+</style>
+<div id="wc-toast" class="wc-toast"></div>
 <div class="form-row form-row-wide">
     <?php 
     if (isset($_REQUEST["cancelled"])){ ?>
@@ -21,20 +43,20 @@ defined( 'ABSPATH' ) || exit;
         </script>
     <?php
     } elseif (isset($_REQUEST["failed"])){ ?>
-    <script>
-        let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment error from UPayments", $gateway->domain); ?></div></div>';
-        jQuery(document).ready(function(){
-            jQuery('.woocommerce-notices-wrapper:first').html(message);
-        });
-    </script>
+        <script>
+            let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment error from UPayments", $gateway->domain); ?></div></div>';
+            jQuery(document).ready(function(){
+                jQuery('.woocommerce-notices-wrapper:first').html(message);
+            });
+        </script>
     <?php
     } elseif (isset($_REQUEST["suspected"])) { ?>
-    <script>
-        let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment failed for suspected fraud.", $gateway->domain); ?></div></div>';
-        jQuery(document).ready(function(){
-            jQuery('.woocommerce-notices-wrapper:first').html(message);
-        });
-    </script>
+        <script>
+            let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment failed for suspected fraud.", $gateway->domain); ?></div></div>';
+            jQuery(document).ready(function(){
+                jQuery('.woocommerce-notices-wrapper:first').html(message);
+            });
+        </script>
     <?php 
     } 
         $icons = null;
@@ -54,17 +76,20 @@ defined( 'ABSPATH' ) || exit;
             $icons = $payment_data['payment'];
             $whitelabled = $payment_data['whitelabled'];
         }
+        $isSubscriptionEnabled = $gateway->get_option('enable_subscriptions') === 'yes' ? true : false;
         if($whitelabled){
     ?>
         <div class="payment-buttons">
             <?php
             // Retrieve Saved Cards
             $loggedInUser = $gateway->get_logged_in_user_phone_number(); // Use $gateway
-            if($loggedInUser['success']  && $save_card_enabled) {
+            $user_id = get_current_user_id();
+            if($loggedInUser['success']  && $save_card_enabled && $user_id) {
             ?>
                 <input id="save_card" type="hidden" name="save_card" value="1"/>
                 <?php
-                $savedCards = $gateway->getSavedCards($loggedInUser['phone']); // Use $gateway
+                $savedCards = $gateway->getSavedCards($loggedInUser['phone'].$user_id); // Use $gateway
+                
                 if($savedCards && $savedCards['result'] == 'success')
                 {
                     $cardList = $savedCards['data'];
@@ -94,50 +119,47 @@ defined( 'ABSPATH' ) || exit;
             }
                 foreach ($icons as $key => $value) {
             ?>
-                    <button type="button" onclick="submitUpayButton('<?php echo esc_attr($key);?>')" class="upay-payment-method" id="upay-button-<?php echo esc_attr($key);?>">
-                        <span class="payment-method-icon">
-                            <?php
-                                if($key == 'apple-pay-knet') {
-                                    ?>
-                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                        <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('knet');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                    <?php
-                                } elseif($key == 'apple-pay') {
-                                    ?>
-                                        <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                        <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('cc');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                    <?php
-                                } else {
-                                    ?>
-                                        <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr($key);?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                    <?php
-                                }
-                            ?>
-                        </span>
-                        <span class="payment-method-label"><?php echo esc_attr($value);?></span>
-                        <span class="payment-method-price"><?php echo $total;?> <?php echo $currency;?></span>
-                        <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
-                    </button>
-            
-            <?php if($key == 'cc' && $save_card_enabled) { ?>
-                    <label class="switch-border">
-                        For faster and more secure checkout. Save your card details.
-                        <label class="switch">
+                <button type="button" onclick="submitUpayButton('<?php echo esc_attr($key);?>')" class="upay-payment-method" id="upay-button-<?php echo esc_attr($key);?>">
+                    <span class="payment-method-icon">
                         <?php
-                            if($loggedInUser['success']) {
+                            if($key == 'apple-pay-knet') {
                                 ?>
-                                <input type="checkbox" id="chkSaveCard" onclick="toggleSaveCard(true);" checked>
-                                <span class="slider round"></span>
+                                <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('knet');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                <?php
+                            } elseif($key == 'apple-pay') {
+                                ?>
+                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('cc');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
                                 <?php
                             } else {
                                 ?>
-                                <input type="checkbox" id="chkSaveCard" onclick="toggleSaveCard(false);">
-                                <span class="slider round"></span>
+                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr($key);?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
                                 <?php
                             }
                         ?>
-                        </label>
+                    </span>
+                    <span class="payment-method-label"><?php echo esc_attr($value);?></span>
+                    <span class="payment-method-price"><?php echo $total;?> <?php echo $currency;?></span>
+                    <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
+                </button>
+            
+            <?php if($key == 'cc' && $save_card_enabled) { ?>
+                <label class="switch-border">For faster and more secure checkout. Save your card details.
+                    <label class="switch">
+                        <?php
+                            $hasPhone = $loggedInUser['success'] && !empty($loggedInUser['phone']);
+                            $checked  = ($hasPhone || ($isSubscriptionEnabled && $hasPhone)) ? true : false;
+                        ?>
+                        <input
+                            type="checkbox"
+                            id="chkSaveCard"
+                            onclick="toggleSaveCard(<?php echo $checked ? 'true' : 'false'; ?>);"
+                            <?php echo $checked ? 'checked' : ''; ?>
+                        >
+                        <span class="slider round"></span>
                     </label>
+                </label>
             <?php
                     }
                 }

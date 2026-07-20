@@ -133,14 +133,17 @@ Supported currency codes are: KWD, SAR, USD, BHD, EUR, OMR, QAR, AED
 -Save card(Tokenization) feature
 -Multi-merchant configuration
 
-= 3.0.1 =
-Retrieve Card Updates
+= 3.0.1 = Retrieve Card Updates
 
-= 3.0.2 =
-Multimerchant configuration updates
+= 3.0.2 = Multimerchant configuration updates
 
-= 3.0.3 =
-Multimerchant Admin configuration updates
+= 3.0.3 = Multimerchant Admin configuration updates
 
-= 3.0.4 =
-Booking Product price issue fixed
+= 3.0.4 = Booking Product price issue fixed
+
+= 3.1.0 =
+-Auto Deduction
+-Block Checkout Support
+-Bookable Products
+
+= 3.1.1 = CRON scheduler issue fixed
