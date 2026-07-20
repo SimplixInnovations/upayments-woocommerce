@@ -145,3 +145,5 @@ Supported currency codes are: KWD, SAR, USD, BHD, EUR, OMR, QAR, AED
 -Auto Deduction
 -Block Checkout Support
 -Bookable Products
+
+= 3.1.1 = CRON scheduler issue fixed
