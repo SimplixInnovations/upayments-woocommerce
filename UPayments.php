@@ -1824,6 +1824,9 @@ function woocommerceUpaymentsInit() {
             if (!$started_at) {
                 return;
             }
+            if (is_string($started_at)) {
+                $started_at = new DateTime($started_at);
+            }
 
             // Dates
             $timezone = wp_timezone();
@@ -1952,8 +1955,14 @@ function woocommerceUpaymentsInit() {
     add_action(
         'woocommerce_admin_order_data_after_billing_address',
         function($order) {
-            $gateway = new WC_Upayments();
-            $gateway->render_subscription_summary($order);
+            foreach ($order->get_items('line_item') as $item)
+            {
+                $product = $item->get_product();
+                if($product->get_type() === 'custom_type'){
+                    $gateway = new WC_Upayments();
+                    $gateway->render_subscription_summary($order);
+                }
+            }
         },
         10, 1
     );
@@ -2256,6 +2265,9 @@ add_action('woocommerce_order_details_after_order_table', function ($order) {
     $started_at = $order_paid_date ?: $order_completed_date ?: $order_date;
     if (!$started_at) {
         return;
+    }
+    if (is_string($started_at)) {
+        $started_at = new DateTime($started_at);
     }
     
     // Dates

@@ -4,6 +4,8 @@ namespace UPayments\Subscription\Cron;
 
 use DateTime;
 use WC_Order;
+use WC_DateTime;
+use DateTimeInterface;
 
 defined('ABSPATH') || exit;
 
@@ -88,6 +90,11 @@ class Scheduler
                     if($subscriptionPlan === 'daily'){
                         $subscriptionInterval = 1;
                     }
+                    
+                    // Prevent invalid configs
+                    if ((!$subscriptionPlan || $subscriptionInterval < 1) || $subscriptionPlan === 'one_time') {
+                        break;
+                    }                    
 
                     $order_date = $order->get_date_created();
                     $order_paid_date = $order->get_date_paid();
@@ -98,16 +105,18 @@ class Scheduler
                         ?: $order_paid_date
                         ?: $order_completed_date 
                         ?: $order_date;
-                        
-                        
 
                     if (!$start_date) {
                         break;
                     }
 
-                    // Prevent invalid configs
-                    if ((!$subscriptionPlan || $subscriptionInterval < 1) || $subscriptionPlan === 'one_time') {
-                        break;
+                    // --- FIX FOR TYPE CHECKER & STRINGS ---
+                    if (is_string($start_date)) {
+                        $start_date = new DateTime($start_date);
+                    } 
+                    // Handles both WC_DateTime and standard DateTime safely inside namespaces
+                    elseif ($start_date instanceof DateTimeInterface) {
+                        $start_date = new DateTime($start_date->format('Y-m-d H:i:s'), $start_date->getTimezone());
                     }
                     
                     // Calculate next billing date
@@ -116,6 +125,9 @@ class Scheduler
                         $subscriptionPlan,
                         $subscriptionInterval
                     );
+                    if (!$next_billing_date) {
+                        break;
+                    }
                                         
                     if(!$isAutoDeductionOrder && $subscriptionStatus !== 'cancelled' && $now >= $next_billing_date) {
                         $credit_card_token = $order->get_meta('_upay_credit_card_token');
@@ -360,7 +372,16 @@ class Scheduler
         if (!$start) {
             return null;
         }
-        $date = clone $start;
+        // If a string or a WC_DateTime object slips through, convert it safely inside the method
+        if (is_string($start)) {
+            $date = new DateTime($start);
+        } elseif ($start instanceof DateTimeInterface) {
+            $date = clone $start;
+        } else {
+            // Fallback for unexpected types
+            return null;
+        }
+        // $date = clone $start; // This line is redundant and can be removed
 
         switch ($plan) {
             case 'daily':
