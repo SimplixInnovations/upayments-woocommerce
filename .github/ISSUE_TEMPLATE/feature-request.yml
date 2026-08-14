@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a compatibility, reliability, or maintainability improvement.
+title: "[Feature]: "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or merchant need
+      description: Describe the real problem this request solves.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior without requiring a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Note any expected impact on Classic/Block Checkout, HPOS, WPML, themes, saved cards, subscriptions, or multi-merchant flows.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

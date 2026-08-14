@@ -1,0 +1,48 @@
+name: Compatibility report
+description: Report a WordPress, WooCommerce, PHP, HPOS, Blocks, WPML, or theme compatibility issue.
+title: "[Compatibility]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Compatibility claims in this project are evidence-based. Please provide the exact environment and a reproducible result.
+  - type: input
+    id: component
+    attributes:
+      label: Compatibility area
+      placeholder: "PHP 8.5, WPML, HPOS, Checkout Blocks, theme, etc."
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Exact versions
+      placeholder: "WordPress / WooCommerce / PHP / relevant plugins"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include checkout mode, HPOS state, multilingual stack, theme, and relevant payment feature.
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: Test procedure and result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Logs, stack traces, screenshots, or network observations with sensitive values removed.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive-data confirmation
+      options:
+        - label: I have removed credentials, tokens, card data, customer PII, and production secrets.
+          required: true
