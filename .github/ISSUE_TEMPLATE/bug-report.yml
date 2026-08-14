@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a reproducible defect in the Simplix-maintained WooCommerce integration.
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a reproducible issue. Do not include API keys, bearer tokens, card data, customer PII, or other production secrets.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version or commit
+      placeholder: "3.1.1 or commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: wordpress
+    attributes:
+      label: WordPress version
+    validations:
+      required: true
+  - type: input
+    id: woocommerce
+    attributes:
+      label: WooCommerce version
+    validations:
+      required: true
+  - type: input
+    id: php
+    attributes:
+      label: PHP version
+    validations:
+      required: true
+  - type: dropdown
+    id: checkout
+    attributes:
+      label: Checkout mode
+      options:
+        - Classic Checkout
+        - Cart/Checkout Blocks
+        - Not checkout-related
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: hpos
+    attributes:
+      label: HPOS
+      options:
+        - Enabled
+        - Disabled
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: wpml
+    attributes:
+      label: WPML / multilingual setup
+      placeholder: "Not installed, or list relevant plugin versions"
+  - type: input
+    id: theme
+    attributes:
+      label: Theme
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reliable sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or stack trace
+      description: Remove credentials, tokens, customer data, and sensitive payload content.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive-data confirmation
+      options:
+        - label: I have removed API keys, bearer tokens, card data, customer PII, and production secrets.
+          required: true

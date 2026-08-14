@@ -1,0 +1,21 @@
+# Operating system / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.fleet/
+
+# Runtime and diagnostic output
+*.log
+debug.log
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Test and analysis output
+.phpunit.result.cache
+.phpunit.cache/
+coverage/
+.cache/

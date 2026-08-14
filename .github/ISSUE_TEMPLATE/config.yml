@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Simplix Innovations professional WooCommerce support
+    url: https://simplixi.com
+    about: Commercial integration, production debugging, and long-term WooCommerce maintenance.
+  - name: Official UPayments developer documentation
+    url: https://developers.upayments.com/reference/woocommerce
+    about: UPayments platform, API, merchant, and official integration documentation.
