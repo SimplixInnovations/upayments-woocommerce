@@ -9,7 +9,7 @@
  * Requires at least: 5.6
  * Requires PHP: 7.2+
  * License: MIT
- * Text Domain: https://upayments.com/
+ * Text Domain: upayments
  * Domain Path: /languages
  */
 
@@ -45,7 +45,7 @@ function woocommerceUpaymentsInit() {
         return;
     }
     class WC_Upayments extends WC_Payment_Gateway {
-        public $domain;
+        public $domain = 'upayments';
         public $debug;
         public $apiKey;
         public $testMode;
@@ -1142,11 +1142,11 @@ function woocommerceUpaymentsInit() {
             // Check setting for design toggle
             $use_new_design = ($this->get_option('use_new_design') == 'yes') ? true : false;
             
-            wc_get_template( 
-                $use_new_design ? 'new-design-form.php' : 'old-design-form.php', 
-                $template_args, 
-                $this->domain, 
-                untrailingslashit( plugin_dir_path( __FILE__ ) ) . '/templates/' 
+            wc_get_template(
+                $use_new_design ? 'new-design-form.php' : 'old-design-form.php',
+                $template_args,
+                '', // Preserve WooCommerce's default theme template override path.
+                untrailingslashit( plugin_dir_path( __FILE__ ) ) . '/templates/'
             );
         }
         

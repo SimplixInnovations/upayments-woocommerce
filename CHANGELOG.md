@@ -13,9 +13,13 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Add optimized Simplix Innovations repository branding assets.
 - Remove the committed runtime `debug.log` and ignore runtime log output.
 
+### Fixed
+
+- Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
+- Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
+
 ### Planned compatibility work
 
-- Fix the null gettext domain that can cause WPML String Translation fatal errors.
 - Scope customer/account CSS to plugin-owned components.
 - Audit PHP 8.x compatibility.
 - Validate Checkout Blocks and HPOS behavior.
