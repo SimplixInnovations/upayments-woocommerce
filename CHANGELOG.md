@@ -20,6 +20,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.
 - Harden subscription account actions with consistent nonce verification, action allowlisting, and sanitized request handling.
 - Restore TLS certificate verification for authenticated UPayments API requests.
+- Prevent UPayments diagnostic logging from exposing merchant credentials, customer/payment payloads, and raw callback data, and route opt-in debug output through WooCommerce logging.
 
 ### Planned compatibility work
 
