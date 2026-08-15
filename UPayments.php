@@ -533,6 +533,119 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Execute a hardened authenticated UPayments HTTP request.
+         *
+         * PHASE 8S: Low-level transport helper for the four legacy authenticated
+         * UPayments API calls (charge, create-customer-unique-token,
+         * check-payment-button-status, retrieve-customer-cards). It is NOT used
+         * by verify_payment_status() (PR #7 trust anchor) or the Scheduler
+         * auto-deduct dispatcher (PR #8), each of which has its own separately
+         * reviewed transport policy.
+         *
+         * Transport policy:
+         *   - explicit TLS verification (defense in depth; even where libcurl
+         *     defaults are already secure, we set both flags explicitly);
+         *   - redirects disabled (no redirect requirement is established;
+         *     preserve endpoint identity; avoid method/body ambiguity on
+         *     cross-host hops);
+         *   - finite connect (5s) and total (15s) timeouts;
+         *   - Bearer Authorization applied for the entire call.
+         *
+         * SECURITY: This helper does NOT log raw request bodies, raw response
+         * bodies, raw curl_error text, the Authorization header, or any token.
+         * Callers classify the structured outcome and remain responsible for
+         * redacting provider messages before showing them to customers.
+         *
+         * PHP 8.5 deprecates curl_close(). On PHP 8.0+ the handle is a
+         * \CurlHandle object that is released when the last reference is
+         * dropped; we therefore skip curl_close() on PHP 8.0+ and only fall
+         * back to it on PHP < 8.0 (the plugin's minimum supported version).
+         *
+         * @param string      $route   API route relative to the API base.
+         * @param string      $method  Uppercase HTTP method: 'GET' or 'POST'.
+         * @param string|null $body    JSON-encoded request body, or null for GET.
+         * @return array{transport_ok: bool, body: string|null, http_status: int, curl_errno: int}
+         */
+        private function execute_upayments_request($route, $method, $body = null)
+        {
+            $outcome = array(
+                'transport_ok' => false,
+                'body'         => null,
+                'http_status'  => 0,
+                'curl_errno'   => 0,
+            );
+
+            $method = is_string($method) ? strtoupper(trim($method)) : 'GET';
+            if ($method !== 'GET' && $method !== 'POST') {
+                return $outcome;
+            }
+
+            $ch = curl_init();
+            if ($ch === false) {
+                return $outcome;
+            }
+
+            $options = array(
+                CURLOPT_URL            => $this->getAPIUrl($route),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT        => 15,
+                CURLOPT_USERAGENT      => $this->getUserAgent(),
+                CURLOPT_ENCODING       => '',
+                CURLOPT_HTTPHEADER     => array(
+                    'Accept: application/json',
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $this->apiKey,
+                ),
+            );
+
+            if ($method === 'POST') {
+                $options[CURLOPT_POST]       = true;
+                $options[CURLOPT_POSTFIELDS] = (string) $body;
+            } else {
+                $options[CURLOPT_HTTPGET] = true;
+            }
+
+            $configured = true;
+            foreach ($options as $option => $value) {
+                if (!@curl_setopt($ch, $option, $value)) {
+                    $configured = false;
+                    break;
+                }
+            }
+
+            if (!$configured) {
+                if (PHP_VERSION_ID < 80000) {
+                    @curl_close($ch);
+                }
+                $ch = null;
+                return $outcome;
+            }
+
+            $response = curl_exec($ch);
+            $errno    = curl_errno($ch);
+            $status   = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            if (PHP_VERSION_ID < 80000) {
+                @curl_close($ch);
+            }
+            $ch = null;
+
+            $outcome['http_status']  = $status;
+            $outcome['curl_errno']   = $errno;
+            $outcome['body']         = ($response === false) ? null : (string) $response;
+            $outcome['transport_ok'] = ($response !== false)
+                && ($errno === 0)
+                && ($status >= 200)
+                && ($status < 300);
+
+            return $outcome;
+        }
+
+        /**
          * Verify a UPayments payment status through the Bearer-authenticated
          * Get Payment Status API and bind the response to the given WooCommerce order.
          *
@@ -1333,35 +1446,31 @@ function woocommerceUpaymentsInit() {
 
             $this->log(__("Create payment request prepared.", $this->domain));
 
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $this->getAPIUrl('charge'));
-            curl_setopt($ch, CURLOPT_POST, 1);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-            curl_setopt($ch, CURLOPT_USERAGENT, $this->getUserAgent());
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer " . $this->apiKey, "Accept: application/json", "Content-Type: application/json", ]);
+            $transport = $this->execute_upayments_request('charge', 'POST', $params);
 
-            $response = curl_exec($ch);
+            if (!$transport['transport_ok']) {
+                $this->log('UPayments charge request failed at transport layer.', 'warning');
+                WC()->session->set("refresh_totals", true);
+                wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+            }
+
+            $response = $transport['body'];
             $this->log('Create payment HTTP response received.');
-            curl_close($ch);
 
             try
             {
                 if (!$response){
 
-                    $this->log(__("Create Payment Response: curl error", $this->domain) . " => " . curl_error($ch));
                     WC()->session->set("refresh_totals", true);
-                    wc_add_notice(__("Payment request failed. " . curl_error($ch) , $this->domain) , "error");
+                    wc_add_notice(__("Payment request failed. Empty Response Received.", $this->domain) , "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
 
                 }else{
                     $result = json_decode($response, true);
                     $this->log(__("Create payment response received.", $this->domain));
                     if (!$result){
-                        
+
                         WC()->session->set("refresh_totals", true);
                         wc_add_notice(__("Payment request failed. Empty Response Received.", $this->domain) , "error");
                         return ["result" => "failure", "redirect" => wc_get_checkout_url()];
@@ -1857,32 +1966,18 @@ function woocommerceUpaymentsInit() {
             {
                 $token = $phone;
                 $params = json_encode(["customerUniqueToken" => $token, ]);
-                $curl = curl_init();
-                curl_setopt_array($curl, 
-                [
-                    CURLOPT_URL => $this->getAPIUrl('create-customer-unique-token') , 
-                    CURLOPT_RETURNTRANSFER => true, 
-                    CURLOPT_USERAGENT => $this->getUserAgent(), 
-                    CURLOPT_ENCODING => "", 
-                    CURLOPT_MAXREDIRS => 10, 
-                    CURLOPT_TIMEOUT => 0, 
-                    CURLOPT_FOLLOWLOCATION => true, 
-                    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1, 
-                    CURLOPT_CUSTOMREQUEST => "POST", 
-                    CURLOPT_POSTFIELDS => $params, 
-                    CURLOPT_HTTPHEADER => ["Accept: application/json", "Content-Type: application/json", "Authorization: Bearer " . $this->apiKey ], 
-                ]);
+                $transport = $this->execute_upayments_request('create-customer-unique-token', 'POST', $params);
 
-                $response = curl_exec($curl);
-
-                if ($response){
-                    $result = json_decode($response, true);
-                    if ($result["errors"]){
-                        $cards = ["error" => 1, "msg" => $result["message"]];
-                    }elseif ($result["status"]){
-                        $token = $token;
-                    }else{
-                        $cards = ["error" => 1, "msg" => $result["message"]];
+                if ($transport['transport_ok']) {
+                    $result = json_decode((string) $transport['body'], true);
+                    if (is_array($result)) {
+                        if (!empty($result["errors"])) {
+                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
+                        } elseif (!empty($result["status"])) {
+                            $token = $token;
+                        } else {
+                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
+                        }
                     }
                 }
             }
@@ -1894,43 +1989,41 @@ function woocommerceUpaymentsInit() {
             $api_key =  $this->apiKey;
             $payment_methods = null;
             if (!empty($api_key)){
-                $curl = curl_init();
+                $transport = $this->execute_upayments_request('check-payment-button-status', 'GET');
 
-                curl_setopt_array($curl, array(
-                CURLOPT_URL => $this->getAPIUrl('check-payment-button-status'),
-                CURLOPT_SSL_VERIFYPEER => true,
-                CURLOPT_SSL_VERIFYHOST => 2,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_ENCODING => '',
-                CURLOPT_MAXREDIRS => 10,
-                CURLOPT_TIMEOUT => 0,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_CUSTOMREQUEST => 'GET',
-                CURLOPT_USERAGENT => $this->getUserAgent(),
-                CURLOPT_HTTPHEADER => array(
-                    'Accept: application/json',
-                    'Content-Type: application/json',
-                    'Authorization: Bearer ' . $this->apiKey,
-                ),
-                ));
-                $response = curl_exec($curl);
-                if ($response){
-                    $result = json_decode($response, true);
-                    if($result){
-                        if ($result && array_key_exists("status",$result) && $result["status"]){
-                            $payment_methods = $result['data'];
-                            $payment_methods["result"] = 'success';
-                        }else{
-                            wc_clear_notices();
-                            wc_add_notice(__("UPayments : " . $result["message"] , $this->domain) , $notice_type = "error");
-                            return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
-                        }
-                    } else {
+                if (!$transport['transport_ok']) {
+                    wc_clear_notices();
+                    wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url(), ];
+                }
+
+                $result = json_decode((string) $transport['body'], true);
+                if (!is_array($result)) {
+                    wc_clear_notices();
+                    wc_add_notice(__("Error from UPayments : Please Contact support to whitelist your IP" , $this->domain) , $notice_type = "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
+                }
+
+                if (array_key_exists("status", $result) && !empty($result["status"])) {
+                    // Status truthy: require data to be an array before reading.
+                    if (!isset($result['data']) || !is_array($result['data'])) {
                         wc_clear_notices();
-                        wc_add_notice(__("Error from UPayments : Please Contact support to whitelist your IP" , $this->domain) , $notice_type = "error");
-                        return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
+                        wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                        return ["result" => "failure", "redirect" => wc_get_checkout_url(), ];
                     }
+                    $payment_methods = $result['data'];
+                    $payment_methods["result"] = 'success';
+                } else {
+                    // Status not present or falsy: obtain message safely.
+                    $message = isset($result['message']) && is_scalar($result['message'])
+                        ? trim((string) $result['message'])
+                        : '';
+                    if ($message === '') {
+                        $message = __('Payment methods could not be loaded. Please try again.', $this->domain);
+                    }
+                    wc_clear_notices();
+                    wc_add_notice($message, "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url(), ];
                 }
             }
             return $payment_methods;
@@ -1943,30 +2036,24 @@ function woocommerceUpaymentsInit() {
             if (!empty($api_key))
             {
                 $params = json_encode(["customerUniqueToken" => $phone]);
-                $curl = curl_init();
-                curl_setopt_array($curl, [
-                    CURLOPT_URL => $this->getAPIUrl('retrieve-customer-cards'),
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_SSL_VERIFYPEER => true,
-                    CURLOPT_SSL_VERIFYHOST => 2,
-                    CURLOPT_USERAGENT => $this->getUserAgent(),
-                    CURLOPT_ENCODING => "",
-                    CURLOPT_MAXREDIRS => 10,
-                    CURLOPT_TIMEOUT => 0,
-                    CURLOPT_FOLLOWLOCATION => true,
-                    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                    CURLOPT_CUSTOMREQUEST => "POST",
-                    CURLOPT_POSTFIELDS => $params,
-                    CURLOPT_HTTPHEADER => ["Accept: application/json", "Content-Type: application/json", "Authorization: Bearer " . $this->apiKey], 
-                ]);
+                $transport = $this->execute_upayments_request('retrieve-customer-cards', 'POST', $params);
 
-                $response = curl_exec($curl);
-                
-                if ($response){
-                    $result = json_decode($response, true);
-                    if($result && array_key_exists("status",$result) && $result["status"]){
-                        $savedCards["data"] = $result['data']['customerCards'];
-                        $savedCards["result"] = 'success';
+                if ($transport['transport_ok']) {
+                    $result = json_decode((string) $transport['body'], true);
+                    if (is_array($result)
+                        && array_key_exists("status", $result)
+                        && !empty($result["status"])
+                        && isset($result['data'])
+                        && is_array($result['data'])
+                        && isset($result['data']['customerCards'])
+                        && is_array($result['data']['customerCards'])) {
+                        // An empty customerCards array is a valid success payload:
+                        // the customer has no saved cards. PR #8 Scheduler treats this
+                        // as zero POST / no saved card.
+                        $savedCards = array(
+                            'data'   => $result['data']['customerCards'],
+                            'result' => 'success',
+                        );
                     }
                 }
             }
@@ -1976,6 +2063,14 @@ function woocommerceUpaymentsInit() {
         public function getPaymentIcons()
         {
             $data = $this->getUpayPaymentMethods();
+
+            // Fail safely if upstream did not return a usable success payload.
+            if (!is_array($data)
+                || !isset($data['result'])
+                || $data['result'] !== 'success') {
+                return;
+            }
+
             // Admin toggle (feature on/off)
             $isSubscriptionFeatureEnabled = ($this->autoDeduction === 'yes');
 
@@ -1986,44 +2081,46 @@ function woocommerceUpaymentsInit() {
             // Subscription context = feature enabled AND subscription product in cart
             $isSubscriptionContext = $isSubscriptionFeatureEnabled && $hasSubscriptionProduct && !$hasNormalProduct;
 
-            if ($data['result'] !== 'failure') {
-                $payment_methods = $data['payButtons'];
-                $whitelabled     = $data['isWhiteLabel'];
-                $methods         = [];
+            $payment_methods = isset($data['payButtons']) && is_array($data['payButtons'])
+                ? $data['payButtons']
+                : array();
 
-                // If ONLY normal products in cart → allow all methods
-                if (!$isSubscriptionContext) {
-                    if ($payment_methods['knet'] == 1) {
-                        $methods['payment']['knet'] = __('KNET', $this->domain);
-                    }
+            $whitelabled = !empty($data['isWhiteLabel']);
+            $methods     = [];
 
-                    if (!empty($payment_methods['apple_pay_knet']) && $payment_methods['apple_pay_knet'] == 1) {
-                        $methods['payment']['apple-pay-knet'] = __('Apple Pay KNET', $this->domain);
-                    }
-
-                    if ($payment_methods['credit_card'] == 1) {
-                        $methods['payment']['cc'] = __('Credit Card', $this->domain);
-                    }
-
-                    if ($payment_methods['apple_pay'] == 1) {
-                        $methods['payment']['apple-pay'] = __('Apple Pay Credit Card', $this->domain);
-                    }
-
-                    if ($payment_methods['samsung_pay'] == 1) {
-                        $methods['payment']['samsung-pay'] = __('Samsung Pay', $this->domain);
-                    }
-
-                    if ($payment_methods['google_pay'] == 1) {
-                        $methods['payment']['google-pay'] = __('Google Pay', $this->domain);
-                    }
-                }else{ // If subscription product in cart → ONLY CC allowed (per API requirement)
-                    if ($payment_methods['credit_card'] == 1) {
-                        $methods['payment']['cc'] = __('Credit Card', $this->domain);
-                    }
+            // If ONLY normal products in cart → allow all methods
+            if (!$isSubscriptionContext) {
+                if (!empty($payment_methods['knet']) && (int) $payment_methods['knet'] === 1) {
+                    $methods['payment']['knet'] = __('KNET', $this->domain);
                 }
-                $methods['whitelabled'] = $whitelabled;
-                return $methods;
-            }            
+
+                if (!empty($payment_methods['apple_pay_knet']) && (int) $payment_methods['apple_pay_knet'] === 1) {
+                    $methods['payment']['apple-pay-knet'] = __('Apple Pay KNET', $this->domain);
+                }
+
+                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                    $methods['payment']['cc'] = __('Credit Card', $this->domain);
+                }
+
+                if (!empty($payment_methods['apple_pay']) && (int) $payment_methods['apple_pay'] === 1) {
+                    $methods['payment']['apple-pay'] = __('Apple Pay Credit Card', $this->domain);
+                }
+
+                if (!empty($payment_methods['samsung_pay']) && (int) $payment_methods['samsung_pay'] === 1) {
+                    $methods['payment']['samsung-pay'] = __('Samsung Pay', $this->domain);
+                }
+
+                if (!empty($payment_methods['google_pay']) && (int) $payment_methods['google_pay'] === 1) {
+                    $methods['payment']['google-pay'] = __('Google Pay', $this->domain);
+                }
+            } else { // If subscription product in cart → ONLY CC allowed (per API requirement)
+                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                    $methods['payment']['cc'] = __('Credit Card', $this->domain);
+                }
+            }
+
+            $methods['whitelabled'] = $whitelabled;
+            return $methods;
         }
 
         public function log($content, $level = 'debug')
