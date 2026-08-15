@@ -81,7 +81,7 @@ class Scheduler
                     $customerUnqToken = $order->get_meta('_upay_customer_unique_token');
                     
                     if($customerUnqToken == null || empty($customerUnqToken)) {
-                        $logger->info('Customer Unique token not found for : ', $context + ['Order ID' => $order->get_id(), 'customer' => $order->get_customer_id()]);
+                        $logger->info('Customer Unique token not found for : ', $context + ['Order ID' => $order->get_id()]);
                         break;
                     }
                     
@@ -139,7 +139,7 @@ class Scheduler
                                     $credit_card_token = $cards[0]['token'] ?? null;
                                 }
                             } else {
-                                $logger->info('Credit card token not found for : ', $context + ['Order ID' => $order->get_id(), 'customer' => $order->get_customer_id()]);
+                                $logger->info('Credit card token not found for : ', $context + ['Order ID' => $order->get_id()]);
                                 break;
                             }
                         }
@@ -179,11 +179,7 @@ class Scheduler
                             ],
                         ]);
     
-                        $gateway->log(__("Create Payment Request:", $gateway->domain));
-                        $gateway->log($params);
-    
-                        $gateway->log(__("API key:", $gateway->domain));
-                        $gateway->log($gateway->apiKey);
+                        $gateway->log(__("Auto-deduction request prepared.", $gateway->domain));
 
                         $order->update_meta_data('_upay_last_attempt_at', current_time('mysql'));
                         $order->save();
@@ -199,8 +195,8 @@ class Scheduler
                         curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer " . $gateway->apiKey, "Accept: application/json", "Content-Type: application/json", ]);
     
                         $response = curl_exec($ch);
-                        $logger->info('Response recieved: ', $context + ['response' => $response]);
-                        curl_close($ch);           
+                        $logger->info('Auto-deduction HTTP response received.', $context);
+                        curl_close($ch);
                         
                         try
                         {
@@ -213,7 +209,7 @@ class Scheduler
                                 break;    
                             }else{
                                 $result = json_decode($response, true);
-                                $logger->info('Auto deduction Response:: ', $context + $result);
+                                $logger->info('Auto-deduction response processed.', $context);
                                 
                                 //success result handling
                                 if (isset($result["status"]) && $result["status"]){
@@ -302,13 +298,13 @@ class Scheduler
                                     $order->update_meta_data('_upay_last_failed_reason', 'Gateway failure'); // optional
                                     $order->save();  
                                 }elseif (isset($result["status"]) && !$result["status"]){ // result status is false
-                                    $logger->info('Payment request failed. Status is false. ', $context + ['result' => $result]);
+                                    $logger->info('Auto-deduction gateway returned an unsuccessful status.', $context);
                                     $retry_count = (int) $order->get_meta('_upay_retry_count');
                                     $order->update_meta_data('_upay_retry_count', $retry_count + 1);
                                     $order->update_meta_data('_upay_last_failed_reason', 'Gateway failure'); // optional
                                     $order->save();  
                                 }elseif (isset($result["message"]) && !isset($result["status"])){ // result message with no status
-                                    $logger->info('Payment request failed. No status in response. ', $context + ['result' => $result]);
+                                    $logger->info('Auto-deduction response missing status field.', $context);
                                     $retry_count = (int) $order->get_meta('_upay_retry_count');
                                     $order->update_meta_data('_upay_retry_count', $retry_count + 1);
                                     $order->update_meta_data('_upay_last_failed_reason', 'Gateway failure'); // optional

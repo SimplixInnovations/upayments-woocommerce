@@ -247,11 +247,11 @@ function woocommerceUpaymentsInit() {
                     "desc_tip" => true
                 ),
                 "debug" => array(
-                    "title" => __("Debug", $this->domain),
+                    "title" => __("Debug logging", $this->domain),
                     "type" => "checkbox",
-                    "label" => __(" ", $this->domain),
+                    "label" => __("Log non-sensitive UPayments diagnostic events to WooCommerce logs.", $this->domain),
                     "default" => "no"
-                ), 
+                ),
                 "test_mode" => array(
                     "title" => __("Test Mode", $this->domain),
                     "type" => "checkbox",
@@ -629,13 +629,13 @@ function woocommerceUpaymentsInit() {
 
                     if ($status == "CANCELED" || $status == "CANCELLED"){
                         $status_message = __("Received canceled response from UPayments.", $this->domain) . ($PaymentID ? " PaymentID: " . $PaymentID : "");
-                        $this->log("Ret Order Cancel Status: " . $status_message);
+                        $this->log("Return callback reported cancelled status.");
                         $order->update_status("cancelled", $status_message);
                         wp_redirect(add_query_arg("cancelled", "true", wc_get_checkout_url()));
                         exit();
                     }elseif ($status == "ERROR" || $status == "NOT CAPTURED" || $status == null || $status == "FAILURE"){
                         $status_message = __("Received error response from UPayments.", $this->domain) . ($PaymentID ? " PaymentID: " . $PaymentID : "");
-                        $this->log("Ret Order Error Status: " . $status_message);
+                        $this->log("Return callback reported error status.");
                         $order->update_status("failed", $status_message, $this->domain);
                         wp_redirect(add_query_arg("failed", "true", wc_get_checkout_url()));
                         exit();
@@ -663,8 +663,7 @@ function woocommerceUpaymentsInit() {
         public function web_hook_handler()
         {
             global $woocommerce;
-            $this->log("Webhook Triggers");
-            $this->log($_REQUEST);
+            $this->log("Webhook request received.");
 
             if (!isset($_REQUEST["wc_order_id"])){
                 $status_message = __("No shop reference received from UPayments.", $this->domain);
@@ -991,8 +990,7 @@ function woocommerceUpaymentsInit() {
                         "ibanNumber" => $this->ibanNumber
                     ];
                 }
-                $this->log("extraMerchantData");
-                $this->log($extraMerchantData);
+                $this->log("Multimerchant payment data prepared.");
             }
 
             $params = json_encode([
@@ -1040,11 +1038,7 @@ function woocommerceUpaymentsInit() {
                 "extraMerchantData" => $extraMerchantData,
             ]);
 
-            $this->log(__("Create Payment Request:", $this->domain));
-            $this->log($params);
-
-            $this->log(__("API key:", $this->domain));
-            $this->log($this->apiKey);
+            $this->log(__("Create payment request prepared.", $this->domain));
 
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $this->getApiUrl('charge'));
@@ -1058,7 +1052,7 @@ function woocommerceUpaymentsInit() {
             curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: Bearer " . $this->apiKey, "Accept: application/json", "Content-Type: application/json", ]);
 
             $response = curl_exec($ch);
-            $this->log('Response: ', $response);
+            $this->log('Create payment HTTP response received.');
             curl_close($ch);
 
             try
@@ -1072,8 +1066,7 @@ function woocommerceUpaymentsInit() {
 
                 }else{
                     $result = json_decode($response, true);
-                    $this->log(__("Create Payment Response:", $this->domain));
-                    $this->log($result);
+                    $this->log(__("Create payment response received.", $this->domain));
                     if (!$result){
                         
                         WC()->session->set("refresh_totals", true);
@@ -1114,7 +1107,6 @@ function woocommerceUpaymentsInit() {
                             $order->delete_meta_data("UPayments_order_id");
                             $order->add_meta_data("UPayments_order_id", $unique_order_id);
                             $order->save_meta_data();
-                            $this->log(__($result["data"]["transactionData"]["redirect_url"], $this->domain));
 
                             return ["result" => "success", "redirect" => $result["data"]["transactionData"]["redirect_url"], ];
                         }
@@ -1352,7 +1344,7 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if ( $match_found ) {
-                    $this->log( "Routing match found: {$condition_type} = {$condition_value}. Using IBAN: {$rule['iban_number']}.", 'info' );
+                    $this->log( "Multimerchant routing rule matched.", 'info' );
                     return [
                         'merchant_id' => $rule['merchant_id'],
                         'api_key'     => $rule['api_key'],
@@ -1741,18 +1733,33 @@ function woocommerceUpaymentsInit() {
             }            
         }
 
-        public function log($content)
+        public function log($content, $level = 'debug')
         {
-            $debug = $this->debug;
-            if ($debug)
-            {
-                $file = UP_PLUGIN_PATH . "debug.log";
-                $fp = fopen($file, "a+");
-                fwrite($fp, "\n");
-                fwrite($fp, date("Y-m-d H:i:s") . ": ");
-                fwrite($fp, print_r($content, true));
-                fclose($fp);
+            // Diagnostic logging is explicitly opt-in.
+            // WooCommerce checkbox values resolve to the string 'yes' or 'no';
+            // the string 'no' is truthy in PHP, so a loose check enables logging
+            // even when the merchant intends Debug = disabled.
+            if ($this->debug !== 'yes') {
+                return;
             }
+
+            if (!function_exists('wc_get_logger')) {
+                return;
+            }
+
+            $allowed_levels = array('debug', 'info', 'notice', 'warning', 'error');
+            if (!in_array($level, $allowed_levels, true)) {
+                $level = 'debug';
+            }
+
+            if (is_array($content) || is_object($content)) {
+                $content = '[complex diagnostic data omitted]';
+            }
+
+            wc_get_logger()->{$level}(
+                (string) $content,
+                array('source' => 'upayments')
+            );
         }
         
         /**
