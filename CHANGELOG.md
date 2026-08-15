@@ -19,6 +19,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.
 - Harden subscription account actions with consistent nonce verification, action allowlisting, and sanitized request handling.
+- Restore TLS certificate verification for authenticated UPayments API requests.
 
 ### Planned compatibility work
 
