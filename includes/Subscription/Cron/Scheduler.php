@@ -185,7 +185,7 @@ class Scheduler
                         $order->save();
 
                         $ch = curl_init();
-                        curl_setopt($ch, CURLOPT_URL, $gateway->getApiUrl('auto-deduct'));
+                        curl_setopt($ch, CURLOPT_URL, $gateway->getAPIUrl('auto-deduct'));
                         curl_setopt($ch, CURLOPT_POST, 1);
                         curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
                         // curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
