@@ -63,6 +63,129 @@ function woocommerceUpaymentsInit() {
         public $charge;
         public $autoDeduction;
 
+        /**
+         * Static allowlist of plugin-supported whitelabel payment sources.
+         * Does NOT include 'create-invoice' — this plugin does not expose
+         * invoice creation as a checkout method.
+         */
+        private static $ALLOWED_PAYMENT_SOURCES = array(
+            'knet',
+            'cc',
+            'apple-pay',
+            'apple-pay-knet',
+            'samsung-pay',
+            'google-pay',
+        );
+
+        /**
+         * Static allowlist of accepted subscription plans.
+         */
+        private static $ALLOWED_SUBSCRIPTION_PLANS = array(
+            'one_time',
+            'daily',
+            'weekly',
+            'monthly',
+            'quarterly',
+            'yearly',
+        );
+
+        /**
+         * Plan-specific allowed intervals.
+         * one_time => 0 only; daily => 1; weekly => 1-3; monthly => 1-2;
+         * quarterly => 1-3; yearly => 1.
+         */
+        private static $ALLOWED_INTERVALS = array(
+            'one_time'  => array(0),
+            'daily'     => array(1),
+            'weekly'    => array(1, 2, 3),
+            'monthly'   => array(1, 2),
+            'quarterly' => array(1, 2, 3),
+            'yearly'    => array(1),
+        );
+
+        /**
+         * Normalize save-card request value to strict boolean.
+         *
+         * Only '1' or integer 1 are treated as true.
+         * All other values (including 'true', 'yes', '2', arrays) => false.
+         *
+         * @param mixed $value Raw request value.
+         * @return bool
+         */
+        private function normalize_save_card($value): bool {
+            return $value === 1 || $value === '1';
+        }
+
+        /**
+         * Validate a subscription plan against the static allowlist.
+         *
+         * @param string $plan Plan identifier.
+         * @return bool
+         */
+        private static function is_valid_subscription_plan(string $plan): bool {
+            return in_array($plan, self::$ALLOWED_SUBSCRIPTION_PLANS, true);
+        }
+
+        /**
+         * Parse an interval value strictly.
+         *
+         * Accepts only exact integer values 0, 1, 2, 3 or their string equivalents.
+         * Returns -1 for any malformed input.
+         *
+         * @param mixed $value Raw interval value.
+         * @return int Parsed interval or -1 if invalid.
+         */
+        private static function parse_interval($value): int {
+            if ($value === null || $value === '' || $value === 0 || $value === '0') {
+                return 0;
+            }
+            if ($value === 1 || $value === '1') {
+                return 1;
+            }
+            if ($value === 2 || $value === '2') {
+                return 2;
+            }
+            if ($value === 3 || $value === '3') {
+                return 3;
+            }
+            return -1;
+        }
+
+        private static function is_valid_subscription_interval(string $plan, int $interval): bool {
+            if (!isset(self::$ALLOWED_INTERVALS[$plan])) {
+                return false;
+            }
+            return in_array($interval, self::$ALLOWED_INTERVALS[$plan], true);
+        }
+
+        /**
+         * Validate and normalize a UPayments redirect URL.
+         *
+         * Accepts only absolute http/https URLs with a non-empty host.
+         * Does NOT force same-origin — UPayments payment URLs are external.
+         *
+         * @param mixed $value Raw redirect value from provider response.
+         * @return string|null Normalized URL or null if invalid.
+         */
+        private function normalize_upayments_redirect_url($value) {
+            if (!is_scalar($value)) {
+                return null;
+            }
+            $url = trim((string) $value);
+            if ($url === '') {
+                return null;
+            }
+            $parts = parse_url($url);
+            if ($parts === false || !isset($parts['scheme']) || !isset($parts['host'])) {
+                return null;
+            }
+            $scheme = strtolower($parts['scheme']);
+            if ($scheme !== 'http' && $scheme !== 'https') {
+                return null;
+            }
+            return $url;
+        }
+
         public function __construct() {
             // Define ID, title, description, and settings.
             $this->id                 = 'upayments';
@@ -1243,111 +1366,195 @@ function woocommerceUpaymentsInit() {
             } else {
                 $payment_data = $this->paymentData;
             }
-            if($payment_data){
-                $whitelabled = $payment_data['whitelabled'];
+
+            // Availability state must not fail open to KNET.
+            // Require valid payment_data with boolean whitelabled key.
+            if (!is_array($payment_data)
+                || !array_key_exists('whitelabled', $payment_data)
+                || !is_bool($payment_data['whitelabled'])
+            ) {
+                $this->log('Payment methods availability unavailable or malformed.', 'warning');
+                WC()->session->set("refresh_totals", true);
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
+
+            $whitelabled = $payment_data['whitelabled'];
+
+            // Central checkout defaults — initialized before Classic/Blocks branching.
+            $src                   = 'knet';
+            $cardToken             = null;
+            $isSaveCard            = false;
+            $isSaveCardRequested   = false;
+            $subscription_plan     = 'one_time';
+            $subscription_interval = 0;
 
             // 1. Get Extension Data from the Blocks Checkout
-            // WooCommerce Blocks sends this data in the request body, not $_POST
+            // WooCommerce Blocks sends this data in the request body, not $_POST.
+            // Require arrays at each structural level to prevent type confusion.
             $request_data = json_decode(file_get_contents('php://input'), true);
-            $extension_data = isset($request_data['extensions']['upayments']) ? $request_data['extensions']['upayments'] : [];
+            $extension_data = array();
+            if (is_array($request_data)
+                && isset($request_data['extensions'])
+                && is_array($request_data['extensions'])
+                && isset($request_data['extensions']['upayments'])
+                && is_array($request_data['extensions']['upayments'])
+            ) {
+                $extension_data = $request_data['extensions']['upayments'];
+            }
 
             if(!empty($extension_data)){
-                $src = '';
-                if (isset($extension_data['upayment_payment_type'])) {
-                    $src = sanitize_text_field($extension_data['upayment_payment_type']);
+                // Blocks path: read save_card and card_token only.
+                // Payment source is NOT read here — it is determined below
+                // based on whitelabel state.
+                if (isset($extension_data['card_token']) && is_scalar($extension_data['card_token'])) {
+                    $cardToken = trim((string) $extension_data['card_token']);
                 }
 
-                $cardToken = '';
-                if(isset($extension_data['card_token'])){
-                    $cardToken = sanitize_text_field($extension_data['card_token']);
+                if (isset($extension_data['save_card'])) {
+                    $isSaveCardRequested = $this->normalize_save_card($extension_data['save_card']);
                 }
 
-                $isSaveCard = false;
-                if(isset($extension_data['save_card'])){
-                    $isSaveCardRequested = $extension_data['save_card'] == 1 ? true : false;
+                if (isset($extension_data['upay_subscription_plan']) && is_scalar($extension_data['upay_subscription_plan'])) {
+                    $subscription_plan = sanitize_text_field($extension_data['upay_subscription_plan']);
                 }
-
-                if ($whitelabled){
-                    $whitelabled = true;
-                    $upayment_payment_type = sanitize_text_field($extension_data['upayment_payment_type']);
-                        if (!empty($upayment_payment_type)){
-                            $src = $upayment_payment_type;
-                            $order->delete_meta_data("UPayments_Checkout_Selected");
-                            $order->add_meta_data("UPayments_Checkout_Selected", $upayment_payment_type);
-                        }
-                    $cardToken = sanitize_text_field($extension_data['card_token']);
-                    $isSaveCard = $src == 'cc' && $isSaveCardRequested;
-                }
-
-                // Checck if Upayments Payment type is empty then return error.
-                if ($whitelabled && empty($src)){
-                    WC()->session->set("refresh_totals", true);
-                    wc_add_notice(__("Please select a UPayments Payment Type.", $this->domain) , "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
-                }
-
-                // Check if Auto Deduction Feature is on and save card toggle is disabled then return error.
-                if($this->autoDeduction === 'yes' && (!$isSaveCardRequested) && $cart_has_custom_product) {
-                    $this->log("Auto Deduction Enabled and Save Card Toggle Disabled");
-                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain) , "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-                }
-
-                if(isset($extension_data['upay_subscription_plan'])){
-                    $subscription_plan = $extension_data['upay_subscription_plan'];
-                }
-                if(isset($extension_data['upay_subscription_interval'])){
-                    $subscription_interval = $extension_data['upay_subscription_interval'];
-                }
-
-                if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
-                    wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                if (isset($extension_data['upay_subscription_interval']) && is_scalar($extension_data['upay_subscription_interval'])) {
+                    $subscription_interval = self::parse_interval($extension_data['upay_subscription_interval']);
                 }
             } else {
+                // Classic path: require scalar + wp_unslash before sanitizing.
                 $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
-                if ($whitelabled && !isset($_POST["upayment_payment_type"])){
+
+                if (isset($_POST["save_card"]) && is_scalar($_POST["save_card"])) {
+                    $isSaveCardRequested = $this->normalize_save_card(wp_unslash($_POST["save_card"]));
+                }
+
+                if (isset($_POST["card_token"]) && is_scalar($_POST["card_token"])) {
+                    $cardToken = trim((string) wp_unslash($_POST["card_token"]));
+                }
+
+                if (isset($_POST['upay_subscription_plan']) && is_scalar($_POST['upay_subscription_plan'])) {
+                    $subscription_plan = sanitize_text_field(wp_unslash($_POST['upay_subscription_plan']));
+                }
+                if (isset($_POST['upay_subscription_interval']) && is_scalar($_POST['upay_subscription_interval'])) {
+                    $subscription_interval = self::parse_interval(wp_unslash($_POST['upay_subscription_interval']));
+                }
+            }
+
+            // === PAYMENT SOURCE RESOLUTION ===
+            // Determine payment source based on whitelabel state.
+            // Non-whitelabel: source is always 'knet' (client input ignored).
+            // Whitelabel: source must be explicitly provided by client.
+            if ($whitelabled) {
+                // Whitelabel: read client-supplied source.
+                $raw_src = null;
+                if (!empty($extension_data)) {
+                    if (isset($extension_data['upayment_payment_type']) && is_scalar($extension_data['upayment_payment_type'])) {
+                        $raw_src = trim((string) sanitize_text_field($extension_data['upayment_payment_type']));
+                    }
+                } else {
+                    if (isset($_POST["upayment_payment_type"]) && is_scalar($_POST["upayment_payment_type"])) {
+                        $raw_src = trim((string) sanitize_text_field(wp_unslash($_POST["upayment_payment_type"])));
+                    }
+                }
+
+                // Whitelabel source must be explicit: missing/empty/array → reject.
+                if ($raw_src === null || $raw_src === '') {
                     WC()->session->set("refresh_totals", true);
-                    wc_add_notice(__("Please select a UPayments Payment Type.", $this->domain) , "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url() , ];
-                }
-
-                $src = "knet";
-                $cardToken = null;
-                $isSaveCard = false;
-                $isSaveCardRequested = sanitize_text_field($_POST["save_card"]) == 1 ? true : false;
-                if ($whitelabled){
-                    $whitelabled = true;
-                    $upayment_payment_type = sanitize_text_field($_POST["upayment_payment_type"]);
-                        if (!empty($upayment_payment_type)){
-                            $src = $upayment_payment_type;
-                            $order->delete_meta_data("UPayments_Checkout_Selected");
-                            $order->add_meta_data("UPayments_Checkout_Selected", $upayment_payment_type);
-                        }
-                    $cardToken = sanitize_text_field($_POST["card_token"]);
-                    $isSaveCard = $src == 'cc' && $isSaveCardRequested;
-                }
-
-                if (isset($_POST['upay_subscription_plan'])) {
-                    $subscription_plan = sanitize_text_field($_POST['upay_subscription_plan']);
-                }
-                if (isset($_POST['upay_subscription_interval'])) {
-                    $subscription_interval = (int) sanitize_text_field($_POST['upay_subscription_interval']);
-                }
-
-                if($this->autoDeduction === 'yes' && ($subscription_plan !== 'one_time' && $subscription_interval <= 0)) {
-                    wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
+                    wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
 
-                if($this->autoDeduction === 'yes' && (!$isSaveCardRequested) && $cart_has_custom_product) {
-                    $this->log("Auto Deduction Enabled and Save Card Toggle Disabled");
-                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain) , "error");
+                $src = $raw_src;
+            }
+            // Non-whitelabel: $src remains 'knet' (the default).
+
+            // === CROSS-PATH VALIDATION (applies to both Classic and Blocks) ===
+
+            // Payment source server allowlist.
+            if (!in_array($src, self::$ALLOWED_PAYMENT_SOURCES, true)) {
+                $this->log('Invalid payment source rejected: ' . $src, 'warning');
+                WC()->session->set("refresh_totals", true);
+                wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+            }
+
+            // Whitelabel enabled-method check: fail closed if payment map unavailable.
+            if ($whitelabled) {
+                if (!is_array($payment_data)
+                    || !isset($payment_data['payment'])
+                    || !is_array($payment_data['payment'])
+                ) {
+                    $this->log('Whitelabel: payment method map unavailable.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                if (!isset($payment_data['payment'][$src])) {
+                    $this->log('Disabled payment source rejected: ' . $src, 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
             }
-            
+
+            // Subscription plan allowlist.
+            if (!self::is_valid_subscription_plan($subscription_plan)) {
+                $this->log('Invalid subscription plan rejected: ' . $subscription_plan, 'warning');
+                WC()->session->set("refresh_totals", true);
+                wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+            }
+
+            // Subscription-context enforcement: non-one_time plan requires
+            // subscription feature active AND subscription product in cart.
+            if ($subscription_plan !== 'one_time') {
+                if ($this->autoDeduction !== 'yes' || !$cart_has_custom_product) {
+                    $this->log('Subscription plan rejected outside subscription context.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                // Guest subscriptions must fail server-side.
+                if (!is_user_logged_in()) {
+                    $this->log('Subscription checkout rejected for guest.');
+                    wc_add_notice(__("Please log in to purchase a subscription.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                // Subscription checkout requires cc + save-card.
+                if ($src !== 'cc') {
+                    $this->log('Subscription checkout requires cc payment source.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Subscription payments require Credit Card.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                if (!$isSaveCardRequested) {
+                    $this->log("Subscription checkout requires save-card.");
+                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                // Save-card feature must actually be enabled.
+                if ($this->saveCardEnabled !== 'yes') {
+                    $this->log('Subscription checkout requires save-card feature enabled.');
+                    wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+            }
+
+            // Interval validation (uses strict parser).
+            if (!self::is_valid_subscription_interval($subscription_plan, $subscription_interval)) {
+                wc_add_notice(__("Please select a valid Billing Interval.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+            }
+
+            // === POST-VALIDATION METADATA ===
+            // Stage UPayments_Checkout_Selected only after source is validated.
+            if ($whitelabled) {
+                $order->delete_meta_data("UPayments_Checkout_Selected");
+                $order->add_meta_data("UPayments_Checkout_Selected", $src);
+                $isSaveCard = $src === 'cc' && $isSaveCardRequested;
+            }
+
             $customer_unq_token = null;
             $credit_card_token = $cardToken;
             $phone = str_replace(' ', '', $order_data["billing"]["phone"]); // Replaces all spaces with hyphens.
@@ -1458,74 +1665,109 @@ function woocommerceUpaymentsInit() {
             $response = $transport['body'];
             $this->log('Create payment HTTP response received.');
 
+            // Charge response processing — hardened structural validation.
+            // Use \Throwable to catch TypeError from PHP 8+ malformed structures.
             try
             {
                 if (!$response){
-
+                    $this->log('Charge response: empty body.', 'warning');
                     WC()->session->set("refresh_totals", true);
-                    wc_add_notice(__("Payment request failed. Empty Response Received.", $this->domain) , "error");
+                    wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
 
-                }else{
-                    $result = json_decode($response, true);
-                    $this->log(__("Create payment response received.", $this->domain));
-                    if (!$result){
+                $result = json_decode($response, true);
+                $this->log(__("Create payment response received.", $this->domain));
 
+                // A. json_decode result MUST be array.
+                if (!is_array($result)){
+                    $this->log('Charge response: malformed JSON.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                // B. Status must be boolean true/false. Reject non-boolean.
+                if (!array_key_exists('status', $result) || !is_bool($result['status'])) {
+                    $this->log('Charge response: status not boolean.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                if ($result['status'] === false) {
+                    $this->log('Charge response: provider declared failure.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                // C/D. Status=true: require structural data.
+                if ($result['status'] === true){
+                    // Require data to be an array.
+                    if (!isset($result['data']) || !is_array($result['data'])) {
+                        $this->log('Charge response: status=true but data missing/invalid.', 'warning');
                         WC()->session->set("refresh_totals", true);
-                        wc_add_notice(__("Payment request failed. Empty Response Received.", $this->domain) , "error");
-                        return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-
-                    }elseif (isset($result["status"]) && !$result["status"]){
-
-                        WC()->session->set("refresh_totals", true);
-                        wc_add_notice(__("Payment request failed. " . $result["message"], $this->domain) , "error");
-                        return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-
-                    }elseif (isset($result["message"]) && !isset($result["status"])){
-
-                        WC()->session->set("refresh_totals", true);
-                        wc_add_notice(__("Payment request failed. " . $result["message"], $this->domain) , "error");
-                        return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-
-                    }elseif (isset($result["status"]) && $result["status"]){
-                        if($subscription_plan && $subscription_plan != 'one_time') {
-                            $order->delete_meta_data('_upay_subscription_plan');
-                            $order->add_meta_data('_upay_subscription_plan', $subscription_plan);
-                            $order->delete_meta_data('_upay_subscription_interval');
-                            $order->add_meta_data('_upay_subscription_interval', $subscription_interval);
-                            $order->delete_meta_data('_upay_subscription_status');
-                            $order->add_meta_data('_upay_subscription_status', 'active');
-                            $order->delete_meta_data('UPayments_AutoDeduction');
-                            $order->add_meta_data('UPayments_AutoDeduction', 'no');
-                            $order->save_meta_data();
-                        }
-                        if ($result["data"]["link"]){
-                            $order->delete_meta_data("UPayments_order_id");
-                            $order->add_meta_data("UPayments_order_id", $unique_order_id);
-                            $order->save_meta_data();
-
-                            return ["result" => "success", "redirect" => $result["data"]["link"]];
-                        }else{
-                            $order->delete_meta_data("UPayments_order_id");
-                            $order->add_meta_data("UPayments_order_id", $unique_order_id);
-                            $order->save_meta_data();
-
-                            return ["result" => "success", "redirect" => $result["data"]["transactionData"]["redirect_url"], ];
-                        }
-                    }else{
-                        $status_message = __("UPayments: Something went wrong, please contact the merchant", $this->domain);
-                        WC()->session->set("refresh_totals", true);
-                        wc_add_notice($status_message, "error");
+                        wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
                         return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                     }
-                }
-            }catch(\Exception $e){
-                $message = $e->getMessage();
-                $this->log(__("Create Payment Response: catch exception", $this->domain) . " => " . $message);
-                $status_message = __("UPayments: Something went wrong, please contact the merchant", $this->domain);
 
+                    // E. Determine redirect URL: prefer data.link, fallback to data.transactionData.redirect_url.
+                    $redirect_url = null;
+
+                    if (isset($result['data']['link']) && is_scalar($result['data']['link'])) {
+                        $redirect_url = $this->normalize_upayments_redirect_url($result['data']['link']);
+                    }
+
+                    if ($redirect_url === null
+                        && isset($result['data']['transactionData'])
+                        && is_array($result['data']['transactionData'])
+                        && isset($result['data']['transactionData']['redirect_url'])
+                        && is_scalar($result['data']['transactionData']['redirect_url'])
+                    ) {
+                        $redirect_url = $this->normalize_upayments_redirect_url($result['data']['transactionData']['redirect_url']);
+                    }
+
+                    // Require a valid redirect URL.
+                    if ($redirect_url === null) {
+                        $this->log('Charge response: no valid redirect URL found.', 'warning');
+                        WC()->session->set("refresh_totals", true);
+                        wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                        return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                    }
+
+                    // Valid success path.
+                    if($subscription_plan && $subscription_plan !== 'one_time') {
+                        $order->delete_meta_data('_upay_subscription_plan');
+                        $order->add_meta_data('_upay_subscription_plan', $subscription_plan);
+                        $order->delete_meta_data('_upay_subscription_interval');
+                        $order->add_meta_data('_upay_subscription_interval', $subscription_interval);
+                        $order->delete_meta_data('_upay_subscription_status');
+                        $order->add_meta_data('_upay_subscription_status', 'active');
+                        $order->delete_meta_data('UPayments_AutoDeduction');
+                        $order->add_meta_data('UPayments_AutoDeduction', 'no');
+                        $order->save_meta_data();
+                    }
+
+                    $order->delete_meta_data("UPayments_order_id");
+                    $order->add_meta_data("UPayments_order_id", $unique_order_id);
+                    $order->save_meta_data();
+
+                    return ["result" => "success", "redirect" => $redirect_url];
+                }
+
+                // Unrecognized response structure.
+                $this->log('Charge response: unrecognized structure.', 'warning');
                 WC()->session->set("refresh_totals", true);
-                wc_add_notice($status_message, "error");
+                wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
+                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+
+            } catch (\Throwable $e) {
+                // Fail-closed: catch TypeError (PHP 8+) and Exception (PHP 7.2+).
+                // Do NOT log $e->getMessage() — may contain internal/provider details.
+                $this->log('Charge response: unexpected error during processing.', 'warning');
+                WC()->session->set("refresh_totals", true);
+                wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
                 return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
         }
