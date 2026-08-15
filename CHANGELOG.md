@@ -15,6 +15,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Verify UPayments callback payment state against the authenticated Get Payment Status API before allowing WooCommerce paid-order transitions.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.
