@@ -2460,48 +2460,66 @@ add_action('init', function () {
         wp_schedule_event(time(), 'hourly', 'upay_hourly_cron_job');
     }
 
-    $action = isset($_GET['upay_action']) ? $_GET['upay_action'] : '';
-    $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : '';
+    $action = isset($_GET['upay_action'])
+        ? sanitize_key(wp_unslash($_GET['upay_action']))
+        : '';
 
-    if(!empty($action) && !empty($order_id)) {
-        $order = wc_get_order($order_id);
-        if (!$order) {
-            return;
-        }
+    $order_id = isset($_GET['order_id'])
+        ? absint(wp_unslash($_GET['order_id']))
+        : 0;
 
-        // Security checks
-        if (!is_user_logged_in() || get_current_user_id() !== $order->get_user_id()) {
-            wc_add_notice(__('Unauthorized request.', 'woocommerce'), 'error');
-            wp_safe_redirect(wc_get_account_endpoint_url('orders'));
-            exit;
-        }
+    if (empty($action) || empty($order_id)) {
+        return;
+    }
 
-        if($action === 'unsubscribe'){
-            if (!wp_verify_nonce($_GET['_wpnonce'], 'upay_unsubscribe_' . $order_id)) {
-                wc_add_notice(__('Invalid request.', 'woocommerce'), 'error');
-                wp_safe_redirect(wc_get_account_endpoint_url('orders'));
-                exit;
-            }
-    
-            // Mark subscription as cancelled
-            $order->update_meta_data('_upay_subscription_status', 'cancelled');
-            wc_add_notice(__('Your subscription has been cancelled.', 'woocommerce'), 'success');
-        }
-        
-        if ($action === 'pause') {
-            $order->update_meta_data('_upay_subscription_status', 'paused');
-            wc_add_notice(__('Subscription paused.', 'woocommerce'), 'success');
-        }
+    $allowed_actions = array('unsubscribe', 'pause', 'resume');
+    if (!in_array($action, $allowed_actions, true)) {
+        return;
+    }
 
-        if ($action === 'resume') {
-            $order->update_meta_data('_upay_subscription_status', 'active');
-            wc_add_notice(__('Subscription resumed.', 'woocommerce'), 'success');
-        }
+    $order = wc_get_order($order_id);
+    if (!$order) {
+        return;
+    }
 
-        $order->save();
-        wp_safe_redirect(wc_get_account_endpoint_url('view-order') . $order_id);
+    // Authorization: nonce is CSRF protection, not authorization.
+    if (!is_user_logged_in() || get_current_user_id() !== $order->get_user_id()) {
+        wc_add_notice(__('Unauthorized request.', 'woocommerce'), 'error');
+        wp_safe_redirect(wc_get_account_endpoint_url('orders'));
         exit;
     }
+
+    // Nonce verification: required for every state-changing action.
+    $nonce = isset($_GET['_wpnonce'])
+        ? sanitize_text_field(wp_unslash($_GET['_wpnonce']))
+        : '';
+
+    if ($action === 'unsubscribe') {
+        $nonce_action = 'upay_unsubscribe_' . $order_id;
+    } else {
+        $nonce_action = 'upay_' . $action . '_' . $order_id;
+    }
+
+    if (empty($nonce) || !wp_verify_nonce($nonce, $nonce_action)) {
+        wc_add_notice(__('Invalid request.', 'woocommerce'), 'error');
+        wp_safe_redirect(wc_get_account_endpoint_url('orders'));
+        exit;
+    }
+
+    if ($action === 'unsubscribe') {
+        $order->update_meta_data('_upay_subscription_status', 'cancelled');
+        wc_add_notice(__('Your subscription has been cancelled.', 'woocommerce'), 'success');
+    } elseif ($action === 'pause') {
+        $order->update_meta_data('_upay_subscription_status', 'paused');
+        wc_add_notice(__('Subscription paused.', 'woocommerce'), 'success');
+    } elseif ($action === 'resume') {
+        $order->update_meta_data('_upay_subscription_status', 'active');
+        wc_add_notice(__('Subscription resumed.', 'woocommerce'), 'success');
+    }
+
+    $order->save();
+    wp_safe_redirect(wc_get_account_endpoint_url('view-order') . $order_id);
+    exit;
 });
 
 add_action('upay_hourly_cron_job', 'runCustomCron');
