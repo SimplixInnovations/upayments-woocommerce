@@ -1050,7 +1050,8 @@ function woocommerceUpaymentsInit() {
             curl_setopt($ch, CURLOPT_URL, $this->getApiUrl('charge'));
             curl_setopt($ch, CURLOPT_POST, 1);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
             curl_setopt($ch, CURLOPT_USERAGENT, $this->getUserAgent());
@@ -1612,7 +1613,8 @@ function woocommerceUpaymentsInit() {
 
                 curl_setopt_array($curl, array(
                 CURLOPT_URL => $this->getAPIUrl('check-payment-button-status'),
-                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_ENCODING => '',
                 CURLOPT_MAXREDIRS => 10,
@@ -1660,7 +1662,8 @@ function woocommerceUpaymentsInit() {
                 curl_setopt_array($curl, [
                     CURLOPT_URL => $this->getAPIUrl('retrieve-customer-cards'),
                     CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_SSL_VERIFYPEER => true,
+                    CURLOPT_SSL_VERIFYHOST => 2,
                     CURLOPT_USERAGENT => $this->getUserAgent(),
                     CURLOPT_ENCODING => "",
                     CURLOPT_MAXREDIRS => 10,
