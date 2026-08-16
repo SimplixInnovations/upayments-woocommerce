@@ -422,22 +422,6 @@ function woocommerceUpaymentsInit() {
                 return $settings;
             });
 
-            // Validation for phone number on account details page to ensure Save Card functionality works smoothly
-            add_action('woocommerce_save_account_details_errors', function ($errors, $user) {
-                if (empty($_POST['billing_phone'])) {
-                    $errors->add(
-                        'billing_phone_error',
-                        __('Billing phone number is required.', 'woocommerce')
-                    );
-                }
-                if (!empty($_POST['billing_phone']) && !preg_match('/^\+?[0-9]{8,15}$/', $_POST['billing_phone'])) {
-                    $errors->add(
-                        'billing_phone_invalid',
-                        __('Please enter a valid phone number.', 'woocommerce')
-                    );
-                }
-            }, 10, 2);
-
             add_filter('woocommerce_default_gateway', function ($default) {
                 wc_get_logger()->info(
                     'Default gateway filter hit. Current default: ' . $default,
