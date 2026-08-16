@@ -15,6 +15,10 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Escape UPayments payment metadata at render time in admin order details and order-details template.
+- Harden Classic saved-card rendering against malformed or provider-controlled values with structural guards and context-specific escaping.
+- Contextually escape template text, attributes, and URLs in Classic checkout templates.
+- Safely encode Classic inline notice strings for JavaScript context using wp_json_encode() with HEX flags.
 - Add shared cross-request payment-method availability cache with credential-scoped fingerprint to prevent stale results after API key changes.
 - Add durable 65-second refresh cooldown for the payment-methods endpoint to respect UPayments' documented one-request-per-minute limit.
 - Add concurrency-safe refresh gate using MySQL named advisory locks (GET_LOCK) to prevent multiple PHP workers from simultaneously calling the payment-methods endpoint.

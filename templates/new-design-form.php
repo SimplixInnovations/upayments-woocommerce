@@ -34,82 +34,122 @@ defined( 'ABSPATH' ) || exit;
 <div id="wc-toast" class="wc-toast"></div>
 <div class="form-row form-row-wide">
     <?php 
-    if (isset($_REQUEST["cancelled"])){ ?>
+    if (isset($_REQUEST["cancelled"])){
+        $notice_html = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color">'
+            . esc_html__('Payment canceled by customer', $gateway->domain)
+            . '</div></div>';
+    ?>
         <script>
-            let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment canceled by customer", $gateway->domain); ?></div></div>';
+            let message = <?php echo wp_json_encode($notice_html, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
             jQuery(document).ready(function(){
                 jQuery('.woocommerce-notices-wrapper:first').html(message);
             });
         </script>
     <?php
-    } elseif (isset($_REQUEST["failed"])){ ?>
+    } elseif (isset($_REQUEST["failed"])){
+        $notice_html = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color">'
+            . esc_html__('Payment error from UPayments', $gateway->domain)
+            . '</div></div>';
+    ?>
         <script>
-            let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment error from UPayments", $gateway->domain); ?></div></div>';
+            let message = <?php echo wp_json_encode($notice_html, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
             jQuery(document).ready(function(){
                 jQuery('.woocommerce-notices-wrapper:first').html(message);
             });
         </script>
     <?php
-    } elseif (isset($_REQUEST["suspected"])) { ?>
+    } elseif (isset($_REQUEST["suspected"])) {
+        $notice_html = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color">'
+            . esc_html__('Payment failed for suspected fraud.', $gateway->domain)
+            . '</div></div>';
+    ?>
         <script>
-            let message = '<div class="woocommerce-NoticeGroup woocommerce-NoticeGroup-checkout"><div class="woocommerce-error alert-color"><?php echo __("Payment failed for suspected fraud.", $gateway->domain); ?></div></div>';
+            let message = <?php echo wp_json_encode($notice_html, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
             jQuery(document).ready(function(){
                 jQuery('.woocommerce-notices-wrapper:first').html(message);
             });
         </script>
     <?php 
     } 
-        $icons = null;
-        $total = "0";
+        $icons = array();
         $total = WC()->cart->get_total('');
-        $language=get_locale();
+        $language = get_locale();
         $currency = get_woocommerce_currency_symbol();
         if (strpos($language, 'en') === 0) {
             $currency = get_woocommerce_currency();
         }
         $whitelabled = false;
-        // NOTE: The function call was $this->getPaymentIcons() in the original method.
-        // Since we are in a template, we use the $gateway variable.
-        $payment_data = $gateway->getPaymentIcons(); 
-        if($payment_data){
+        $payment_data = $gateway->getPaymentIcons();
+        $payment_data_valid = (
+            is_array($payment_data)
+            && isset($payment_data['payment'])
+            && is_array($payment_data['payment'])
+            && array_key_exists('whitelabled', $payment_data)
+            && is_bool($payment_data['whitelabled'])
+        );
+        if ($payment_data_valid) {
             $gateway->paymentData = $payment_data;
             $icons = $payment_data['payment'];
             $whitelabled = $payment_data['whitelabled'];
         }
         $isSubscriptionEnabled = $gateway->get_option('enable_subscriptions') === 'yes' ? true : false;
-        if($whitelabled){
+        if ($payment_data_valid && $whitelabled) {
     ?>
         <div class="payment-buttons">
             <?php
-            // Retrieve Saved Cards
-            $loggedInUser = $gateway->get_logged_in_user_phone_number(); // Use $gateway
+            $loggedInUser = $gateway->get_logged_in_user_phone_number();
+            $logged_in_user_phone = '';
+            $logged_in_user_ok = (
+                is_array($loggedInUser)
+                && isset($loggedInUser['success'])
+                && $loggedInUser['success'] === true
+                && isset($loggedInUser['phone'])
+                && is_scalar($loggedInUser['phone'])
+            );
+            if ($logged_in_user_ok) {
+                $logged_in_user_phone = (string) $loggedInUser['phone'];
+                if (trim($logged_in_user_phone) === '') {
+                    $logged_in_user_ok = false;
+                    $logged_in_user_phone = '';
+                }
+            }
             $user_id = get_current_user_id();
-            if($loggedInUser['success']  && $save_card_enabled && $user_id) {
+            if ($logged_in_user_ok && $save_card_enabled && $user_id) {
             ?>
                 <input id="save_card" type="hidden" name="save_card" value="1"/>
                 <?php
-                $savedCards = $gateway->getSavedCards($loggedInUser['phone'].$user_id); // Use $gateway
+                $savedCards = $gateway->getSavedCards($logged_in_user_phone . $user_id);
                 
-                if($savedCards && $savedCards['result'] == 'success')
+                if (is_array($savedCards) && isset($savedCards['result']) && $savedCards['result'] === 'success' && isset($savedCards['data']) && is_array($savedCards['data']))
                 {
                     $cardList = $savedCards['data'];
                 ?>
-                    <span class="payment-method-label">Saved Cards</span>
+                    <span class="payment-method-label"><?php esc_html_e('Saved Cards', 'upayments'); ?></span>
                     <?php
                     foreach ($cardList as $cardkey => $cardValue) {
+                        if (!is_array($cardValue)) {
+                            continue;
+                        }
+                        if (!isset($cardValue['token']) || !is_scalar($cardValue['token']) || trim((string) $cardValue['token']) === '') {
+                            continue;
+                        }
+                        $card_token = (string) $cardValue['token'];
+                        $card_number_raw = isset($cardValue['number']) && is_scalar($cardValue['number']) ? (string) $cardValue['number'] : '';
+                        $card_number = esc_attr($card_number_raw);
+                        $card_number_text = esc_html($card_number_raw);
                     ?>
 
-                        <button type="button" value="<?php echo $cardValue['token'];?>" onclick="submitSavedCard(this)" class="upay-payment-method" id="upay-button-cc">
-                        <span class="payment-method-icon"><img src="<?php echo UP_PLUGIN_URL;?>assets/images/cc.png" alt="<?php echo $cardValue['number'];?>"  title="<?php echo $cardValue['number'];?>"/></span>
-                        <span class="payment-method-label"><?php echo $cardValue['number'];?></span>
-                        <span class="payment-method-price"><?php echo $total;?> <?php echo $currency;?></span>
+                        <button type="button" value="<?php echo esc_attr($card_token); ?>" onclick="submitSavedCard(this)" class="upay-payment-method" id="upay-button-cc">
+                        <span class="payment-method-icon"><img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/cc.png'); ?>" alt="<?php echo $card_number; ?>"  title="<?php echo $card_number; ?>"/></span>
+                        <span class="payment-method-label"><?php echo $card_number_text; ?></span>
+                        <span class="payment-method-price"><?php echo esc_html($total); ?> <?php echo wp_kses($currency, array()); ?></span>
                         <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
                         </button>
 
                     <?php
                     }
                     ?>
-                    <span class="payment-method-label">Other Options</span>
+                    <span class="payment-method-label"><?php esc_html_e('Other Options', 'upayments'); ?></span>
                 <?php
                 }
             } else {
@@ -118,37 +158,47 @@ defined( 'ABSPATH' ) || exit;
             <?php
             }
                 foreach ($icons as $key => $value) {
+                    if (!is_scalar($value)) {
+                        continue;
+                    }
+                    $key_string = (string) $key;
+                    $value_string = (string) $value;
+                    $key_attr = esc_attr($key_string);
+                    $value_attr = esc_attr($value_string);
+                    $value_text = esc_html($value_string);
+                    $key_js = wp_json_encode($key_string, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+                    $onclick = 'submitUpayButton(' . $key_js . ')';
             ?>
-                <button type="button" onclick="submitUpayButton('<?php echo esc_attr($key);?>')" class="upay-payment-method" id="upay-button-<?php echo esc_attr($key);?>">
+                <button type="button" onclick="<?php echo esc_attr($onclick); ?>" class="upay-payment-method" id="upay-button-<?php echo $key_attr; ?>">
                     <span class="payment-method-icon">
                         <?php
-                            if($key == 'apple-pay-knet') {
+                            if ($key_string == 'apple-pay-knet') {
                                 ?>
-                                <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('knet');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                <img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/apple-pay.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/>
+                                    <img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/knet.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/>
                                 <?php
-                            } elseif($key == 'apple-pay') {
+                            } elseif ($key_string == 'apple-pay') {
                                 ?>
-                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('apple-pay');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
-                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr('cc');?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                    <img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/apple-pay.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/>
+                                    <img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/cc.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/>
                                 <?php
                             } else {
                                 ?>
-                                    <img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr($key);?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/>
+                                    <img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/' . $key_string . '.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/>
                                 <?php
                             }
                         ?>
                     </span>
-                    <span class="payment-method-label"><?php echo esc_attr($value);?></span>
-                    <span class="payment-method-price"><?php echo $total;?> <?php echo $currency;?></span>
+                    <span class="payment-method-label"><?php echo $value_text; ?></span>
+                    <span class="payment-method-price"><?php echo esc_html($total); ?> <?php echo wp_kses($currency, array()); ?></span>
                     <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
                 </button>
             
-            <?php if($key == 'cc' && $save_card_enabled) { ?>
+            <?php if ($key_string == 'cc' && $save_card_enabled) { ?>
                 <label class="switch-border">For faster and more secure checkout. Save your card details.
                     <label class="switch">
                         <?php
-                            $hasPhone = $loggedInUser['success'] && !empty($loggedInUser['phone']);
+                            $hasPhone = $logged_in_user_ok && $logged_in_user_phone !== '';
                             $checked  = ($hasPhone || ($isSubscriptionEnabled && $hasPhone)) ? true : false;
                         ?>
                         <input
@@ -166,25 +216,33 @@ defined( 'ABSPATH' ) || exit;
             ?>
         </div>
     <?php
-        } else {
+        } elseif ($payment_data_valid && !$whitelabled) {
     ?>
         <div class="payment-buttons">
             <button type="button" onclick="submitUpayButton('knet')" class="upay-payment-method">
     <?php
             foreach ($icons as $key => $value) {
-                if($key != 'apple-pay-knet') {
+                if (!is_scalar($value)) {
+                    continue;
+                }
+                $key_string = (string) $key;
+                $value_string = (string) $value;
+                if ($key_string != 'apple-pay-knet') {
+                    $key_attr = esc_attr($key_string);
+                    $value_attr = esc_attr($value_string);
     ?>
-                <span class="payment-method-icon" style="margin-right: 5px;" id="upay-button-<?php echo esc_attr($key);?>"><img src="<?php echo UP_PLUGIN_URL;?>assets/images/<?php echo esc_attr($key);?>.png" alt="<?php echo esc_attr($value);?>"  title="<?php echo esc_attr($value);?>"/></span>
+                <span class="payment-method-icon" style="margin-right: 5px;" id="upay-button-<?php echo $key_attr; ?>"><img src="<?php echo esc_url(UP_PLUGIN_URL . 'assets/images/' . $key_string . '.png'); ?>" alt="<?php echo $value_attr; ?>"  title="<?php echo $value_attr; ?>"/></span>
     <?php
                 }
             }
     ?>
-            <span class="payment-method-price"><?php echo $total;?> <?php echo $currency;?></span>
+            <span class="payment-method-price"><?php echo esc_html($total); ?> <?php echo wp_kses($currency, array()); ?></span>
             <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
             </button>
         </div>
     <?php
         }
+        // If $payment_data_valid is false, render NO payment buttons.
     ?>
         <input id="upayment_payment_type" type="hidden" name="upayment_payment_type" value="upayments"/>
         <input id="card_token" type="hidden" name="card_token" value=""/>
