@@ -97,28 +97,13 @@ defined( 'ABSPATH' ) || exit;
     ?>
         <div class="payment-buttons">
             <?php
-            $loggedInUser = $gateway->get_logged_in_user_phone_number();
-            $logged_in_user_phone = '';
-            $logged_in_user_ok = (
-                is_array($loggedInUser)
-                && isset($loggedInUser['success'])
-                && $loggedInUser['success'] === true
-                && isset($loggedInUser['phone'])
-                && is_scalar($loggedInUser['phone'])
-            );
-            if ($logged_in_user_ok) {
-                $logged_in_user_phone = (string) $loggedInUser['phone'];
-                if (trim($logged_in_user_phone) === '') {
-                    $logged_in_user_ok = false;
-                    $logged_in_user_phone = '';
-                }
-            }
             $user_id = get_current_user_id();
-            if ($logged_in_user_ok && $save_card_enabled && $user_id) {
+            $is_logged_in = $user_id > 0;
+            if ($is_logged_in && $save_card_enabled) {
             ?>
-                <input id="save_card" type="hidden" name="save_card" value="1"/>
+                <input id="save_card" type="hidden" name="save_card" value="0"/>
                 <?php
-                $savedCards = $gateway->getSavedCards($logged_in_user_phone . $user_id);
+                $savedCards = $gateway->getSavedCardsForCurrentUser();
                 
                 if (is_array($savedCards) && isset($savedCards['result']) && $savedCards['result'] === 'success' && isset($savedCards['data']) && is_array($savedCards['data']))
                 {
@@ -198,14 +183,12 @@ defined( 'ABSPATH' ) || exit;
                 <label class="switch-border">For faster and more secure checkout. Save your card details.
                     <label class="switch">
                         <?php
-                            $hasPhone = $logged_in_user_ok && $logged_in_user_phone !== '';
-                            $checked  = ($hasPhone || ($isSubscriptionEnabled && $hasPhone)) ? true : false;
+                            $checked = false;
                         ?>
                         <input
                             type="checkbox"
                             id="chkSaveCard"
-                            onclick="toggleSaveCard(<?php echo $checked ? 'true' : 'false'; ?>);"
-                            <?php echo $checked ? 'checked' : ''; ?>
+                            onclick="toggleSaveCard(<?php echo $is_logged_in ? 'true' : 'false'; ?>);"
                         >
                         <span class="slider round"></span>
                     </label>

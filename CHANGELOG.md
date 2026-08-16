@@ -15,7 +15,20 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Replace phone-derived customer token identity with canonical non-predictable 8-digit tokens for saved-card flows, eliminating phone-change card orphaning and provider-compliance gaps.
+- Implement strict fail-closed Create Token establishment with 201-only success validation, protecting against transport failures, provider errors, and malformed responses.
+- Enforce current-scope provenance for saved-card operations with immutable CREATE-ONLY identity establishment and multisite-recoverable meta keys.
+- Add server-bound saved-card token validation requiring exact membership match against provider-returned card list before Charge dispatch.
+- Protect legacy historical token identities from silent canonical overwrite pending dedicated Phase 9I migration, with customer-scoped safety fallback.
+- Restrict saved-card retrieval to users with valid canonical or legacy-compatible provenance, eliminating unauthenticated Retrieve Cards calls during checkout rendering.
+- Require login for guest Save Card requests with server-side rejection and generic customer notice.
 - Separate provider-facing customer.mobile from legacy saved-card/customer-token identity so that malformed or ambiguous phone representations are not sent to UPayments while existing token identity remains backward-compatible.
+- Fix subscription new-card vs saved-card semantics: existing saved-card subscription no longer requires explicit Save Card opt-in toggle, only new-card subscription requires it.
+- Fix Blocks Save Card consent to use reactive state (`upayData.save_card === '1'`) instead of server-provided `save_card_toggle_on` constant, ensuring checkbox state always agrees with submitted extension data.
+- Add strict Retrieve Cards request input validation requiring 8-18 digit numeric customer token before provider call.
+- Add structured secret record v2 with generation ID for detecting secret corruption and credential/mode rotation.
+- Add full prior-provenance validation with scope and generation binding to prevent cross-credential token reuse.
+- Make history inspector query results trustworthy with pagination validation and unloadable-order detection.
 - Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Phone requirements for Save Card and subscription remain enforced at the payment boundary.
 - Stop persistently overriding WooCommerce phone-field configuration on every request.
 - Stop globally forcing billing phone required through UPayments Classic field filters, allowing other gateways to respect merchant phone settings.

@@ -23,10 +23,12 @@ define("UP_PLUGIN_PATH", plugin_dir_path(__FILE__));
 define('UPAYMENTS_PLUGIN_FILE', __FILE__ );
 
 require_once __DIR__ . '/vendor/plugin-update-checker/plugin-update-checker.php';
+require_once __DIR__ . '/includes/Token/CustomerTokenIdentity.php';
 
 use UPayments\Subscription\Cron\Scheduler;
 use UPayments\Subscription\Checkout\Fields;
 use UPayments\Subscription\Manager;
+use UPayments\Token\CustomerTokenIdentity;
 use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
 
 $updateChecker = PucFactory::buildUpdateChecker(
@@ -1628,22 +1630,24 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__("Please log in to purchase a subscription.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
-                // Subscription checkout requires cc + save-card.
+                // Subscription checkout requires cc.
                 if ($src !== 'cc') {
                     $this->log('Subscription checkout requires cc payment source.', 'warning');
                     WC()->session->set("refresh_totals", true);
                     wc_add_notice(__("Subscription payments require Credit Card.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
-                if (!$isSaveCardRequested) {
-                    $this->log("Subscription checkout requires save-card.");
-                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-                }
-                // Save-card feature must actually be enabled.
+                // Save-card feature must be enabled for subscriptions.
                 if ($this->saveCardEnabled !== 'yes') {
                     $this->log('Subscription checkout requires save-card feature enabled.');
                     wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                // For new card (no existing saved card token), require explicit save-card opt-in.
+                // For existing saved card (cardToken present), do NOT require save-card toggle.
+                if (empty($cardToken) && !$isSaveCardRequested) {
+                    $this->log("Subscription checkout with new card requires save-card opt-in.");
+                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
             }
@@ -1659,7 +1663,13 @@ function woocommerceUpaymentsInit() {
             if ($whitelabled) {
                 $order->delete_meta_data("UPayments_Checkout_Selected");
                 $order->add_meta_data("UPayments_Checkout_Selected", $src);
-                $isSaveCard = $src === 'cc' && $isSaveCardRequested;
+                // Effective isSaveCard: only when new CC + explicit opt-in + logged-in + feature enabled.
+                // Existing saved card (non-empty cardToken) must NOT be re-saved.
+                $isSaveCard = $src === 'cc'
+                    && empty($credit_card_token)
+                    && $isSaveCardRequested
+                    && $user_id > 0
+                    && $this->saveCardEnabled === 'yes';
             }
 
             $customer_unq_token = null;
@@ -1688,44 +1698,146 @@ function woocommerceUpaymentsInit() {
                 }
             }
 
-            // Determine if this transaction requires phone for token-dependent flow.
-            $requires_token_phone = $isSaveCard || $subscription_plan !== 'one_time';
+            // Determine if this transaction requires a customer token.
+            $requires_token = $isSaveCard || $subscription_plan !== 'one_time';
+            $canonical_token = null;
+            $token_kind = null;
+            $token_scope = null;
+            $token_generation = null;
 
-            // Enforce UPayments-specific phone requirement at payment boundary.
-            if ($requires_token_phone && $phone === '') {
-                wc_add_notice(__('Billing phone number is required to save a card or purchase a subscription.', 'upayments'), 'error');
+            $user_id = get_current_user_id();
+
+            // Compute customer.uniqueId using pre-PR16 compatibility behavior.
+            $billing_phone_raw = $order->get_billing_phone();
+            $customer_unique_id = '';
+            if (is_scalar($billing_phone_raw)) {
+                $phone_normalized = str_replace(' ', '', (string) $billing_phone_raw);
+                $phone_normalized = preg_replace('/[^A-Za-z0-9\-]/', '', $phone_normalized);
+                if ($user_id > 0 && !empty($phone_normalized)) {
+                    $customer_unique_id = $phone_normalized . $user_id;
+                } elseif (!empty($phone_normalized)) {
+                    $customer_unique_id = $phone_normalized;
+                }
+                if (substr($customer_unique_id, 0, 1) === '0') {
+                    $customer_unique_id = '1' . substr($customer_unique_id, 1);
+                }
+            }
+
+            // Clear stale PR16 attempt metadata before token work.
+            // Preserve legacy/unscoped evidence for Phase 9I migration.
+            if (!CustomerTokenIdentity::clear_stale_pr16_attempt_metadata($order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            $customer_unq_token = $phone;
+            // CASE: Selected saved card requires membership validation.
+            if (!empty($credit_card_token)) {
+                if ($user_id <= 0) {
+                    wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
 
-            $user_id = get_current_user_id();
-            if ($user_id && !empty($customer_unq_token)) {
-                $customer_unq_token = $customer_unq_token . $user_id;
+                if ($this->saveCardEnabled !== 'yes') {
+                    wc_add_notice(__('Please select a valid payment type.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if (!$whitelabled || $src !== 'cc') {
+                    wc_add_notice(__('Please select a valid payment method.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
+                if ($scope === null) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $provenance = CustomerTokenIdentity::read_provenance($user_id, $scope);
+                if ($provenance['state'] !== CustomerTokenIdentity::STATE_VALID) {
+                    wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $canonical_token = $provenance['record']['token'];
+                $token_kind = $provenance['record']['kind'];
+                $token_scope = $scope;
+                $token_generation = isset($provenance['record']['secret_generation_id'])
+                    ? $provenance['record']['secret_generation_id']
+                    : null;
+
+                $gateway = $this;
+                $membership_valid = CustomerTokenIdentity::verify_card_membership(
+                    $credit_card_token,
+                    $canonical_token,
+                    function($token) use ($gateway) {
+                        return $gateway->getSavedCards($token);
+                    }
+                );
+
+                if (!$membership_valid) {
+                    wc_add_notice(__('Please select a valid payment method.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $isSaveCard = false;
             }
+            // CASE: Save Card or subscription requires canonical token.
+            elseif ($requires_token) {
+                if ($user_id <= 0) {
+                    wc_add_notice(__('Please log in to save a card or purchase a subscription.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
 
-            if (substr($customer_unq_token, 0, 1) === '0') {
-                $customer_unq_token = '1' . substr($customer_unq_token, 1);
+                if ($this->saveCardEnabled !== 'yes') {
+                    wc_add_notice(__('Please select a valid payment type.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $gateway = $this;
+                $token_result = CustomerTokenIdentity::get_or_establish_token(
+                    $user_id,
+                    $this->apiKey,
+                    $this->getMode(),
+                    function($candidate) use ($gateway) {
+                        $params = wp_json_encode(array('customerUniqueToken' => $candidate));
+                        return $gateway->execute_upayments_request('create-customer-unique-token', 'POST', $params);
+                    }
+                );
+
+                if (!$token_result['success']) {
+                    $this->log('Token establishment failed: ' . $token_result['reason'], 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $canonical_token = $token_result['token'];
+                $token_kind = isset($token_result['kind']) ? $token_result['kind'] : null;
+                $token_scope = isset($token_result['scope']) ? $token_result['scope'] : null;
+                $token_generation = isset($token_result['secret_generation_id']) ? $token_result['secret_generation_id'] : null;
             }
-
-            if ($this->saveCardEnabled === 'yes' && $isSaveCard) {
-                $customerUnqToken = $this->getCustomerUniqueToken($customer_unq_token);
-            } else {
-                $customerUnqToken = null;
+            // CASE: Ordinary payment — no canonical token required.
+            else {
+                $canonical_token = null;
+                $token_kind = null;
+                $token_scope = null;
+                $token_generation = null;
                 $isSaveCard = false;
             }
 
-            if(!empty($credit_card_token)){
-                $order->delete_meta_data("_upay_credit_card_token");
+            // Write current attempt snapshots.
+            if (!empty($credit_card_token)) {
                 $order->add_meta_data("_upay_credit_card_token", $credit_card_token);
-                $order->save_meta_data();
             }
 
-            if($customerUnqToken){
-                $order->delete_meta_data("_upay_customer_unique_token");
-                $order->add_meta_data("_upay_customer_unique_token", $customerUnqToken);
-                $order->save_meta_data();
+            if ($canonical_token !== null && $token_kind !== null && $token_scope !== null && $token_generation !== null) {
+                $order->add_meta_data("_upay_customer_unique_token", $canonical_token);
+                $order->add_meta_data("_upay_customer_token_kind_v1", $token_kind);
+                $order->add_meta_data("_upay_customer_token_scope_v1", $token_scope);
+                $order->add_meta_data("_upay_customer_token_generation_v1", $token_generation);
             }
+
+            $order->save_meta_data();
 
             $extraMerchantData = null;
             if ($this->multiMerchant == "yes") {
@@ -1762,9 +1874,9 @@ function woocommerceUpaymentsInit() {
                         "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"],
                         "email" => $order_data["billing"]["email"],
                     ),
-                    // uniqueId: preserve existing legacy behavior (included when legacy phone non-empty).
-                    $phone !== '' ? array(
-                        "uniqueId" => $customer_unq_token,
+                    // uniqueId: preserve existing legacy compatibility behavior.
+                    $customer_unique_id !== '' ? array(
+                        "uniqueId" => $customer_unique_id,
                     ) : array(),
                     // mobile: independent provider representation (only when valid international format).
                     $provider_mobile !== '' ? array(
@@ -1779,8 +1891,8 @@ function woocommerceUpaymentsInit() {
                 "isSaveCard" => $isSaveCard, 
                 "paymentGateway" => ["src" => $src,], 
                 "tokens" => [
-                    "creditCard" => $credit_card_token, 
-                    "customerUniqueToken" => $customerUnqToken, 
+                    "creditCard" => $credit_card_token,
+                    "customerUniqueToken" => $canonical_token,
                 ], 
                 "device" => [
                     "browser" => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0", 
@@ -2532,35 +2644,85 @@ function woocommerceUpaymentsInit() {
             return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
         }
 
-        public function getSavedCards($phone)
+        public function getSavedCards($customer_token)
         {
-            $api_key =  $this->apiKey;
-            $savedCards=null;
-            if (!empty($api_key))
-            {
-                $params = json_encode(["customerUniqueToken" => $phone]);
-                $transport = $this->execute_upayments_request('retrieve-customer-cards', 'POST', $params);
-
-                if ($transport['transport_ok']) {
-                    $result = json_decode((string) $transport['body'], true);
-                    if (is_array($result)
-                        && array_key_exists("status", $result)
-                        && !empty($result["status"])
-                        && isset($result['data'])
-                        && is_array($result['data'])
-                        && isset($result['data']['customerCards'])
-                        && is_array($result['data']['customerCards'])) {
-                        // An empty customerCards array is a valid success payload:
-                        // the customer has no saved cards. PR #8 Scheduler treats this
-                        // as zero POST / no saved card.
-                        $savedCards = array(
-                            'data'   => $result['data']['customerCards'],
-                            'result' => 'success',
-                        );
-                    }
-                }
+            $api_key = $this->apiKey;
+            if (empty($api_key) || !is_scalar($customer_token) || (string) $customer_token === '') {
+                return null;
             }
-            return $savedCards;
+
+            // Strict request input: must be ASCII numeric, 8-18 digits.
+            $token_str = (string) $customer_token;
+            if (!preg_match('/^[0-9]{8,18}$/', $token_str)) {
+                return null;
+            }
+
+            $params = wp_json_encode(array("customerUniqueToken" => $token_str));
+            $transport = $this->execute_upayments_request('retrieve-customer-cards', 'POST', $params);
+
+            if (!is_array($transport)) {
+                return null;
+            }
+
+            if (!isset($transport['transport_ok']) || !$transport['transport_ok']) {
+                return null;
+            }
+
+            if (!isset($transport['http_status']) || (int) $transport['http_status'] !== 201) {
+                return null;
+            }
+
+            if (!isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0) {
+                return null;
+            }
+
+            if (!isset($transport['body']) || !is_scalar($transport['body'])) {
+                return null;
+            }
+
+            $result = json_decode((string) $transport['body'], true);
+            if (!is_array($result)) {
+                return null;
+            }
+
+            if (!array_key_exists('status', $result) || $result['status'] !== true) {
+                return null;
+            }
+
+            if (!isset($result['data']) || !is_array($result['data'])) {
+                return null;
+            }
+
+            if (!array_key_exists('customerCards', $result['data']) || !is_array($result['data']['customerCards'])) {
+                return null;
+            }
+
+            return array(
+                'data' => $result['data']['customerCards'],
+                'result' => 'success',
+            );
+        }
+
+        public function getSavedCardsForCurrentUser()
+        {
+            $user_id = get_current_user_id();
+            if ($user_id <= 0) {
+                return null;
+            }
+
+            if ($this->saveCardEnabled !== 'yes') {
+                return null;
+            }
+
+            $gateway = $this;
+            return CustomerTokenIdentity::get_saved_cards_for_current_user(
+                $user_id,
+                $this->apiKey,
+                $this->getMode(),
+                function($token) use ($gateway) {
+                    return $gateway->getSavedCards($token);
+                }
+            );
         }
 
         public function getPaymentIcons()

@@ -92,44 +92,23 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
             }
 
             // 2. Get saved cards and login status
-            $loggedInUser = $this->gateway->get_logged_in_user_phone_number();
-            $is_logged_in = false;
-            $hasPhone = false;
-            $logged_in_phone = '';
+            $user_id = get_current_user_id();
+            $is_logged_in = $user_id > 0;
 
-            if (is_array($loggedInUser)
-                && isset($loggedInUser['success'])
-                && $loggedInUser['success'] === true
-            ) {
-                $is_logged_in = true;
-
-                // Only accept phone when scalar and non-empty after trim test.
-                if (isset($loggedInUser['phone'])
-                    && is_scalar($loggedInUser['phone'])
-                    && trim((string) $loggedInUser['phone']) !== ''
+            // Only retrieve saved cards when logged in and Save Card enabled.
+            if ($is_logged_in && $save_card_enabled) {
+                $savedCards = $this->gateway->getSavedCardsForCurrentUser();
+                if (is_array($savedCards)
+                    && isset($savedCards['result'])
+                    && $savedCards['result'] === 'success'
+                    && isset($savedCards['data'])
+                    && is_array($savedCards['data'])
                 ) {
-                    $hasPhone = true;
-                    $logged_in_phone = (string) $loggedInUser['phone'];
+                    $saved_cards = $savedCards['data'];
                 }
             }
 
-            // Only retrieve saved cards when logged in with valid phone.
-            if ($is_logged_in && $hasPhone) {
-                $user_id = get_current_user_id();
-                if ($user_id > 0) {
-                    $savedCards = $this->gateway->getSavedCards($logged_in_phone . $user_id);
-                    if (is_array($savedCards)
-                        && isset($savedCards['result'])
-                        && $savedCards['result'] === 'success'
-                        && isset($savedCards['data'])
-                        && is_array($savedCards['data'])
-                    ) {
-                        $saved_cards = $savedCards['data'];
-                    }
-                }
-            }
-
-            $save_card_on = $hasPhone;
+            $save_card_on = false;
 
         }
         if ( WC()->cart ) {
