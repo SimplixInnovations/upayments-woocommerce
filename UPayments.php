@@ -422,23 +422,6 @@ function woocommerceUpaymentsInit() {
                 return $settings;
             });
 
-            // Ensure phone number is required for Save Card functionality to work smoothly
-            add_filter('woocommerce_checkout_fields', function ($fields) {
-
-                // Make phone required
-                $fields['billing']['billing_phone']['required'] = true;
-
-                // Optional: update label to show *
-                $fields['billing']['billing_phone']['label'] = __('Phone', 'woocommerce');
-
-                return $fields;
-            });
-            // Additional validation for phone number format to ensure Save Card functionality works smoothly
-            add_filter('woocommerce_billing_fields', function ($fields) {
-                $fields['billing_phone']['required'] = true;
-                return $fields;
-            });
-
             // Validation for phone number on account details page to ensure Save Card functionality works smoothly
             add_action('woocommerce_save_account_details_errors', function ($errors, $user) {
                 if (empty($_POST['billing_phone'])) {
@@ -1697,20 +1680,35 @@ function woocommerceUpaymentsInit() {
 
             $customer_unq_token = null;
             $credit_card_token = $cardToken;
-            $phone = str_replace(' ', '', $order_data["billing"]["phone"]); // Replaces all spaces with hyphens.
-            $phone = preg_replace('/[^A-Za-z0-9\-]/','',$phone);
+
+            // Read phone through WC Order API (works for both Classic and Blocks).
+            $billing_phone_raw = $order->get_billing_phone();
+            $phone = is_scalar($billing_phone_raw) ? (string) $billing_phone_raw : '';
+            // Preserve legacy normalization used by existing token flow.
+            $phone = str_replace(' ', '', $phone);
+            $phone = preg_replace('/[^A-Za-z0-9\-]/', '', $phone);
+
+            // Determine if this transaction requires phone for token-dependent flow.
+            $requires_token_phone = $isSaveCard || $subscription_plan !== 'one_time';
+
+            // Enforce UPayments-specific phone requirement at payment boundary.
+            if ($requires_token_phone && $phone === '') {
+                wc_add_notice(__('Billing phone number is required to save a card or purchase a subscription.', 'upayments'), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
             $customer_unq_token = $phone;
 
             $user_id = get_current_user_id();
-            if($user_id && !empty($customer_unq_token)) {
-                $customer_unq_token = $customer_unq_token.$user_id;
+            if ($user_id && !empty($customer_unq_token)) {
+                $customer_unq_token = $customer_unq_token . $user_id;
             }
 
             if (substr($customer_unq_token, 0, 1) === '0') {
                 $customer_unq_token = '1' . substr($customer_unq_token, 1);
             }
 
-            if($this->saveCardEnabled === 'yes' && $isSaveCard) {
+            if ($this->saveCardEnabled === 'yes' && $isSaveCard) {
                 $customerUnqToken = $this->getCustomerUniqueToken($customer_unq_token);
             } else {
                 $customerUnqToken = null;
@@ -1759,12 +1757,16 @@ function woocommerceUpaymentsInit() {
                 "reference" => [
                     "id" => "".$order_id, 
                 ], 
-                "customer" => [
-                    "uniqueId" => $customer_unq_token, 
-                    "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"], 
-                    "email" => $order_data["billing"]["email"], 
-                    "mobile" => $phone, 
-                ], 
+                "customer" => array_merge(
+                    array(
+                        "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"],
+                        "email" => $order_data["billing"]["email"],
+                    ),
+                    $phone !== '' ? array(
+                        "uniqueId" => $customer_unq_token,
+                        "mobile" => $phone,
+                    ) : array()
+                ),
                 "plugin" => [
                     "src" => "woocommerce", 
                 ], 
@@ -3352,8 +3354,6 @@ add_action('woocommerce_init', function () {
 });
 
 add_action('init', function () {
-    update_option('woocommerce_checkout_phone_field', 'required');
-
     $action = isset($_GET['upay_action'])
         ? sanitize_key(wp_unslash($_GET['upay_action']))
         : '';

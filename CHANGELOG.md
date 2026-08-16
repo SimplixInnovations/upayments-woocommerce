@@ -15,6 +15,10 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Stop persistently overriding WooCommerce phone-field configuration on every request.
+- Stop globally forcing billing phone required through UPayments Classic field filters, allowing other gateways to respect merchant phone settings.
+- Enforce phone only at UPayments payment boundary for current Save Card and subscription token-dependent flows.
+- Prevent Blocks saved-card retrieval when no usable phone is available, fixing empty-token lookup.
 - Escape UPayments payment metadata at render time in admin order details and order-details template.
 - Harden Classic saved-card rendering against malformed or provider-controlled values with structural guards and context-specific escaping.
 - Contextually escape template text, attributes, and URLs in Classic checkout templates.
