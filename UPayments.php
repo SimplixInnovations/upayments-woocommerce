@@ -1672,6 +1672,22 @@ function woocommerceUpaymentsInit() {
             $phone = str_replace(' ', '', $phone);
             $phone = preg_replace('/[^A-Za-z0-9\-]/', '', $phone);
 
+            // Provider mobile: separate representation for API customer.mobile.
+            // Only send when explicit international format can be safely established.
+            $provider_mobile = '';
+            if (is_scalar($billing_phone_raw)) {
+                $raw = trim((string) $billing_phone_raw);
+                // Only normalize if user supplied explicit leading +.
+                if (strlen($raw) > 1 && $raw[0] === '+') {
+                    // Remove ordinary presentation separators.
+                    $candidate = preg_replace('/[\s\-\(\)]+/', '', $raw);
+                    // Must be + followed by only ASCII digits, max 15 chars total.
+                    if (preg_match('/^\+[0-9]+$/', $candidate) && strlen($candidate) <= 15) {
+                        $provider_mobile = $candidate;
+                    }
+                }
+            }
+
             // Determine if this transaction requires phone for token-dependent flow.
             $requires_token_phone = $isSaveCard || $subscription_plan !== 'one_time';
 
@@ -1746,9 +1762,13 @@ function woocommerceUpaymentsInit() {
                         "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"],
                         "email" => $order_data["billing"]["email"],
                     ),
+                    // uniqueId: preserve existing legacy behavior (included when legacy phone non-empty).
                     $phone !== '' ? array(
                         "uniqueId" => $customer_unq_token,
-                        "mobile" => $phone,
+                    ) : array(),
+                    // mobile: independent provider representation (only when valid international format).
+                    $provider_mobile !== '' ? array(
+                        "mobile" => $provider_mobile,
                     ) : array()
                 ),
                 "plugin" => [
