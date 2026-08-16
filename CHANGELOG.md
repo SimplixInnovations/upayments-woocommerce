@@ -15,6 +15,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Separate provider-facing customer.mobile from legacy saved-card/customer-token identity so that malformed or ambiguous phone representations are not sent to UPayments while existing token identity remains backward-compatible.
 - Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Phone requirements for Save Card and subscription remain enforced at the payment boundary.
 - Stop persistently overriding WooCommerce phone-field configuration on every request.
 - Stop globally forcing billing phone required through UPayments Classic field filters, allowing other gateways to respect merchant phone settings.
