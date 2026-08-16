@@ -1497,6 +1497,7 @@ function woocommerceUpaymentsInit() {
             $isSaveCardRequested   = false;
             $subscription_plan     = 'one_time';
             $subscription_interval = 0;
+            $user_id               = get_current_user_id();
 
             // 1. Get Extension Data from the Blocks Checkout
             // WooCommerce Blocks sends this data in the request body, not $_POST.
@@ -1578,6 +1579,9 @@ function woocommerceUpaymentsInit() {
             }
             // Non-whitelabel: $src remains 'knet' (the default).
 
+            // Derive selected-card state after both Blocks/Classic paths resolved.
+            $has_selected_card = is_string($cardToken) && $cardToken !== '';
+
             // === CROSS-PATH VALIDATION (applies to both Classic and Blocks) ===
 
             // Payment source server allowlist.
@@ -1645,7 +1649,7 @@ function woocommerceUpaymentsInit() {
                 }
                 // For new card (no existing saved card token), require explicit save-card opt-in.
                 // For existing saved card (cardToken present), do NOT require save-card toggle.
-                if (empty($cardToken) && !$isSaveCardRequested) {
+                if (!$has_selected_card && !$isSaveCardRequested) {
                     $this->log("Subscription checkout with new card requires save-card opt-in.");
                     wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
@@ -1659,21 +1663,33 @@ function woocommerceUpaymentsInit() {
             }
 
             // === POST-VALIDATION METADATA ===
+            $customer_unq_token = null;
+            $credit_card_token = $cardToken;
+
+            // === SERVER-SIDE SAVE-CARD REQUEST CONTRACT (Section T) ===
+            // An explicit Save Card request is valid ONLY for:
+            // logged-in, Save Card enabled, whitelabel, CC source, NEW card.
+            if ($isSaveCardRequested) {
+                if ($user_id <= 0
+                    || $this->saveCardEnabled !== 'yes'
+                    || !$whitelabled
+                    || $src !== 'cc'
+                    || $has_selected_card
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
+            // === EFFECTIVE SAVE CARD (Section U) ===
+            // After contract validation: only new CC + explicit opt-in.
+            $isSaveCard = $isSaveCardRequested && !$has_selected_card;
+
             // Stage UPayments_Checkout_Selected only after source is validated.
             if ($whitelabled) {
                 $order->delete_meta_data("UPayments_Checkout_Selected");
                 $order->add_meta_data("UPayments_Checkout_Selected", $src);
-                // Effective isSaveCard: only when new CC + explicit opt-in + logged-in + feature enabled.
-                // Existing saved card (non-empty cardToken) must NOT be re-saved.
-                $isSaveCard = $src === 'cc'
-                    && empty($credit_card_token)
-                    && $isSaveCardRequested
-                    && $user_id > 0
-                    && $this->saveCardEnabled === 'yes';
             }
-
-            $customer_unq_token = null;
-            $credit_card_token = $cardToken;
 
             // Read phone through WC Order API (works for both Classic and Blocks).
             $billing_phone_raw = $order->get_billing_phone();
@@ -1687,11 +1703,8 @@ function woocommerceUpaymentsInit() {
             $provider_mobile = '';
             if (is_scalar($billing_phone_raw)) {
                 $raw = trim((string) $billing_phone_raw);
-                // Only normalize if user supplied explicit leading +.
                 if (strlen($raw) > 1 && $raw[0] === '+') {
-                    // Remove ordinary presentation separators.
                     $candidate = preg_replace('/[\s\-\(\)]+/', '', $raw);
-                    // Must be + followed by only ASCII digits, max 15 chars total.
                     if (preg_match('/^\+[0-9]+$/', $candidate) && strlen($candidate) <= 15) {
                         $provider_mobile = $candidate;
                     }
@@ -1704,8 +1717,6 @@ function woocommerceUpaymentsInit() {
             $token_kind = null;
             $token_scope = null;
             $token_generation = null;
-
-            $user_id = get_current_user_id();
 
             // Compute customer.uniqueId using pre-PR16 compatibility behavior.
             $billing_phone_raw = $order->get_billing_phone();
@@ -1731,7 +1742,7 @@ function woocommerceUpaymentsInit() {
             }
 
             // CASE: Selected saved card requires membership validation.
-            if (!empty($credit_card_token)) {
+            if ($has_selected_card) {
                 if ($user_id <= 0) {
                     wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -1826,7 +1837,24 @@ function woocommerceUpaymentsInit() {
             }
 
             // Write current attempt snapshots.
-            if (!empty($credit_card_token)) {
+            // First validate runtime token context (Section W).
+            $expected_scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
+            $expected_generation = CustomerTokenIdentity::get_generation_id();
+
+            if (!CustomerTokenIdentity::validate_token_runtime_context(
+                $canonical_token,
+                $token_kind,
+                $token_scope,
+                $token_generation,
+                $expected_scope !== null ? $expected_scope : '',
+                $expected_generation !== null ? $expected_generation : ''
+            )) {
+                $this->log('Runtime token context validation failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            if ($has_selected_card) {
                 $order->add_meta_data("_upay_credit_card_token", $credit_card_token);
             }
 

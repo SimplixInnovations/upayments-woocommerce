@@ -21,7 +21,7 @@ class CustomerTokenIdentity {
 
     const GENERATION_ID_HEX_LENGTH = 32;
 
-    const VERIFIER_MESSAGE = 'upayments_token_identity_verifier_v1';
+    const VERIFIER_DOMAIN = 'upayments_token_identity_secret_record_v1';
 
     const SCOPE_HEX_LENGTH = 32;
 
@@ -65,6 +65,8 @@ class CustomerTokenIdentity {
 
     const HISTORY_SECRET_GENERATION_MISMATCH = 'secret_generation_mismatch';
 
+    const HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY = 'card_without_customer_identity';
+
     // ────────────────────────────────────────────────────────
     // SECRET RECORD
     // ────────────────────────────────────────────────────────
@@ -72,35 +74,45 @@ class CustomerTokenIdentity {
     public static function get_or_create_secret_record() {
         global $wpdb;
 
-        $existing = get_option(self::SECRET_OPTION, '');
+        // Use unique sentinel to distinguish missing from malformed.
+        $missing = new \stdClass();
+        $existing = get_option(self::SECRET_OPTION, $missing);
 
-        if (is_array($existing) && self::is_valid_secret_record($existing)) {
-            return $existing;
-        }
-
-        if ($existing !== '' && $existing !== false) {
+        if ($existing !== $missing) {
+            if (is_array($existing) && self::is_valid_secret_record($existing)) {
+                return $existing;
+            }
+            // existing but malformed: FAIL CLOSED
             return null;
         }
 
+        // Only here is the option genuinely absent — proceed to check provenance.
         $blog_id = (string) get_current_blog_id();
         $meta_prefix = '_upay_customer_token_v2_b' . $blog_id . '_';
         $escaped_prefix = $wpdb->esc_like($meta_prefix);
 
-        $exists = $wpdb->get_var(
+        // Use $wpdb->query() for unambiguous row-count semantics.
+        $row_count = $wpdb->query(
             $wpdb->prepare(
                 "SELECT 1 FROM {$wpdb->usermeta} WHERE meta_key LIKE %s LIMIT 1",
                 $escaped_prefix . '%'
             )
         );
 
-        if ($exists === null) {
-            return null;
+        if ($row_count === false) {
+            return null; // DB failure
         }
 
+        if ((int) $row_count > 0) {
+            return null; // identity artifacts exist, secret is missing: FAIL CLOSED
+        }
+
+        // exactly 0 rows: safe fresh initialization candidate
         try {
             $secret = bin2hex(random_bytes(self::SECRET_BYTES));
             $generation_id = bin2hex(random_bytes(self::GENERATION_ID_BYTES));
-            $verifier = hash_hmac('sha256', self::VERIFIER_MESSAGE, $secret);
+            // Verifier binds domain + version + generation_id using secret as key.
+            $verifier = hash_hmac('sha256', self::VERIFIER_DOMAIN . '|1|' . $generation_id, $secret);
         } catch (\Throwable $e) {
             return null;
         }
@@ -128,8 +140,9 @@ class CustomerTokenIdentity {
             return $record;
         }
 
-        $read_back = get_option(self::SECRET_OPTION, '');
-        if (is_array($read_back) && self::is_valid_secret_record($read_back)) {
+        // Race: another worker created it. Read back and validate.
+        $read_back = get_option(self::SECRET_OPTION, $missing);
+        if ($read_back !== $missing && is_array($read_back) && self::is_valid_secret_record($read_back)) {
             return $read_back;
         }
 
@@ -157,7 +170,12 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $expected_verifier = hash_hmac('sha256', self::VERIFIER_MESSAGE, $record['secret']);
+        // Verifier binds domain + version + generation_id.
+        $expected_verifier = hash_hmac(
+            'sha256',
+            self::VERIFIER_DOMAIN . '|' . $record['version'] . '|' . $record['generation_id'],
+            $record['secret']
+        );
 
         return hash_equals($expected_verifier, $record['verifier']);
     }
@@ -287,7 +305,7 @@ class CustomerTokenIdentity {
     }
 
     // ────────────────────────────────────────────────────────
-    // READ PROVENANCE (authoritative)
+    // READ PROVENANCE (authoritative, exactly-one-record)
     // ────────────────────────────────────────────────────────
 
     public static function read_provenance($user_id, $scope_fingerprint) {
@@ -301,18 +319,24 @@ class CustomerTokenIdentity {
             return array('state' => self::STATE_INVALID, 'record' => null);
         }
 
-        $exists = metadata_exists('user', $user_id, $meta_key);
-        if (!$exists) {
+        // Retrieve ALL values for exact user/meta key to detect duplicates.
+        $all_values = get_user_meta($user_id, $meta_key, false);
+
+        if (!is_array($all_values) || count($all_values) === 0) {
             return array('state' => self::STATE_ABSENT, 'record' => null);
         }
 
-        $record = get_user_meta($user_id, $meta_key, true);
+        if (count($all_values) > 1) {
+            return array('state' => self::STATE_INVALID, 'record' => null);
+        }
+
+        $record = $all_values[0];
 
         if (!is_array($record)) {
             return array('state' => self::STATE_INVALID, 'record' => $record);
         }
 
-        $validation = self::validate_provenance_record($record, $scope_fingerprint);
+        $validation = self::validate_provenance_record($record, $scope_fingerprint, true);
         if ($validation === 'valid') {
             return array('state' => self::STATE_VALID, 'record' => $record);
         }
@@ -320,7 +344,15 @@ class CustomerTokenIdentity {
         return array('state' => self::STATE_INVALID, 'record' => $record);
     }
 
-    private static function validate_provenance_record($record, $requested_scope) {
+    /**
+     * Validate a provenance record structure.
+     *
+     * @param array  $record                     The provenance record.
+     * @param string $requested_scope            The scope from the meta key.
+     * @param bool   $require_current_generation Whether to require current generation match.
+     * @return string 'valid', 'invalid', or 'generation_mismatch'
+     */
+    private static function validate_provenance_record($record, $requested_scope, $require_current_generation = true) {
         if (!isset($record['version']) || !is_int($record['version']) || $record['version'] !== self::SCHEMA_VERSION) {
             return 'invalid';
         }
@@ -373,9 +405,18 @@ class CustomerTokenIdentity {
             return 'invalid';
         }
 
-        $current_generation = self::get_generation_id();
-        if ($current_generation === null || $record['secret_generation_id'] !== $current_generation) {
-            return 'invalid';
+        // Generation binding (optional for prior-provenance inspection).
+        if ($require_current_generation) {
+            $current_generation = self::get_generation_id();
+            if ($current_generation === null || $record['secret_generation_id'] !== $current_generation) {
+                return 'invalid';
+            }
+        } else {
+            // Structural OK but check generation match explicitly.
+            $current_generation = self::get_generation_id();
+            if ($current_generation !== null && $record['secret_generation_id'] !== $current_generation) {
+                return 'generation_mismatch';
+            }
         }
 
         if (!isset($record['established_at_gmt']) || !is_int($record['established_at_gmt']) || $record['established_at_gmt'] <= 0) {
@@ -543,14 +584,25 @@ class CustomerTokenIdentity {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'no_generation');
         }
 
-        $total_orders = 0;
+        $scanned_unique_count = 0;
+        $seen_order_ids = array();
         $found_tokens = array();
         $page = 1;
         $expected_total = null;
+        $expected_max_pages = null;
 
-        while ($total_orders < self::HISTORY_MAX_ORDERS) {
+        $has_generation_mismatch = false;
+        $has_malformed = false;
+        $has_unscoped = false;
+        $has_current_scope_orphan = false;
+        $has_prior_scope_same_gen = false;
+        $has_card_without_identity = false;
+        $has_card_token_malformed = false;
+
+        while ($scanned_unique_count < self::HISTORY_MAX_ORDERS) {
             try {
                 $orders = wc_get_orders(array(
+                    'type' => 'shop_order',
                     'customer_id' => $user_id,
                     'payment_method' => 'upayments',
                     'limit' => self::HISTORY_PAGE_SIZE,
@@ -581,11 +633,28 @@ class CustomerTokenIdentity {
             }
 
             $current_total = (int) $orders->total;
+            $current_max_pages = (int) $orders->max_num_pages;
 
             if ($expected_total === null) {
                 $expected_total = $current_total;
-            } elseif ($current_total !== $expected_total) {
-                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'total_changed');
+                $expected_max_pages = $current_max_pages;
+            } else {
+                if ($current_total !== $expected_total) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'total_changed');
+                }
+                if ($current_max_pages !== $expected_max_pages) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'max_pages_changed');
+                }
+            }
+
+            // Page size check.
+            if (count($orders->orders) > self::HISTORY_PAGE_SIZE) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'oversized_page');
+            }
+
+            // Unexpected empty page.
+            if (empty($orders->orders) && $scanned_unique_count < $expected_total) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unexpected_empty_page');
             }
 
             if (empty($orders->orders)) {
@@ -593,134 +662,173 @@ class CustomerTokenIdentity {
             }
 
             foreach ($orders->orders as $order_id) {
-                $order = wc_get_order($order_id);
+                $order_id_int = (int) $order_id;
+                if ($order_id_int <= 0) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_order_id');
+                }
+
+                // Duplicate ID across pages.
+                if (isset($seen_order_ids[$order_id_int])) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'duplicate_order_id');
+                }
+                $seen_order_ids[$order_id_int] = true;
+                $scanned_unique_count++;
+
+                $order = wc_get_order($order_id_int);
                 if (!$order) {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unloadable_order');
                 }
 
+                // ── Historical customer token meta ──
                 $has_token = $order->meta_exists('_upay_customer_unique_token');
+
                 if (!$has_token) {
+                    // No customer-token evidence — check card-token-only (Section P).
+                    $has_card = $order->meta_exists('_upay_credit_card_token');
+                    if ($has_card) {
+                        $card_val = $order->get_meta('_upay_credit_card_token', true);
+                        if (!is_scalar($card_val)) {
+                            $has_card_token_malformed = true;
+                        } elseif ((string) $card_val !== '') {
+                            $has_card_without_identity = true;
+                        }
+                    }
                     continue;
                 }
 
                 $token = $order->get_meta('_upay_customer_unique_token', true);
-                if (!is_scalar($token) || (string) $token === '') {
-                    $found_tokens[] = array(
-                        'token' => '',
-                        'kind' => '',
-                        'scope' => '',
-                        'generation' => '',
-                        'has_token_meta' => true,
-                        'token_empty' => true,
-                    );
+                if (!is_scalar($token)) {
+                    $has_malformed = true;
                     continue;
                 }
 
-                $kind = $order->get_meta('_upay_customer_token_kind_v1', true);
-                $scope = $order->get_meta('_upay_customer_token_scope_v1', true);
-                $generation = $order->get_meta('_upay_customer_token_generation_v1', true);
+                $token_str = (string) $token;
+                if ($token_str === '') {
+                    // Empty token — no useful evidence, but check card-only.
+                    $has_card = $order->meta_exists('_upay_credit_card_token');
+                    if ($has_card) {
+                        $card_val = $order->get_meta('_upay_credit_card_token', true);
+                        if (!is_scalar($card_val)) {
+                            $has_card_token_malformed = true;
+                        } elseif ((string) $card_val !== '') {
+                            $has_card_without_identity = true;
+                        }
+                    }
+                    continue;
+                }
 
+                // Nonempty token — validate basic grammar before classification.
+                if (!preg_match('/^[0-9]{8,18}$/', $token_str)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                // ── Snapshot presence matrix (Section N) ──
                 $has_kind = $order->meta_exists('_upay_customer_token_kind_v1');
                 $has_scope = $order->meta_exists('_upay_customer_token_scope_v1');
                 $has_generation = $order->meta_exists('_upay_customer_token_generation_v1');
 
-                $found_tokens[] = array(
-                    'token' => (string) $token,
-                    'kind' => is_scalar($kind) ? (string) $kind : '',
-                    'scope' => is_scalar($scope) ? (string) $scope : '',
-                    'generation' => is_scalar($generation) ? (string) $generation : '',
-                    'has_kind' => $has_kind,
-                    'has_scope' => $has_scope,
-                    'has_generation' => $has_generation,
-                    'token_empty' => false,
-                );
+                $all_three_present = $has_kind && $has_scope && $has_generation;
+                $all_three_absent = !$has_kind && !$has_scope && !$has_generation;
+
+                if (!$all_three_present && !$all_three_absent) {
+                    // Partial snapshot.
+                    $has_malformed = true;
+                    continue;
+                }
+
+                if ($all_three_absent) {
+                    // Unscoped legacy.
+                    $has_unscoped = true;
+                    continue;
+                }
+
+                // All three present — validate (Section O).
+                $kind = $order->get_meta('_upay_customer_token_kind_v1', true);
+                $scope = $order->get_meta('_upay_customer_token_scope_v1', true);
+                $generation = $order->get_meta('_upay_customer_token_generation_v1', true);
+
+                if (!is_scalar($kind) || !is_scalar($scope) || !is_scalar($generation)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                $kind_str = (string) $kind;
+                $scope_str = (string) $scope;
+                $gen_str = (string) $generation;
+
+                if ($kind_str === '' || $scope_str === '' || $gen_str === '') {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                $valid_kinds = array(self::KIND_CANONICAL, self::KIND_LEGACY_COMPAT);
+                if (!in_array($kind_str, $valid_kinds, true)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                if (!self::is_valid_token_for_kind($token_str, $kind_str)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                if (!self::is_valid_scope($scope_str)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                if (!self::is_valid_hex($gen_str, self::GENERATION_ID_HEX_LENGTH)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                if ($gen_str !== $current_generation) {
+                    $has_generation_mismatch = true;
+                    continue;
+                }
+
+                if ($scope_str === $current_scope) {
+                    $has_current_scope_orphan = true;
+                } else {
+                    $has_prior_scope_same_gen = true;
+                }
             }
 
-            $total_orders += count($orders->orders);
             $page++;
 
-            if ($total_orders >= $expected_total) {
+            if ($scanned_unique_count >= $expected_total) {
                 break;
             }
         }
 
-        $is_complete = ($total_orders < self::HISTORY_MAX_ORDERS) || ($total_orders >= $expected_total);
+        // Completeness: genuinely scanned all expected orders.
+        $is_complete = ($expected_total !== null)
+            && ($scanned_unique_count >= $expected_total || $scanned_unique_count >= self::HISTORY_MAX_ORDERS);
 
-        if (!$is_complete && empty($found_tokens)) {
-            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'safety_cap_reached_no_tokens');
+        // If cap reached without completing, and no definitive blocker found yet: INDETERMINATE.
+        if (!$is_complete
+            && !$has_generation_mismatch
+            && !$has_malformed
+            && !$has_card_token_malformed
+            && !$has_card_without_identity
+            && !$has_unscoped
+            && !$has_current_scope_orphan
+        ) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'safety_cap_reached');
         }
 
-        if (empty($found_tokens)) {
-            return array('classification' => self::HISTORY_NONE, 'reason' => 'no_tokens_found');
-        }
-
-        $has_generation_mismatch = false;
-        $has_malformed = false;
-        $has_unscoped = false;
-        $has_current_scope_orphan = false;
-        $has_prior_scope_same_gen = false;
-
-        foreach ($found_tokens as $entry) {
-            if ($entry['token_empty']) {
-                continue;
-            }
-
-            $kind = $entry['kind'];
-            $scope = $entry['scope'];
-            $generation = $entry['generation'];
-            $has_kind = $entry['has_kind'];
-            $has_scope = $entry['has_scope'];
-            $has_generation = $entry['has_generation'];
-
-            if (!$has_kind || !$has_scope || !$has_generation) {
-                $has_unscoped = true;
-                continue;
-            }
-
-            if ($kind === '' || $scope === '' || $generation === '') {
-                $has_unscoped = true;
-                continue;
-            }
-
-            if (!self::is_valid_scope($scope)) {
-                $has_malformed = true;
-                continue;
-            }
-
-            $valid_kinds = array(self::KIND_CANONICAL, self::KIND_LEGACY_COMPAT);
-            if (!in_array($kind, $valid_kinds, true)) {
-                $has_malformed = true;
-                continue;
-            }
-
-            if (!self::is_valid_token_for_kind($entry['token'], $kind)) {
-                $has_malformed = true;
-                continue;
-            }
-
-            if (!self::is_valid_hex($generation, self::GENERATION_ID_HEX_LENGTH)) {
-                $has_malformed = true;
-                continue;
-            }
-
-            if ($generation !== $current_generation) {
-                $has_generation_mismatch = true;
-                continue;
-            }
-
-            if ($scope === $current_scope) {
-                $has_current_scope_orphan = true;
-            } else {
-                $has_prior_scope_same_gen = true;
-            }
-        }
-
+        // Blocker precedence (Section Q).
         if ($has_generation_mismatch) {
             return array('classification' => self::HISTORY_SECRET_GENERATION_MISMATCH, 'reason' => 'generation_mismatch');
         }
 
-        if ($has_malformed) {
+        if ($has_malformed || $has_card_token_malformed) {
             return array('classification' => self::HISTORY_MALFORMED_SCOPED, 'reason' => 'malformed_snapshot');
+        }
+
+        if ($has_card_without_identity) {
+            return array('classification' => self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY, 'reason' => 'card_without_customer_identity');
         }
 
         if ($has_unscoped) {
@@ -737,6 +845,10 @@ class CustomerTokenIdentity {
 
         if ($has_prior_scope_same_gen) {
             return array('classification' => self::HISTORY_PRIOR_SCOPE_ONLY, 'reason' => 'prior_scope_same_generation');
+        }
+
+        if ($scanned_unique_count === 0) {
+            return array('classification' => self::HISTORY_NONE, 'reason' => 'no_tokens_found');
         }
 
         return array('classification' => self::HISTORY_NONE, 'reason' => 'no_blocking_history');
@@ -761,7 +873,8 @@ class CustomerTokenIdentity {
         $meta_prefix = '_upay_customer_token_v2_b' . $blog_id . '_';
         $escaped_prefix = $wpdb->esc_like($meta_prefix);
 
-        $meta_keys = $wpdb->get_col(
+        // Use $wpdb->query() for unambiguous DB-error semantics (Section G).
+        $query_result = $wpdb->query(
             $wpdb->prepare(
                 "SELECT meta_key FROM {$wpdb->usermeta} WHERE user_id = %d AND meta_key LIKE %s",
                 $user_id,
@@ -769,12 +882,18 @@ class CustomerTokenIdentity {
             )
         );
 
-        if ($meta_keys === null) {
+        if ($query_result === false) {
             return array('state' => 'read_failure', 'reason' => 'db_query_failed');
         }
 
-        if (empty($meta_keys)) {
+        if ((int) $query_result === 0) {
             return array('state' => 'none', 'reason' => 'no_provenance_records');
+        }
+
+        $meta_keys = $wpdb->get_col(null);
+
+        if (!is_array($meta_keys) || count($meta_keys) !== (int) $query_result) {
+            return array('state' => 'read_failure', 'reason' => 'db_result_inconsistent');
         }
 
         $has_generation_mismatch = false;
@@ -787,27 +906,39 @@ class CustomerTokenIdentity {
                 continue;
             }
 
-            $record = get_user_meta($user_id, $meta_key, true);
+            // Retrieve ALL values for exact meta key to detect duplicates (Section H).
+            $all_values = get_user_meta($user_id, $meta_key, false);
+
+            if (!is_array($all_values) || count($all_values) === 0) {
+                $has_invalid = true;
+                continue;
+            }
+
+            if (count($all_values) > 1) {
+                $has_invalid = true;
+                continue;
+            }
+
+            $record = $all_values[0];
 
             if (!is_array($record)) {
                 $has_invalid = true;
                 continue;
             }
 
-            $validation = self::validate_provenance_record($record, $scope_from_key);
-            if ($validation !== 'valid') {
+            // Structural validation without requiring current generation (Section F).
+            $validation = self::validate_provenance_record($record, $scope_from_key, false);
+            if ($validation === 'invalid') {
                 $has_invalid = true;
                 continue;
             }
 
-            if (!isset($record['secret_generation_id']) || !is_string($record['secret_generation_id'])) {
-                $has_invalid = true;
-                continue;
-            }
-
-            if ($record['secret_generation_id'] !== $current_generation) {
+            if ($validation === 'generation_mismatch') {
                 $has_generation_mismatch = true;
+                continue;
             }
+
+            // validation === 'valid': structurally OK, generation matches.
         }
 
         if ($has_generation_mismatch) {
@@ -825,9 +956,29 @@ class CustomerTokenIdentity {
     // VALIDATE TOKEN RUNTIME CONTEXT
     // ────────────────────────────────────────────────────────
 
-    public static function validate_token_runtime_context($token, $kind, $scope, $generation_id) {
+    /**
+     * Validate the runtime token context tuple.
+     *
+     * For ordinary (null-token) payments, all four token fields must be null.
+     * For tokenized payments, all fields must be valid and match expected values.
+     *
+     * @param string|null $token              The customer unique token.
+     * @param string|null $kind               The token kind.
+     * @param string|null $scope              The scope fingerprint.
+     * @param string|null $generation_id      The secret generation ID.
+     * @param string      $expected_scope     The authoritative expected scope.
+     * @param string      $expected_generation The authoritative expected generation.
+     * @return bool
+     */
+    public static function validate_token_runtime_context($token, $kind, $scope, $generation_id, $expected_scope, $expected_generation) {
+        // Null token = ordinary payment, all four must be null.
         if ($token === null) {
-            return true;
+            return ($kind === null && $scope === null && $generation_id === null);
+        }
+
+        // Non-null token requires all fields.
+        if ($kind === null || $scope === null || $generation_id === null) {
+            return false;
         }
 
         if (!is_string($kind) || !in_array($kind, array(self::KIND_CANONICAL, self::KIND_LEGACY_COMPAT), true)) {
@@ -846,16 +997,20 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $current_generation = self::get_generation_id();
-        if ($current_generation === null || $generation_id !== $current_generation) {
+        // Validate expected values.
+        if (!self::is_valid_scope($expected_scope)) {
             return false;
         }
 
-        $current_scope = self::get_scope_fingerprint(
-            get_option('upayments_api_key', ''),
-            get_option('upayments_test_mode', 'no') === 'yes'
-        );
-        if ($current_scope === null || $scope !== $current_scope) {
+        if (!self::is_valid_hex($expected_generation, self::GENERATION_ID_HEX_LENGTH)) {
+            return false;
+        }
+
+        if ($scope !== $expected_scope) {
+            return false;
+        }
+
+        if ($generation_id !== $expected_generation) {
             return false;
         }
 
@@ -934,6 +1089,7 @@ class CustomerTokenIdentity {
             self::HISTORY_MALFORMED_SCOPED,
             self::HISTORY_CURRENT_SCOPE_ORPHAN,
             self::HISTORY_SECRET_GENERATION_MISMATCH,
+            self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY,
         );
 
         if (in_array($history['classification'], $blocking_states, true)) {
@@ -1192,13 +1348,26 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $has_token = $order->meta_exists('_upay_customer_unique_token');
-        $has_kind = $order->meta_exists('_upay_customer_token_kind_v1');
-        $has_scope = $order->meta_exists('_upay_customer_token_scope_v1');
-        $has_generation = $order->meta_exists('_upay_customer_token_generation_v1');
+        $keys = array(
+            '_upay_customer_unique_token',
+            '_upay_customer_token_kind_v1',
+            '_upay_customer_token_scope_v1',
+            '_upay_customer_token_generation_v1',
+        );
 
-        if (!$has_token || !$has_kind || !$has_scope || !$has_generation) {
-            return true;
+        // All 4 keys must exist.
+        foreach ($keys as $key) {
+            if (!$order->meta_exists($key)) {
+                return true; // partial — preserve
+            }
+        }
+
+        // Each key must have exactly one value.
+        foreach ($keys as $key) {
+            $vals = $order->get_meta($key, false);
+            if (!is_array($vals) || count($vals) !== 1) {
+                return true; // duplicate — preserve
+            }
         }
 
         $kind = $order->get_meta('_upay_customer_token_kind_v1', true);
@@ -1207,36 +1376,36 @@ class CustomerTokenIdentity {
         $token = $order->get_meta('_upay_customer_unique_token', true);
 
         if (!is_scalar($kind) || !is_scalar($scope) || !is_scalar($generation) || !is_scalar($token)) {
-            return true;
+            return true; // non-scalar — preserve
         }
 
         $valid_kinds = array(self::KIND_CANONICAL, self::KIND_LEGACY_COMPAT);
         if (!in_array((string) $kind, $valid_kinds, true)) {
-            return true;
+            return true; // unknown kind — preserve
         }
 
         if (!self::is_valid_token_for_kind($token, (string) $kind)) {
-            return true;
+            return true; // malformed token — preserve
         }
 
         if (!self::is_valid_scope((string) $scope)) {
-            return true;
+            return true; // malformed scope — preserve
         }
 
         if (!self::is_valid_hex((string) $generation, self::GENERATION_ID_HEX_LENGTH)) {
-            return true;
+            return true; // malformed generation — preserve
         }
 
         $current_generation = self::get_generation_id();
         if ($current_generation === null || (string) $generation !== $current_generation) {
-            return true;
+            return true; // different generation — preserve
         }
 
+        // Fully valid current-generation PR16 snapshot — safe to clear.
         try {
-            $order->delete_meta_data('_upay_customer_unique_token');
-            $order->delete_meta_data('_upay_customer_token_kind_v1');
-            $order->delete_meta_data('_upay_customer_token_scope_v1');
-            $order->delete_meta_data('_upay_customer_token_generation_v1');
+            foreach ($keys as $key) {
+                $order->delete_meta_data($key);
+            }
             $order->delete_meta_data('_upay_credit_card_token');
             $order->save_meta_data();
         } catch (\Throwable $e) {

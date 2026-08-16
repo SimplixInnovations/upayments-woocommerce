@@ -102,10 +102,14 @@ function toggleSaveCard(loggedUser) {
     let checkbox = document.getElementById('chkSaveCard');
     let saveCardInput = jQuery('#save_card');
 
-    if (loggedUser === false) {
-        checkbox.checked = false;
+    if (loggedUser === false || !checkbox) {
+        if (checkbox) {
+            checkbox.checked = false;
+        }
         saveCardInput.val('0');
-        showToast('Please log in to save or use a saved card.', 3000);
+        if (loggedUser === false) {
+            showToast('Please log in to save or use a saved card.', 3000);
+        }
         return;
     }
 

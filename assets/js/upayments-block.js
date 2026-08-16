@@ -22,15 +22,21 @@
         } = settings;        
         
         const Content = (props) => {
-            const { useDispatch, select } = wp.data;
+            const { useDispatch, useSelect } = wp.data;
             const { useEffect, useState, createElement } = wp.element;
             const { setExtensionData } = useDispatch('wc/store/checkout');
             const hasCustomTypeProduct = Array.isArray(product_type) && product_type.some(product => product.type === 'custom_type');
 
             const NAMESPACE = 'upayments';
-            
-            const checkoutData = select('wc/store/checkout').getExtensionData() || {};
-            const upayData = checkoutData[NAMESPACE] || {};            
+
+            // Reactive subscription via useSelect (Section AA).
+            const upayData = useSelect(
+                (select) => {
+                    const data = select('wc/store/checkout').getExtensionData() || {};
+                    return data[NAMESPACE] || {};
+                },
+                []
+            );
 
             useEffect(() => {
                 setExtensionData(NAMESPACE, {
@@ -65,13 +71,9 @@
 
             const handleSubscriptionChange = (plan, interval) => {
                 const finalInterval = (plan === upayData.upay_subscription_plan) ? interval : '';
-                const currentSaveCard = upayData.save_card || '0';
-                const currentCardToken = upayData.card_token || null;
                 updateCheckout({
                     upay_subscription_plan: plan,
-                    upay_subscription_interval: finalInterval,
-                    save_card: currentSaveCard,
-                    card_token: currentCardToken
+                    upay_subscription_interval: finalInterval
                 });
             };
 

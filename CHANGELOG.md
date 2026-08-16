@@ -22,18 +22,27 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Protect legacy historical token identities from silent canonical overwrite pending dedicated Phase 9I migration, with customer-scoped safety fallback.
 - Restrict saved-card retrieval to users with valid canonical or legacy-compatible provenance, eliminating unauthenticated Retrieve Cards calls during checkout rendering.
 - Require login for guest Save Card requests with server-side rejection and generic customer notice.
-- Separate provider-facing customer.mobile from legacy saved-card/customer-token identity so that malformed or ambiguous phone representations are not sent to UPayments while existing token identity remains backward-compatible.
+- Separate provider-facing customer.mobile from saved-card/customer-token identity; billing phone is WooCommerce customer data, provider mobile is a separate validated field (PR15), and customerUniqueToken is canonical/legacy-compatible identity not recalculated from phone.
 - Fix subscription new-card vs saved-card semantics: existing saved-card subscription no longer requires explicit Save Card opt-in toggle, only new-card subscription requires it.
-- Fix Blocks Save Card consent to use reactive state (`upayData.save_card === '1'`) instead of server-provided `save_card_toggle_on` constant, ensuring checkbox state always agrees with submitted extension data.
+- Fix Blocks Save Card consent to use reactive `useSelect` subscription instead of imperative `select()`, ensuring checkbox state always agrees with submitted extension data.
 - Add strict Retrieve Cards request input validation requiring 8-18 digit numeric customer token before provider call.
-- Add structured secret record v2 with generation ID for detecting secret corruption and credential/mode rotation.
+- Add structured secret record v2 with generation ID and full-record verifier (binding domain, version, generation_id) for detecting secret corruption and credential/mode rotation.
 - Add full prior-provenance validation with scope and generation binding to prevent cross-credential token reuse.
-- Make history inspector query results trustworthy with pagination validation and unloadable-order detection.
-- Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Phone requirements for Save Card and subscription remain enforced at the payment boundary.
+- Split structural provenance validation from current-generation binding so that prior-generation records are classified as generation_mismatch rather than generic invalid.
+- Make history inspector query results trustworthy with pagination validation, duplicate-order-ID detection, page-size enforcement, and unloadable-order detection.
+- Add card-token-only history protection: historical orders with credit card token but no customer token identity block canonical establishment pending Phase 9I migration.
+- Add runtime token context validation before snapshot write and Charge dispatch, preventing stale or cross-scope token tuples from reaching the provider.
+- Fix secret-existence query to use `$wpdb->query()` row-count semantics instead of `$wpdb->get_var()` null interpretation, preventing clean installations from being blocked.
+- Distinguish missing secret option from malformed existing option using a unique sentinel, preventing silent replacement of corrupted secrets.
+- Enforce exactly-one provenance record per user/scope pair, rejecting duplicate meta values as INVALID.
+- Fix process_payment variable order: `$user_id` and `$has_selected_card` established before use.
+- Enforce server-side Save Card request contract: guest Save Card rejected, save_card=1 + selected card rejected, non-CC save_card=1 rejected.
+- Fix Classic template to render Save Card toggle only for logged-in users with save_card enabled.
+- Fix Classic `toggleSaveCard()` to safely handle missing checkbox element.
+- Fix Blocks `handleSubscriptionChange` to not restore stale card_token/save_card state.
+- Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Phone requirements are enforced only at the payment boundary for flows that require customer token identity.
 - Stop persistently overriding WooCommerce phone-field configuration on every request.
 - Stop globally forcing billing phone required through UPayments Classic field filters, allowing other gateways to respect merchant phone settings.
-- Enforce phone only at UPayments payment boundary for current Save Card and subscription token-dependent flows.
-- Prevent Blocks saved-card retrieval when no usable phone is available, fixing empty-token lookup.
 - Escape UPayments payment metadata at render time in admin order details and order-details template.
 - Harden Classic saved-card rendering against malformed or provider-controlled values with structural guards and context-specific escaping.
 - Contextually escape template text, attributes, and URLs in Classic checkout templates.

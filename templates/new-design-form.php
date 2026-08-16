@@ -179,7 +179,7 @@ defined( 'ABSPATH' ) || exit;
                     <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
                 </button>
             
-            <?php if ($key_string == 'cc' && $save_card_enabled) { ?>
+            <?php if ($key_string == 'cc' && $save_card_enabled && $is_logged_in) { ?>
                 <label class="switch-border">For faster and more secure checkout. Save your card details.
                     <label class="switch">
                         <?php
