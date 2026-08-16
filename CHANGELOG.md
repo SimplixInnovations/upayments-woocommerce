@@ -15,6 +15,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ### Fixed
 
+- Harden checkout request validation: strict payment-source allowlist, consistent Classic/Blocks subscription plan and interval validation, deterministic save-card input handling, fail-closed charge-response structure and redirect URL validation, generic customer-facing provider failure messages, subscription-context enforcement, guest-subscription rejection, and fail-closed payment-method availability state.
 - Verify UPayments callback payment state against the authenticated Get Payment Status API before allowing WooCommerce paid-order transitions.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.

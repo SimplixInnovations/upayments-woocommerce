@@ -8,6 +8,24 @@ defined('ABSPATH') || exit;
 
 class Fields
 {
+    private static $ALLOWED_PLANS = array(
+        'one_time',
+        'daily',
+        'weekly',
+        'monthly',
+        'quarterly',
+        'yearly',
+    );
+
+    private static $ALLOWED_INTERVALS = array(
+        'one_time'  => array(0),
+        'daily'     => array(1),
+        'weekly'    => array(1, 2, 3),
+        'monthly'   => array(1, 2),
+        'quarterly' => array(1, 2, 3),
+        'yearly'    => array(1),
+    );
+
     public static function init()
     {
         add_action('woocommerce_checkout_process', [__CLASS__, 'validate']);
@@ -15,73 +33,67 @@ class Fields
         add_action('woocommerce_checkout_create_order', [__CLASS__, 'save'], 20, 1);
     }
 
-    /**
-     * Validate checkout submission
-     */
     public static function validate()
     {
-        $gateway = self::getGateway();
-        $enable_subscription = $gateway->get_option('enable_subscriptions') === 'yes' ? true : false;
-        if ($enable_subscription && empty($_POST['upay_subscription_plan'])) {
-            wc_add_notice(__('Please select a payment type.', $gateway->id), 'error');
+        if (!self::is_subscription_context()) {
             return;
         }
 
-        // One-time payment requires no interval
-        if ($enable_subscription && sanitize_text_field($_POST['upay_subscription_plan']) === 'one_time') {
+        $plan = '';
+        if (isset($_POST['upay_subscription_plan']) && is_scalar($_POST['upay_subscription_plan'])) {
+            $plan = sanitize_text_field(wp_unslash($_POST['upay_subscription_plan']));
+        }
+
+        if ($plan === '') {
+            wc_add_notice(__('Please select a payment type.', 'upayments'), 'error');
             return;
         }
 
-        if ($enable_subscription && empty($_POST['upay_subscription_interval'])) {
-            wc_add_notice(__('Please select a billing interval.', $gateway->id), 'error');
+        if (!in_array($plan, self::$ALLOWED_PLANS, true)) {
+            wc_add_notice(__('Invalid payment type selected.', 'upayments'), 'error');
             return;
         }
 
-        if ($enable_subscription && !in_array($_POST['upay_subscription_interval'], ['', '1', '2', '3', '6'], true)) {
-            wc_add_notice(__('Invalid billing interval selected.', $gateway->id), 'error');
-        }
+        $interval = self::parse_interval(
+            isset($_POST['upay_subscription_interval']) && is_scalar($_POST['upay_subscription_interval'])
+                ? wp_unslash($_POST['upay_subscription_interval'])
+                : null
+        );
 
-        //code for additional restrictions can be added here
-        // if (!Utils::cartHasCustomType()) {
-        //     wc_add_notice(__('Subscriptions are not allowed for this product.', 'upayments'), 'error');
-        // }
+        if (!isset(self::$ALLOWED_INTERVALS[$plan]) || !in_array($interval, self::$ALLOWED_INTERVALS[$plan], true)) {
+            wc_add_notice(__('Invalid billing interval selected for the chosen plan.', 'upayments'), 'error');
+        }
     }
 
-    /**
-     * Add subscription fields to checkout
-     */
     public static function add($fields)
     {
         $gateway = self::getGateway();
 
-        // Subscriptions disabled at gateway level
         if (!$gateway || $gateway->get_option('enable_subscriptions') !== 'yes' || Utils::cartHasRestrictedProducts() || !Utils::cartHasCustomType()) {
             return $fields;
         }
 
-        // Customer chooses payment type
         $fields['billing']['upay_subscription_plan'] = [
             'type'     => 'select',
-            'label'    => __('Purchase Type', $gateway->id),
+            'label'    => __('Purchase Type', 'upayments'),
             'required' => true,
             'options'  => [
-                'one_time' => __('One-time', $gateway->id),
-                'daily'    => __('Daily Subscription', $gateway->id),
-                'weekly'   => __('Weekly Subscription', $gateway->id),
-                'monthly'  => __('Monthly Subscription', $gateway->id),
-                'quarterly'   => __('Quarterly Subscription', $gateway->id),
-                'yearly'   => __('Yearly Subscription', $gateway->id),
+                'one_time' => __('One-time', 'upayments'),
+                'daily'    => __('Daily Subscription', 'upayments'),
+                'weekly'   => __('Weekly Subscription', 'upayments'),
+                'monthly'  => __('Monthly Subscription', 'upayments'),
+                'quarterly'   => __('Quarterly Subscription', 'upayments'),
+                'yearly'   => __('Yearly Subscription', 'upayments'),
             ],
             'priority' => 120,
         ];
 
-        // Customer chooses interval
         $fields['billing']['upay_subscription_interval'] = [
             'type'     => 'select',
-            'label'    => __('Billing Interval', $gateway->id),
-            'required' => true,
+            'label'    => __('Billing Interval', 'upayments'),
+            'required' => false,
             'options'  => [
-                ''  => __('Select interval', $gateway->id),
+                ''  => __('Select interval', 'upayments'),
             ],
             'priority' => 121,
         ];
@@ -89,29 +101,79 @@ class Fields
         return $fields;
     }
 
-    /**
-     * Save subscription data to order meta
-     */
     public static function save($order)
     {
-        if (!empty($_POST['upay_subscription_plan'])) {
-            $order->update_meta_data(
-                '_upay_subscription_plan',
-                sanitize_text_field($_POST['upay_subscription_plan'])
-            );
+        if (!self::is_subscription_context()) {
+            return;
         }
 
-        if (!empty($_POST['upay_subscription_interval'])) {
-            $order->update_meta_data(
-                '_upay_subscription_interval',
-                absint($_POST['upay_subscription_interval'])
-            );
+        if (!isset($_POST['upay_subscription_plan']) || !is_scalar($_POST['upay_subscription_plan'])) {
+            return;
         }
+
+        $plan = sanitize_text_field(wp_unslash($_POST['upay_subscription_plan']));
+        if (!in_array($plan, self::$ALLOWED_PLANS, true)) {
+            return;
+        }
+
+        $interval = self::parse_interval(
+            isset($_POST['upay_subscription_interval']) && is_scalar($_POST['upay_subscription_interval'])
+                ? wp_unslash($_POST['upay_subscription_interval'])
+                : null
+        );
+
+        if (!isset(self::$ALLOWED_INTERVALS[$plan]) || !in_array($interval, self::$ALLOWED_INTERVALS[$plan], true)) {
+            return;
+        }
+
+        if ($plan === 'one_time') {
+            return;
+        }
+
+        $order->update_meta_data('_upay_subscription_plan', $plan);
+        $order->update_meta_data('_upay_subscription_interval', $interval);
     }
 
-    /**
-     * Get UPayments gateway instance
-     */
+    private static function parse_interval($value): int {
+        if ($value === null || $value === '' || $value === 0 || $value === '0') {
+            return 0;
+        }
+        if ($value === 1 || $value === '1') {
+            return 1;
+        }
+        if ($value === 2 || $value === '2') {
+            return 2;
+        }
+        if ($value === 3 || $value === '3') {
+            return 3;
+        }
+        return -1;
+    }
+
+    private static function is_subscription_context(): bool {
+        $gateway = self::getGateway();
+        if (!$gateway) {
+            return false;
+        }
+        if ($gateway->get_option('enable_subscriptions') !== 'yes') {
+            return false;
+        }
+        $selected_gateway = '';
+        if (isset($_POST['payment_method']) && is_scalar($_POST['payment_method'])) {
+            $selected_gateway = sanitize_key(wp_unslash($_POST['payment_method']));
+        }
+        if ($selected_gateway !== 'upayments') {
+            return false;
+        }
+        if (!Utils::cartHasCustomType()) {
+            return false;
+        }
+        if (Utils::cartHasRestrictedProducts()) {
+            return false;
+        }
+        return true;
+    }
+
     protected static function getGateway()
     {
         if (!function_exists('WC')) {
