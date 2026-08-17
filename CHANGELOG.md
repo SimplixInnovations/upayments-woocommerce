@@ -101,6 +101,15 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Version availability cache (`upay_pm_v3_`) to prevent stale pre-H11 cached data.
 - Consolidated availability transport guard; no unsafe first dereference.
 - Product boundary: invalid line items fail payment instead of being silently skipped.
+- Fix product-loop runtime defect: quantity read before item_data assignment; use order-line get_quantity().
+- Use order-line values (get_total/get_quantity) instead of catalog regular_price for provider product pricing.
+- Apply normalized product name/description to payload; UTF-8-safe truncation via truncate_provider_text().
+- Selected-card identity uses read-only scope/generation; never bootstraps new identity for saved-card path.
+- User-meta refresh failure fails closed in read_provenance, prior provenance inspection, and create_provenance verification.
+- Provenance post-write verification runs full structural validator with current-generation binding.
+- Canonical availability cache schema3 validator rejects malformed cached success.
+- Blocks getCurrentUpayData helper ensures event handlers use current store state, not stale closure.
+- Blocks method transitions default to save_card=0 when entering new CC; preserve only explicit current consent.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.

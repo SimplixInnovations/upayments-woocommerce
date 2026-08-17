@@ -399,7 +399,10 @@ class CustomerTokenIdentity {
         }
 
         // Force-refresh user-meta cache before authoritative read.
-        self::force_refresh_user_meta($user_id);
+        // Section T: Fail closed if refresh fails.
+        if (!self::force_refresh_user_meta($user_id)) {
+            return array('state' => self::STATE_INVALID, 'record' => null);
+        }
 
         $blog_id = (string) get_current_blog_id();
         $meta_key = self::get_user_meta_key($blog_id, $scope_fingerprint);
@@ -571,8 +574,11 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        // Section G: Verify provenance persistence after creation.
-        self::force_refresh_user_meta($user_id);
+        // Section T: Verify provenance persistence after creation.
+        // Section U: Force refresh must succeed.
+        if (!self::force_refresh_user_meta($user_id)) {
+            return false;
+        }
         $verify_values = get_user_meta($user_id, $meta_key, false);
         if (!is_array($verify_values) || count($verify_values) !== 1) {
             return false;
@@ -601,6 +607,11 @@ class CustomerTokenIdentity {
             return false;
         }
         if (!isset($verify_record['established_at_gmt']) || $verify_record['established_at_gmt'] !== $record['established_at_gmt']) {
+            return false;
+        }
+
+        // Section U: Run full structural validator with current-generation binding.
+        if (self::validate_provenance_record($verify_record, $scope_fingerprint, true) !== 'valid') {
             return false;
         }
 
@@ -1102,7 +1113,10 @@ class CustomerTokenIdentity {
         }
 
         // Force-refresh user-meta cache before authoritative read.
-        self::force_refresh_user_meta($user_id);
+        // Section T: Fail closed if refresh fails.
+        if (!self::force_refresh_user_meta($user_id)) {
+            return array('state' => 'read_failure', 'reason' => 'usermeta_refresh_failed');
+        }
 
         global $wpdb;
         $blog_id = (string) get_current_blog_id();

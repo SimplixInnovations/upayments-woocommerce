@@ -317,6 +317,50 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Section Z: Canonical availability cache schema validator.
+         * Only accepts strict schema3 success or failure shapes.
+         */
+        private function is_valid_cached_availability($cached) {
+            if (!is_array($cached)) {
+                return false;
+            }
+            // Failure sentinel.
+            if (isset($cached['state']) && $cached['state'] === 'failure'
+                && isset($cached['schema']) && $cached['schema'] === 3
+                && count($cached) === 2
+            ) {
+                return 'failure';
+            }
+            // Success: strict schema3.
+            if (!isset($cached['schema']) || $cached['schema'] !== 3) {
+                return false;
+            }
+            if (!isset($cached['result']) || $cached['result'] !== 'success') {
+                return false;
+            }
+            if (!isset($cached['isWhiteLabel']) || !is_bool($cached['isWhiteLabel'])) {
+                return false;
+            }
+            if (!isset($cached['payButtons']) || !is_array($cached['payButtons'])) {
+                return false;
+            }
+            $known = array('knet', 'credit_card', 'apple_pay_knet', 'apple_pay', 'samsung_pay', 'google_pay');
+            foreach ($known as $btn) {
+                if (!isset($cached['payButtons'][$btn]) || !is_int($cached['payButtons'][$btn])) {
+                    return false;
+                }
+                if ($cached['payButtons'][$btn] !== 0 && $cached['payButtons'][$btn] !== 1) {
+                    return false;
+                }
+            }
+            return 'success';
+        }
+
+        private function get_failure_sentinel() {
+            return array('schema' => 3, 'state' => 'failure');
+        }
+
+        /**
          * Write payment-method result to transient cache.
          *
          * @param array $result   Result to cache.
@@ -1454,6 +1498,8 @@ function woocommerceUpaymentsInit() {
 
             $productArrayNew = [];
             $cart_has_custom_product = false;
+            $order_has_subscription_product = false;
+            $order_has_normal_product = false;
 
             $i=0;
 
@@ -1474,39 +1520,44 @@ function woocommerceUpaymentsInit() {
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
 
-                $sale_price = $product->get_regular_price();
-                $sale_price = !empty($sale_price) ? $sale_price : 0;
-
-                // Section K: Product payload normalization.
-                $product_name_str = $item->get_name();
-                if (function_exists('mb_substr')) {
-                    $product_name_str = mb_substr($product_name_str, 0, 255);
-                } else {
-                    $product_name_str = substr($product_name_str, 0, 255);
-                }
-
-                $qty = isset($item_data["quantity"]) ? (int) $item_data["quantity"] : 0;
-                if ($qty <= 0 || $qty > 9999999) {
+                // Section D: Use order-line values, not current catalog price.
+                $qty = $item->get_quantity();
+                if (!is_numeric($qty) || (int) $qty <= 0 || (int) $qty > 9999999) {
                     $this->log('Invalid product quantity.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
+                $qty = (int) $qty;
+
+                $line_total = $item->get_total();
+                if (!is_numeric($line_total) || (float) $line_total < 0) {
+                    $this->log('Invalid line total.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Derive provider-compatible unit price from order line.
+                $unit_price = $qty > 0 ? round((float) $line_total / $qty, 2) : 0;
+
+                // Section F: UTF-8 safe truncation.
+                $normalized_name = $this->truncate_provider_text($item->get_name(), 255);
+                $normalized_description = $this->truncate_provider_text($item->get_name(), 255);
 
                 if($product->get_type() === 'custom_type'){
                     $cart_has_custom_product = true;
+                    $order_has_subscription_product = true;
+                } else {
+                    $order_has_normal_product = true;
                 }
-                
-                $item_data = $item->get_data();
-                $product_name[] = $item->get_name();
-                $product_price[] = $sale_price;
-                $product_qty[] = $item_data["quantity"];
-                $product_type[] = $product->get_type();
-                
-                $productArrayNew[$i]['name'] = $item->get_name();
-                $productArrayNew[$i]['description']= $item->get_name();
-                $productArrayNew[$i]['price'] = $sale_price;
-                $productArrayNew[$i]['quantity'] =$item_data["quantity"];
-                $productArrayNew[$i]['type'] = $product->get_type();
+
+                // Section C: Use normalized values in payload.
+                $productArrayNew[$i] = array(
+                    'name'        => $normalized_name,
+                    'description' => $normalized_description,
+                    'price'       => $unit_price,
+                    'quantity'    => $qty,
+                    'type'        => $product->get_type(),
+                );
                 $i++;
             }
 
@@ -1714,23 +1765,8 @@ function woocommerceUpaymentsInit() {
             }
 
             // Section N: Subscription-context enforcement with mixed-order rejection.
+            // Uses order-derived composition from the authoritative line-item pass above.
             if ($subscription_plan !== 'one_time') {
-                // Derive order subscription composition from actual order items.
-                $order_has_subscription_product = false;
-                $order_has_normal_product = false;
-                foreach ($order->get_items('line_item') as $item) {
-                    if ($item && $item instanceof \WC_Order_Item_Product) {
-                        $p = $item->get_product();
-                        if ($p && $p instanceof \WC_Product) {
-                            if ($p->get_type() === 'custom_type') {
-                                $order_has_subscription_product = true;
-                            } else {
-                                $order_has_normal_product = true;
-                            }
-                        }
-                    }
-                }
-
                 if ($this->autoDeduction !== 'yes'
                     || !$order_has_subscription_product
                     || $order_has_normal_product
@@ -1910,8 +1946,16 @@ function woocommerceUpaymentsInit() {
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
 
-                $scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
+                // Section Q: Use read-only identity scope for selected-card path.
+                $scope = CustomerTokenIdentity::get_existing_scope_fingerprint($this->apiKey, $this->getMode());
                 if ($scope === null) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Section Q: Use read-only generation for selected-card path.
+                $existing_generation = CustomerTokenIdentity::get_existing_generation_id();
+                if ($existing_generation === null) {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
@@ -1993,9 +2037,11 @@ function woocommerceUpaymentsInit() {
             $is_ordinary_payment = ($canonical_token === null && $token_kind === null && $token_scope === null && $token_generation === null);
 
             if (!$is_ordinary_payment) {
-                // Token-dependent: validate runtime context with authoritative expected values.
-                $expected_scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
-                $expected_generation = CustomerTokenIdentity::get_generation_id();
+                // Section S: Use read-only authoritative expected scope/generation.
+                // For freshly established tokens, these are already known from the result.
+                // For selected-card tokens, they were already validated above.
+                $expected_scope = CustomerTokenIdentity::get_existing_scope_fingerprint($this->apiKey, $this->getMode());
+                $expected_generation = CustomerTokenIdentity::get_existing_generation_id();
 
                 if (!CustomerTokenIdentity::validate_token_runtime_context(
                     $canonical_token,
@@ -2784,24 +2830,23 @@ function woocommerceUpaymentsInit() {
             }
 
             // --- FAILURE SENTINEL (used for cached failures) ---
-            $failure_sentinel = array('state' => 'failure');
+            $failure_sentinel = $this->get_failure_sentinel();
 
             // -------------------------------------------------------
             // STEP 1: Check credential-scoped result cache.
             // -------------------------------------------------------
             $cached = $this->get_cached_payment_methods();
             if ($cached !== null) {
-                // Fresh cached result: return immediately, zero provider work.
-                if (isset($cached['result']) && $cached['result'] === 'success') {
+                $cache_status = $this->is_valid_cached_availability($cached);
+                if ($cache_status === 'success') {
                     return $cached;
                 }
-                // Cached failure sentinel.
-                if (isset($cached['state']) && $cached['state'] === 'failure') {
+                if ($cache_status === 'failure') {
                     wc_clear_notices();
                     wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Unknown cached shape: treat as miss and fall through.
+                // Malformed cache: treat as miss and fall through.
             }
 
             // -------------------------------------------------------
@@ -2814,10 +2859,11 @@ function woocommerceUpaymentsInit() {
                 // Re-check cache ONCE — another worker may have populated it.
                 $cached = $this->get_cached_payment_methods();
                 if ($cached !== null) {
-                    if (isset($cached['result']) && $cached['result'] === 'success') {
+                    $cache_status = $this->is_valid_cached_availability($cached);
+                    if ($cache_status === 'success') {
                         return $cached;
                     }
-                    if (isset($cached['state']) && $cached['state'] === 'failure') {
+                    if ($cache_status === 'failure') {
                         wc_clear_notices();
                         wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2838,17 +2884,18 @@ function woocommerceUpaymentsInit() {
             // Re-check cache under lock (another worker may have refreshed).
             $cached = $this->get_cached_payment_methods();
             if ($cached !== null) {
-                if (isset($cached['result']) && $cached['result'] === 'success') {
+                $cache_status = $this->is_valid_cached_availability($cached);
+                if ($cache_status === 'success') {
                     $this->release_payment_methods_lock();
                     return $cached;
                 }
-                if (isset($cached['state']) && $cached['state'] === 'failure') {
+                if ($cache_status === 'failure') {
                     $this->release_payment_methods_lock();
                     wc_clear_notices();
                     wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Unknown cached array: DO NOT RELEASE lock.
+                // Malformed cache: DO NOT RELEASE lock.
                 // Treat as cache miss while retaining ownership.
                 // The durable gate check below will determine next action.
             }
@@ -2931,7 +2978,7 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Section P: Normalize availability payload.
+            // Section AC: Normalize availability payload to canonical schema.
             $payment_methods = $result['data'];
 
             if (!array_key_exists('isWhiteLabel', $payment_methods)) {
@@ -2943,9 +2990,9 @@ function woocommerceUpaymentsInit() {
 
             $wl = $payment_methods['isWhiteLabel'];
             if ($wl === true || $wl === 1 || $wl === '1') {
-                $payment_methods['isWhiteLabel'] = true;
+                $normalized_wl = true;
             } elseif ($wl === false || $wl === 0 || $wl === '0') {
-                $payment_methods['isWhiteLabel'] = false;
+                $normalized_wl = false;
             } else {
                 $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                 wc_clear_notices();
@@ -2953,32 +3000,45 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            if (!array_key_exists('payButtons', $payment_methods) || !is_array($payment_methods['payButtons'])) {
-                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-                wc_clear_notices();
-                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-
+            // Section Y: Build canonical payButtons with all six known keys.
             $known_buttons = array('knet', 'credit_card', 'apple_pay_knet', 'apple_pay', 'samsung_pay', 'google_pay');
+            $normalized_buttons = array();
+            $raw_buttons = isset($payment_methods['payButtons']) && is_array($payment_methods['payButtons'])
+                ? $payment_methods['payButtons']
+                : array();
+
             foreach ($known_buttons as $btn) {
-                if (array_key_exists($btn, $payment_methods['payButtons'])) {
-                    $bv = $payment_methods['payButtons'][$btn];
+                if (array_key_exists($btn, $raw_buttons)) {
+                    $bv = $raw_buttons[$btn];
                     if ($bv === true || $bv === 1 || $bv === '1') {
-                        $payment_methods['payButtons'][$btn] = 1;
+                        $normalized_buttons[$btn] = 1;
                     } elseif ($bv === false || $bv === 0 || $bv === '0') {
-                        $payment_methods['payButtons'][$btn] = 0;
+                        $normalized_buttons[$btn] = 0;
                     } else {
                         $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                         wc_clear_notices();
                         wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
+                } else {
+                    $normalized_buttons[$btn] = 0;
                 }
             }
 
+            // Cache only canonical schema (Section Y).
+            $canonical_cache = array(
+                'schema'       => 3,
+                'result'       => 'success',
+                'isWhiteLabel' => $normalized_wl,
+                'payButtons'   => $normalized_buttons,
+            );
+
+            // Expose to getPaymentIcons with full structure.
             $payment_methods['result'] = 'success';
-            $this->set_cached_payment_methods($payment_methods, $new_not_before);
+            $payment_methods['isWhiteLabel'] = $normalized_wl;
+            $payment_methods['payButtons'] = $normalized_buttons;
+            // Cache canonical schema (Section Y).
+            $this->set_cached_payment_methods($canonical_cache, $new_not_before);
             return $payment_methods;
         }
 
@@ -3061,6 +3121,26 @@ function woocommerceUpaymentsInit() {
                     return $gateway->getSavedCards($token);
                 }
             );
+        }
+
+        /**
+         * UTF-8 safe provider text truncation.
+         * PHP 7.2 compatible, no mandatory mbstring dependency.
+         */
+        private function truncate_provider_text($value, $max_chars) {
+            if (!is_scalar($value)) {
+                return '';
+            }
+            $str = (string) $value;
+            // Remove invalid UTF-8 sequences.
+            $str = mb_convert_encoding($str, 'UTF-8', 'UTF-8');
+            if ($str === '' || $str === false) {
+                return '';
+            }
+            if (mb_strlen($str, 'UTF-8') <= $max_chars) {
+                return $str;
+            }
+            return mb_substr($str, 0, $max_chars, 'UTF-8');
         }
 
         public function getPaymentIcons()

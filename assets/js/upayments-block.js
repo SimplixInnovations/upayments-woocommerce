@@ -29,6 +29,15 @@
 
             const NAMESPACE = 'upayments';
 
+            // Section AI: Current-store helper for event handlers.
+            const getCurrentUpayData = () => {
+                const all = wp.data.select('wc/store/checkout').getExtensionData() || {};
+                const current = all[NAMESPACE];
+                return (current && typeof current === 'object' && !Array.isArray(current))
+                    ? current
+                    : {};
+            };
+
             // Reactive subscription via useSelect (Section AA).
             const upayData = useSelect(
                 (select) => {
@@ -72,8 +81,10 @@
                 });
             };
 
+            // Section AJ: Method transitions use current store state.
             const handleMethodClick = (type, token = null) => {
                 if (token) {
+                    // Saved card selected: always clear save_card.
                     updateCheckout({
                         upayment_payment_type: type,
                         card_token: token,
@@ -81,13 +92,29 @@
                     });
                     showToast("Saved card selected");
                 } else if (type === 'cc') {
-                    const currentSaveValue = (is_logged_in && save_card_enabled && upayData.save_card === '1') ? '1' : '0';
-                    updateCheckout({
-                        upayment_payment_type: type,
-                        card_token: null,
-                        save_card: currentSaveValue
-                    });
+                    // Section AJ: New CC transition — check current store state.
+                    const current = getCurrentUpayData();
+                    const currentMethod = current.upayment_payment_type;
+                    const currentCardToken = current.card_token;
+                    const currentSaveCard = current.save_card;
+
+                    // Re-click current new CC with explicit consent: preserve.
+                    if (currentMethod === 'cc' && !currentCardToken && currentSaveCard === '1') {
+                        updateCheckout({
+                            upayment_payment_type: type,
+                            card_token: null,
+                            save_card: '1'
+                        });
+                    } else {
+                        // Transition into new CC: default to no consent.
+                        updateCheckout({
+                            upayment_payment_type: type,
+                            card_token: null,
+                            save_card: '0'
+                        });
+                    }
                 } else {
+                    // Non-CC: always clear card and save.
                     updateCheckout({
                         upayment_payment_type: type,
                         card_token: null,
