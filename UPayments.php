@@ -1910,6 +1910,167 @@ function woocommerceUpaymentsInit() {
                 }
             }
 
+            // === PHASE A: DETERMINISTIC CHARGE PREFLIGHT (BEFORE TOKEN WORK) ===
+            // Build and validate the complete deterministic base payload.
+            // Nothing related to token identity may happen before all of this passes.
+
+            // Order description.
+            $order_description = 'WooCommerce order #' . $order_id;
+            if (strlen($order_description) > 500) {
+                $order_description = substr($order_description, 0, 500);
+            }
+
+            // Currency.
+            $currency = $this->getCurrencyCode($order_data["currency"]);
+            if (!is_string($currency)) {
+                $currency = strtoupper((string) $order_data["currency"]);
+            }
+            if (!preg_match('/^[A-Z]{3}$/', $currency)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Amount: strict positive plain-decimal grammar.
+            $amount_str = (string) $order_total;
+            if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)
+                || strlen($amount_str) > 22
+                || (float) $amount_str <= 0
+            ) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            $amount_number = (float) $amount_str;
+
+            // Reference.
+            $reference_id = (string) $order_id;
+            if ($reference_id === '' || strlen($reference_id) > 35) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Callback URLs.
+            $callback_urls = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+            );
+            foreach ($callback_urls as $cb_url) {
+                if (!is_scalar($cb_url) || (string) $cb_url === '' || strlen((string) $cb_url) > 250) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $parsed = wp_parse_url((string) $cb_url);
+                if (!$parsed
+                    || !isset($parsed['scheme'])
+                    || !isset($parsed['host'])
+                    || ($parsed['scheme'] !== 'http' && $parsed['scheme'] !== 'https')
+                    || $parsed['host'] === ''
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
+            // Customer fields.
+            $customer_name = $this->truncate_provider_text(
+                trim(($order_data["billing"]["first_name"] ?? '') . ' ' . ($order_data["billing"]["last_name"] ?? '')),
+                50
+            );
+            $customer_data = array();
+            if ($customer_name !== '') {
+                $customer_data['name'] = $customer_name;
+            }
+            $email = isset($order_data["billing"]["email"]) && is_scalar($order_data["billing"]["email"]) ? (string) $order_data["billing"]["email"] : '';
+            if ($email !== '' && strlen($email) <= 50 && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $customer_data['email'] = $email;
+            }
+            if ($customer_unique_id !== '' && is_scalar($customer_unique_id) && strlen((string) $customer_unique_id) <= 50) {
+                $customer_data['uniqueId'] = (string) $customer_unique_id;
+            }
+            if ($provider_mobile !== '' && is_scalar($provider_mobile)) {
+                $customer_data['mobile'] = (string) $provider_mobile;
+            }
+
+            // MultiMerchant validation.
+            $extraMerchantData = null;
+            if ($this->multiMerchant === 'yes') {
+                if (isset($this->ibanNumber)
+                    && isset($this->knetCharge) && $this->knetCharge > 0
+                    && isset($this->ccCharge) && $this->ccCharge > 0
+                    && (float) $this->knetCharge > 0 && (float) $this->ccCharge > 0
+                ) {
+                    $extraMerchantData[0] = array(
+                        'amount'         => $amount_number,
+                        'knetCharge'     => (float) $this->knetCharge,
+                        'knetChargeType' => isset($this->knetChargeType) ? (string) $this->knetChargeType : '',
+                        'ccCharge'       => isset($this->ccCharge) ? (float) $this->ccCharge : 0,
+                        'ccChargeType'   => isset($this->ccChargeType) ? (string) $this->ccChargeType : '',
+                        'ibanNumber'     => isset($this->ibanNumber) ? (string) $this->ibanNumber : '',
+                    );
+                }
+            }
+
+            // Build deterministic base payload (token fields are null placeholders).
+            $payload = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+                'products'        => $productArrayNew,
+                'order'           => array(
+                    'id'          => $unique_order_id,
+                    'description' => $order_description,
+                    'currency'    => $currency,
+                    'amount'      => $amount_number,
+                ),
+                'reference'       => array(
+                    'id' => $reference_id,
+                ),
+                'customer'        => $customer_data,
+                'plugin'          => array(
+                    'src' => 'woocommerce',
+                ),
+                'is_whitelabled'  => $whitelabled,
+                'language'        => 'en',
+                'isSaveCard'      => $isSaveCard,
+                'tokens'          => array(
+                    'creditCard'          => null,
+                    'customerUniqueToken' => null,
+                ),
+                'device'          => array(
+                    'browser'          => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0',
+                    'browserDetails'   => array(
+                        'screenWidth'                 => '1920',
+                        'screenHeight'                => '1080',
+                        'colorDepth'                  => '24',
+                        'javaEnabled'                 => 'false',
+                        'language'                    => 'en',
+                        'timeZone'                    => '-180',
+                        '3DSecureChallengeWindowSize' => '500_X_600',
+                    ),
+                ),
+                'extraMerchantData' => $extraMerchantData,
+            );
+
+            // Whitelabel: add paymentGateway.
+            if ($whitelabled && $src !== null) {
+                if (strlen($src) > 11) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $payload['paymentGateway'] = array('src' => $src);
+            }
+
+            // Pre-token JSON dry-run.
+            $preflight_json = wp_json_encode($payload);
+            if (!is_string($preflight_json) || $preflight_json === '') {
+                $this->log('Deterministic payload encoding failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // === PHASE B: TOKEN / SELECTED-CARD IDENTITY WORK ===
+            // Only after Phase A passes.
+
             // Clear stale PR16 attempt metadata before token work.
             // Preserve legacy/unscoped evidence for Phase 9I migration.
             if (!CustomerTokenIdentity::clear_stale_pr16_attempt_metadata($order)) {
@@ -2168,140 +2329,24 @@ function woocommerceUpaymentsInit() {
                 $this->log("Multimerchant payment data prepared.");
             }
 
-            // Section E: Build base provider payload as PHP array.
-            // Section G: Order field preflight.
-            $order_description = 'WooCommerce order #' . $order_id;
-            if (strlen($order_description) > 500) {
-                $order_description = substr($order_description, 0, 500);
-            }
-            $currency = $this->getCurrencyCode($order_data["currency"]);
-            if (!preg_match('/^[A-Z]{3}$/', $currency)) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-            $amount_str = (string) $order_total;
-            // Section I: Strict positive plain-decimal grammar.
-            if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)
-                || strlen($amount_str) > 22
-                || strpos($amount_str, 'e') !== false
-                || strpos($amount_str, 'E') !== false
-                || (float) $amount_str <= 0
-            ) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-            // Final amount as JSON number, not quoted string.
-            $amount_number = (float) $amount_str;
-
-            // Section H: Reference preflight.
-            $reference_id = (string) $order_id;
-            if (strlen($reference_id) > 35) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-
-            // Section M: Callback URL validation — absolute http/https with host.
-            $urls_to_validate = array(
-                'returnUrl'       => $success_url,
-                'cancelUrl'       => $error_url,
-                'notificationUrl' => $ipn_url,
-            );
-            foreach ($urls_to_validate as $url_key => $url_val) {
-                if (!is_scalar($url_val) || (string) $url_val === '' || strlen((string) $url_val) > 250) {
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                $parsed = wp_parse_url((string) $url_val);
-                if (!$parsed || !isset($parsed['scheme']) || !isset($parsed['host'])
-                    || ($parsed['scheme'] !== 'http' && $parsed['scheme'] !== 'https')
-                    || $parsed['host'] === ''
-                ) {
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-            }
-
-            // Section L: Customer payload normalization.
-            $customer_name = $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"];
-            if (function_exists('mb_substr')) {
-                $customer_name = mb_substr($customer_name, 0, 50);
-            } else {
-                $customer_name = substr($customer_name, 0, 50);
-            }
-
-            $customer_data = array(
-                'name' => $customer_name,
-            );
-            $email = isset($order_data["billing"]["email"]) && is_scalar($order_data["billing"]["email"]) ? (string) $order_data["billing"]["email"] : '';
-            if ($email !== '' && strlen($email) <= 50 && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $customer_data['email'] = $email;
-            }
-            if ($customer_unique_id !== '' && strlen($customer_unique_id) <= 50) {
-                $customer_data['uniqueId'] = $customer_unique_id;
-            }
-            if ($provider_mobile !== '') {
-                $customer_data['mobile'] = $provider_mobile;
-            }
-
-            // Build payload as PHP array (Section B: single order key).
-            $payload = array(
-                'returnUrl'       => $success_url,
-                'cancelUrl'       => $error_url,
-                'notificationUrl' => $ipn_url,
-                'products'        => $productArrayNew,
-                'order'           => array(
-                    'id'          => $unique_order_id,
-                    'description' => $order_description,
-                    'currency'    => $currency,
-                    'amount'      => $amount_number,
-                ),
-                'reference'       => array(
-                    'id' => $reference_id,
-                ),
-                'customer'        => $customer_data,
-                'plugin'          => array(
-                    'src' => 'woocommerce',
-                ),
-                'is_whitelabled'  => $whitelabled,
-                'language'        => 'en',
-                'isSaveCard'      => $isSaveCard,
-                'tokens'          => array(
-                    'creditCard'          => $credit_card_token,
-                    'customerUniqueToken' => $canonical_token,
-                ),
-                'device'          => array(
-                    'browser'          => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0',
-                    'browserDetails'   => array(
-                        'screenWidth'                 => '1920',
-                        'screenHeight'                => '1080',
-                        'colorDepth'                  => '24',
-                        'javaEnabled'                 => 'false',
-                        'language'                    => 'en',
-                        'timeZone'                    => '-180',
-                        '3DSecureChallengeWindowSize' => '500_X_600',
-                    ),
-                ),
-                'extraMerchantData' => $extraMerchantData,
+            // === PHASE D: FINAL CHARGE PAYLOAD COMPLETION ===
+            // Inject token-dependent fields into the already-validated deterministic payload.
+            $payload['tokens'] = array(
+                'creditCard'          => $credit_card_token,
+                'customerUniqueToken' => $canonical_token,
             );
 
-            // Section D: Whitelabel paymentGateway only.
-            if ($whitelabled && $src !== null) {
-                if (strlen($src) > 11) {
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                $payload['paymentGateway'] = array('src' => $src);
-            }
-
+            // Final JSON encode.
             $params = wp_json_encode($payload);
             if (!is_string($params) || $params === '') {
-                $this->log('Charge payload encoding failed.', 'warning');
+                $this->log('Final payload encoding failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
             $this->log(__("Create payment request prepared.", $this->domain));
 
+            // === PHASE E: CHARGE ===
             $transport = $this->execute_upayments_request('charge', 'POST', $params);
 
             // Section S: Strict HTTP 201 check for Charge.
