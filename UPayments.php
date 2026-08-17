@@ -1425,9 +1425,20 @@ function woocommerceUpaymentsInit() {
         // Process payment (must use feature flags to route API calls)
         public function process_payment( $order_id ) {
             global $woocommerce;
-            $whitelabled = false;
 
-            $order = wc_get_order($order_id);
+            // Section Y: Defensive order boundary.
+            if (!is_numeric($order_id) || (int) $order_id <= 0) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $order = wc_get_order((int) $order_id);
+            if (!$order || !($order instanceof \WC_Order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $whitelabled = false;
             $order_data = $order->get_data();
             $order_total = $order->get_total();
 
@@ -1448,8 +1459,17 @@ function woocommerceUpaymentsInit() {
 
             foreach ($order->get_items('line_item') as $item)
             {
+                // Section Z: Defensive product boundary.
+                if (!$item || !($item instanceof \WC_Order_Item_Product)) {
+                    continue;
+                }
+
                 /** @var WC_Order_Item_Product $item */
                 $product = $item->get_product();
+                if (!$product || !($product instanceof \WC_Product)) {
+                    continue;
+                }
+
                 $sale_price = $product->get_regular_price();
                 $sale_price = !empty($sale_price) ? $sale_price : 0;
                 if($product->get_type() === 'custom_type'){
@@ -1468,6 +1488,11 @@ function woocommerceUpaymentsInit() {
                 $productArrayNew[$i]['quantity'] =$item_data["quantity"];
                 $productArrayNew[$i]['type'] = $product->get_type();
                 $i++;
+            }
+
+            if (empty($productArrayNew)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
             if($this->paymentData == null ) {
@@ -1491,7 +1516,7 @@ function woocommerceUpaymentsInit() {
             $whitelabled = $payment_data['whitelabled'];
 
             // Central checkout defaults — initialized before Classic/Blocks branching.
-            $src                   = 'knet';
+            $src                   = null; // Section O: Non-Whitelabel uses hosted checkout, no specific source.
             $cardToken             = null;
             $isSaveCard            = false;
             $isSaveCardRequested   = false;
@@ -1499,25 +1524,37 @@ function woocommerceUpaymentsInit() {
             $subscription_interval = 0;
             $user_id               = get_current_user_id();
 
-            // 1. Get Extension Data from the Blocks Checkout
-            // WooCommerce Blocks sends this data in the request body, not $_POST.
-            // Require arrays at each structural level to prevent type confusion.
+            // Section AB: Explicit request-shape/channel detection.
+            // Do NOT use !empty($extension_data) as Classic-vs-Blocks discriminator.
+            $is_blocks_request = false;
             $request_data = json_decode(file_get_contents('php://input'), true);
             $extension_data = array();
-            if (is_array($request_data)
-                && isset($request_data['extensions'])
-                && is_array($request_data['extensions'])
-                && isset($request_data['extensions']['upayments'])
-                && is_array($request_data['extensions']['upayments'])
-            ) {
-                $extension_data = $request_data['extensions']['upayments'];
+
+            if (is_array($request_data) && isset($request_data['extensions'])) {
+                if (!is_array($request_data['extensions'])) {
+                    // Malformed extensions — reject safely.
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (isset($request_data['extensions']['upayments'])) {
+                    if (!is_array($request_data['extensions']['upayments'])) {
+                        // Malformed namespace — reject safely.
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $extension_data = $request_data['extensions']['upayments'];
+                    $is_blocks_request = true;
+                }
             }
 
-            if(!empty($extension_data)){
+            if ($is_blocks_request) {
                 // Blocks path: read save_card and card_token only.
-                // Payment source is NOT read here — it is determined below
-                // based on whitelabel state.
-                if (isset($extension_data['card_token']) && is_scalar($extension_data['card_token'])) {
+                // Section AC: Reject non-scalar security-sensitive fields.
+                if (isset($extension_data['card_token'])) {
+                    if (!is_scalar($extension_data['card_token'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $cardToken = trim((string) $extension_data['card_token']);
                 }
 
@@ -1525,28 +1562,49 @@ function woocommerceUpaymentsInit() {
                     $isSaveCardRequested = $this->normalize_save_card($extension_data['save_card']);
                 }
 
-                if (isset($extension_data['upay_subscription_plan']) && is_scalar($extension_data['upay_subscription_plan'])) {
+                if (isset($extension_data['upay_subscription_plan'])) {
+                    if (!is_scalar($extension_data['upay_subscription_plan'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $subscription_plan = sanitize_text_field($extension_data['upay_subscription_plan']);
                 }
-                if (isset($extension_data['upay_subscription_interval']) && is_scalar($extension_data['upay_subscription_interval'])) {
+                if (isset($extension_data['upay_subscription_interval'])) {
+                    if (!is_scalar($extension_data['upay_subscription_interval'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $subscription_interval = self::parse_interval($extension_data['upay_subscription_interval']);
                 }
             } else {
                 // Classic path: require scalar + wp_unslash before sanitizing.
+                // Section AC: Reject non-scalar security-sensitive fields.
                 $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
 
                 if (isset($_POST["save_card"]) && is_scalar($_POST["save_card"])) {
                     $isSaveCardRequested = $this->normalize_save_card(wp_unslash($_POST["save_card"]));
                 }
 
-                if (isset($_POST["card_token"]) && is_scalar($_POST["card_token"])) {
+                if (isset($_POST["card_token"])) {
+                    if (!is_scalar($_POST["card_token"])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $cardToken = trim((string) wp_unslash($_POST["card_token"]));
                 }
 
-                if (isset($_POST['upay_subscription_plan']) && is_scalar($_POST['upay_subscription_plan'])) {
+                if (isset($_POST['upay_subscription_plan'])) {
+                    if (!is_scalar($_POST['upay_subscription_plan'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $subscription_plan = sanitize_text_field(wp_unslash($_POST['upay_subscription_plan']));
                 }
-                if (isset($_POST['upay_subscription_interval']) && is_scalar($_POST['upay_subscription_interval'])) {
+                if (isset($_POST['upay_subscription_interval'])) {
+                    if (!is_scalar($_POST['upay_subscription_interval'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $subscription_interval = self::parse_interval(wp_unslash($_POST['upay_subscription_interval']));
                 }
             }
@@ -1558,12 +1616,20 @@ function woocommerceUpaymentsInit() {
             if ($whitelabled) {
                 // Whitelabel: read client-supplied source.
                 $raw_src = null;
-                if (!empty($extension_data)) {
-                    if (isset($extension_data['upayment_payment_type']) && is_scalar($extension_data['upayment_payment_type'])) {
+                if ($is_blocks_request) {
+                    if (isset($extension_data['upayment_payment_type'])) {
+                        if (!is_scalar($extension_data['upayment_payment_type'])) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
                         $raw_src = trim((string) sanitize_text_field($extension_data['upayment_payment_type']));
                     }
                 } else {
-                    if (isset($_POST["upayment_payment_type"]) && is_scalar($_POST["upayment_payment_type"])) {
+                    if (isset($_POST["upayment_payment_type"])) {
+                        if (!is_scalar($_POST["upayment_payment_type"])) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
                         $raw_src = trim((string) sanitize_text_field(wp_unslash($_POST["upayment_payment_type"])));
                     }
                 }
@@ -1577,7 +1643,7 @@ function woocommerceUpaymentsInit() {
 
                 $src = $raw_src;
             }
-            // Non-whitelabel: $src remains 'knet' (the default).
+            // Non-whitelabel: $src remains null (hosted checkout).
 
             // Derive selected-card state after both Blocks/Classic paths resolved.
             $has_selected_card = is_string($cardToken) && $cardToken !== '';
@@ -2009,7 +2075,11 @@ function woocommerceUpaymentsInit() {
                 "is_whitelabled" => $whitelabled, 
                 "language" => "en", 
                 "isSaveCard" => $isSaveCard, 
-                "paymentGateway" => ["src" => $src,], 
+                // Section AD: Non-Whitelabel omits paymentGateway.
+                // Section AE: Mandatory order description.
+                "order" => [
+                    "description" => substr('WooCommerce order #' . $order_id, 0, 500),
+                ], 
                 "tokens" => [
                     "creditCard" => $credit_card_token,
                     "customerUniqueToken" => $canonical_token,
@@ -2028,6 +2098,51 @@ function woocommerceUpaymentsInit() {
                 ], 
                 "extraMerchantData" => $extraMerchantData,
             ]);
+
+            // Section AD: Add paymentGateway only for Whitelabel.
+            if ($whitelabled && $src !== null) {
+                $params['paymentGateway'] = array('src' => $src);
+            }
+
+            // Section AF: Provider payload field-length preflight.
+            $customer_name = $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"];
+            if (strlen($customer_name) > 50) {
+                $customer_name = mb_substr($customer_name, 0, 50);
+            }
+            if (isset($params['customer']['name'])) {
+                $params['customer']['name'] = $customer_name;
+            }
+
+            // Validate mandatory fields.
+            if (empty($success_url) || strlen($success_url) > 250) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            if (empty($error_url) || strlen($error_url) > 250) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            if (empty($ipn_url) || strlen($ipn_url) > 250) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            if (empty($unique_order_id) || strlen($unique_order_id) > 40) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Product name/description: normalize to 255 chars.
+            if (isset($params['products'])) {
+                foreach ($params['products'] as &$product_entry) {
+                    if (isset($product_entry['name'])) {
+                        $product_entry['name'] = mb_substr($product_entry['name'], 0, 255);
+                    }
+                    if (isset($product_entry['description'])) {
+                        $product_entry['description'] = mb_substr($product_entry['description'], 0, 255);
+                    }
+                }
+                unset($product_entry);
+            }
 
             $this->log(__("Create payment request prepared.", $this->domain));
 
@@ -2921,6 +3036,9 @@ function woocommerceUpaymentsInit() {
 
             $whitelabled = isset($data['isWhiteLabel']) && $data['isWhiteLabel'] === true;
             $methods     = [];
+
+            // Section P: Non-Whitelabel generic checkout must always be available.
+            $methods['payment'] = array();
 
             // If ONLY normal products in cart → allow all methods
             if (!$isSubscriptionContext) {

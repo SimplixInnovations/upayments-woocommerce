@@ -95,6 +95,66 @@ class CustomerTokenIdentity {
         return array('state' => self::SECRET_INVALID, 'record' => null);
     }
 
+    /**
+     * Derive scope fingerprint from an already-validated secret record.
+     * Side-effect free: never creates a secret.
+     *
+     * @param string $api_key
+     * @param bool   $is_test_mode
+     * @param array  $validated_secret_record Must be a valid secret record.
+     * @return string|null Scope fingerprint or null on failure.
+     */
+    private static function derive_scope_fingerprint($api_key, $is_test_mode, $validated_secret_record) {
+        if (empty($api_key) || !is_scalar($api_key)) {
+            return null;
+        }
+        if (!is_array($validated_secret_record) || !isset($validated_secret_record['secret'])) {
+            return null;
+        }
+        $blog_id = (string) get_current_blog_id();
+        $mode = $is_test_mode ? 'test' : 'live';
+        $fingerprint = hash_hmac(
+            'sha256',
+            $blog_id . '|' . $mode . '|' . (string) $api_key,
+            $validated_secret_record['secret']
+        );
+        $hex = strtolower($fingerprint);
+        if (!preg_match('/^[0-9a-f]{64}$/', $hex)) {
+            return null;
+        }
+        return substr($hex, 0, self::SCOPE_HEX_LENGTH);
+    }
+
+    /**
+     * Get existing scope fingerprint without creating a secret.
+     * Side-effect free: returns null if secret is absent/invalid.
+     *
+     * @param string $api_key
+     * @param bool   $is_test_mode
+     * @return string|null Scope fingerprint or null.
+     */
+    public static function get_existing_scope_fingerprint($api_key, $is_test_mode) {
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] !== self::SECRET_VALID) {
+            return null;
+        }
+        return self::derive_scope_fingerprint($api_key, $is_test_mode, $secret_result['record']);
+    }
+
+    /**
+     * Get existing generation ID without creating a secret.
+     * Side-effect free: returns null if secret is absent/invalid.
+     *
+     * @return string|null Generation ID or null.
+     */
+    public static function get_existing_generation_id() {
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] !== self::SECRET_VALID) {
+            return null;
+        }
+        return $secret_result['record']['generation_id'];
+    }
+
     public static function get_or_create_secret_record() {
         global $wpdb;
 
@@ -265,7 +325,8 @@ class CustomerTokenIdentity {
     // ────────────────────────────────────────────────────────
 
     public static function get_user_meta_key($blog_id, $scope_fingerprint) {
-        if (!is_string($blog_id) || $blog_id === '' || (int) $blog_id <= 0) {
+        // Section H: Strict blog-ID boundary — canonical positive decimal string.
+        if (!is_string($blog_id) || !preg_match('/^[1-9][0-9]*$/', $blog_id)) {
             return null;
         }
         if (!self::is_valid_scope($scope_fingerprint)) {
@@ -336,6 +397,9 @@ class CustomerTokenIdentity {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
             return array('state' => self::STATE_ABSENT, 'record' => null);
         }
+
+        // Force-refresh user-meta cache before authoritative read.
+        self::force_refresh_user_meta($user_id);
 
         $blog_id = (string) get_current_blog_id();
         $meta_key = self::get_user_meta_key($blog_id, $scope_fingerprint);
@@ -431,13 +495,14 @@ class CustomerTokenIdentity {
 
         // Generation binding (optional for prior-provenance inspection).
         if ($require_current_generation) {
-            $current_generation = self::get_generation_id();
+            // Use read-only generation helper — never create a secret.
+            $current_generation = self::get_existing_generation_id();
             if ($current_generation === null || $record['secret_generation_id'] !== $current_generation) {
                 return 'invalid';
             }
         } else {
             // Structural OK but check generation match explicitly.
-            $current_generation = self::get_generation_id();
+            $current_generation = self::get_existing_generation_id();
             if ($current_generation !== null && $record['secret_generation_id'] !== $current_generation) {
                 return 'generation_mismatch';
             }
@@ -503,6 +568,39 @@ class CustomerTokenIdentity {
 
         $result = add_user_meta($user_id, $meta_key, $record, true);
         if ($result === false) {
+            return false;
+        }
+
+        // Section G: Verify provenance persistence after creation.
+        self::force_refresh_user_meta($user_id);
+        $verify_values = get_user_meta($user_id, $meta_key, false);
+        if (!is_array($verify_values) || count($verify_values) !== 1) {
+            return false;
+        }
+        $verify_record = $verify_values[0];
+        if (!is_array($verify_record)) {
+            return false;
+        }
+        // Exact compare all fields.
+        if (!isset($verify_record['version']) || $verify_record['version'] !== $record['version']) {
+            return false;
+        }
+        if (!isset($verify_record['kind']) || $verify_record['kind'] !== $record['kind']) {
+            return false;
+        }
+        if (!isset($verify_record['token']) || $verify_record['token'] !== $record['token']) {
+            return false;
+        }
+        if (!isset($verify_record['source']) || $verify_record['source'] !== $record['source']) {
+            return false;
+        }
+        if (!isset($verify_record['scope']) || $verify_record['scope'] !== $record['scope']) {
+            return false;
+        }
+        if (!isset($verify_record['secret_generation_id']) || $verify_record['secret_generation_id'] !== $record['secret_generation_id']) {
+            return false;
+        }
+        if (!isset($verify_record['established_at_gmt']) || $verify_record['established_at_gmt'] !== $record['established_at_gmt']) {
             return false;
         }
 
@@ -616,6 +714,25 @@ class CustomerTokenIdentity {
         }
     }
 
+    /**
+     * Force-refresh WordPress user-meta cache for a user.
+     * Side-effect free: does not mutate provenance data.
+     *
+     * @param int $user_id Positive user ID.
+     * @return bool true on success, false on failure.
+     */
+    public static function force_refresh_user_meta($user_id) {
+        if ($user_id <= 0) {
+            return false;
+        }
+        try {
+            clean_user_cache($user_id);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     // ────────────────────────────────────────────────────────
     // HISTORICAL ORDER META CARDINALITY HELPER
     // ────────────────────────────────────────────────────────
@@ -675,7 +792,8 @@ class CustomerTokenIdentity {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_input');
         }
 
-        $current_generation = self::get_generation_id();
+        // Use read-only generation helper — never create a secret.
+        $current_generation = self::get_existing_generation_id();
         if ($current_generation === null) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'no_generation');
         }
@@ -794,82 +912,83 @@ class CustomerTokenIdentity {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'force_refresh_failed');
                 }
 
-                // ── Historical customer token meta (Section E: cardinality) ──
+                // Section K: Inspect ALL five security keys up front.
                 $token_card = self::get_historical_meta_cardinality($order, '_upay_customer_unique_token');
+                $kind_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_kind_v1');
+                $scope_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_scope_v1');
+                $gen_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_generation_v1');
+                $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
 
-                if ($token_card['status'] === self::META_ABSENT) {
-                    // No customer-token evidence — check card-token-only.
-                    $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
+                // Section M: Card-token cardinality on EVERY order.
+                if ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                $has_customer_token = ($token_card['status'] === self::META_EXACTLY_ONE);
+                $token_str = $has_customer_token ? (string) $token_card['value'] : '';
+                $token_is_empty = ($token_str === '');
+                $token_is_valid_grammar = (!$token_is_empty && preg_match('/^[0-9]{8,18}$/', $token_str));
+
+                $has_kind = ($kind_card['status'] === self::META_EXACTLY_ONE);
+                $has_scope = ($scope_card['status'] === self::META_EXACTLY_ONE);
+                $has_generation = ($gen_card['status'] === self::META_EXACTLY_ONE);
+
+                // Section L: Orphan snapshot fields without customer token.
+                if ((!$has_customer_token || $token_is_empty) && ($has_kind || $has_scope || $has_generation)) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                // No customer token and no snapshot fields — check card-only.
+                if (!$has_customer_token || $token_is_empty) {
                     if ($card_card['status'] === self::META_EXACTLY_ONE && (string) $card_card['value'] !== '') {
                         $has_card_without_identity = true;
-                    } elseif ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
-                        $has_card_token_malformed = true;
                     }
                     continue;
                 }
 
+                // Nonempty token — validate basic grammar.
+                if (!$token_is_valid_grammar) {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                // Check for duplicate customer-token metadata.
                 if ($token_card['status'] === self::META_DUPLICATE_OR_INVALID) {
                     $has_malformed = true;
                     continue;
                 }
 
-                $token_str = (string) $token_card['value'];
-                if ($token_str === '') {
-                    // Empty token — no useful evidence, but check card-only.
-                    $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
-                    if ($card_card['status'] === self::META_EXACTLY_ONE && (string) $card_card['value'] !== '') {
-                        $has_card_without_identity = true;
-                    } elseif ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
-                        $has_card_token_malformed = true;
-                    }
-                    continue;
-                }
-
-                // Nonempty token — validate basic grammar before classification.
-                if (!preg_match('/^[0-9]{8,18}$/', $token_str)) {
-                    $has_malformed = true;
-                    continue;
-                }
-
-                // ── Snapshot presence matrix (Section N: cardinality) ──
-                $kind_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_kind_v1');
-                $scope_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_scope_v1');
-                $gen_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_generation_v1');
-
-                $has_kind = $kind_card['status'] === self::META_EXACTLY_ONE;
-                $has_scope = $scope_card['status'] === self::META_EXACTLY_ONE;
-                $has_generation = $gen_card['status'] === self::META_EXACTLY_ONE;
-
-                $any_duplicate = ($kind_card['status'] === self::META_DUPLICATE_OR_INVALID)
-                    || ($scope_card['status'] === self::META_DUPLICATE_OR_INVALID)
-                    || ($gen_card['status'] === self::META_DUPLICATE_OR_INVALID);
-
-                if ($any_duplicate) {
-                    $has_malformed = true;
-                    continue;
-                }
-
+                // Snapshot presence matrix.
                 $all_three_present = $has_kind && $has_scope && $has_generation;
                 $all_three_absent = !$has_kind && !$has_scope && !$has_generation;
 
                 if (!$all_three_present && !$all_three_absent) {
-                    // Partial snapshot.
                     $has_malformed = true;
                     continue;
                 }
 
                 if ($all_three_absent) {
-                    // Unscoped legacy.
                     $has_unscoped = true;
                     continue;
                 }
 
-                // All three present — validate (Section O).
+                // All three present — validate.
                 $kind_str = (string) $kind_card['value'];
                 $scope_str = (string) $scope_card['value'];
                 $gen_str = (string) $gen_card['value'];
 
                 if ($kind_str === '' || $scope_str === '' || $gen_str === '') {
+                    $has_malformed = true;
+                    continue;
+                }
+
+                // Check for duplicate snapshot metadata.
+                if ($kind_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $scope_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $gen_card['status'] === self::META_DUPLICATE_OR_INVALID
+                ) {
                     $has_malformed = true;
                     continue;
                 }
@@ -977,10 +1096,14 @@ class CustomerTokenIdentity {
             return array('state' => 'none', 'reason' => 'not_logged_in');
         }
 
-        $current_generation = self::get_generation_id();
+        // Use read-only generation helper — never create a secret.
+        $current_generation = self::get_existing_generation_id();
         if ($current_generation === null) {
             return array('state' => 'read_failure', 'reason' => 'no_generation');
         }
+
+        // Force-refresh user-meta cache before authoritative read.
+        self::force_refresh_user_meta($user_id);
 
         global $wpdb;
         $blog_id = (string) get_current_blog_id();
@@ -1341,7 +1464,8 @@ class CustomerTokenIdentity {
             return null;
         }
 
-        $scope = self::get_scope_fingerprint($api_key, $is_test_mode);
+        // Use read-only scope helper — never create a secret.
+        $scope = self::get_existing_scope_fingerprint($api_key, $is_test_mode);
         if ($scope === null) {
             return null;
         }
@@ -1357,7 +1481,8 @@ class CustomerTokenIdentity {
             return null;
         }
 
-        $generation_id = self::get_generation_id();
+        // Use read-only generation helper — never create a secret.
+        $generation_id = self::get_existing_generation_id();
         if ($generation_id === null) {
             return null;
         }
@@ -1459,6 +1584,11 @@ class CustomerTokenIdentity {
 
     public static function clear_stale_pr16_attempt_metadata($order) {
         if (!$order) {
+            return false;
+        }
+
+        // Section I: Force-fresh before making any decision.
+        if (!self::force_refresh_order_meta($order)) {
             return false;
         }
 

@@ -76,6 +76,22 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Blocks defensive JS: card.token/number/brand require non-null object guard before access.
 - Blocks mount no longer unconditionally resets subscription plan/interval state.
 - HTTP 422 fails closed as http_422; no duplicate-token inference, provider-message matching, or automatic retry.
+- All identity read/classification paths are side-effect free; only explicit canonical establishment creates the identity secret.
+- Force-refresh user provenance cache before authoritative provenance reads; stale cached usermeta cannot hide provenance.
+- Verify provenance persistence after creation with exact field comparison; failed verification blocks Charge.
+- Strict blog-ID meta-key boundary: canonical positive decimal string required; `1abc`, `01`, `0` rejected.
+- Stale cleanup force-refreshes order metadata before making any classification or deletion decision.
+- History inspector inspects all five security keys for every order; orphan snapshot fields without customer token classified as MALFORMED_SCOPED.
+- Card-token cardinality checked on every relevant historical order, not just empty-token paths.
+- Non-Whitelabel checkout uses UPayments-hosted semantics; paymentGateway omitted from Charge payload.
+- Add mandatory `order.description` to Charge payload (`WooCommerce order #<id>`).
+- Provider payload field-length preflight for product names, customer name, callback URLs.
+- Saved-card retrieval gated by actual usability: Whitelabel + CC enabled + valid provenance required.
+- Blocks event handlers use current store state helper to avoid stale render closure.
+- Defensive order/product boundary: invalid order or unloadable product fails safely.
+- Mixed subscription order rejection: custom+normal products reject subscription request.
+- Blocks vs Classic request channel uses explicit `extensions.upayments` detection, not `!empty()`.
+- Security-sensitive request field shapes validated: non-scalar card_token, source, plan, interval rejected.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.
