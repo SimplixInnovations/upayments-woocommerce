@@ -112,10 +112,18 @@ function woocommerceUpaymentsInit() {
          * All other values (including 'true', 'yes', '2', arrays) => false.
          *
          * @param mixed $value Raw request value.
-         * @return bool
+         * Strict tri-state parser: absent/0/'0' => false; 1/'1' => true; else invalid.
+         * @param mixed $value Raw input.
+         * @return bool|null true/false for valid, null for invalid.
          */
-        private function normalize_save_card($value): bool {
-            return $value === 1 || $value === '1';
+        private static function parse_save_card_strict($value) {
+            if ($value === null || $value === '' || $value === 0 || $value === '0') {
+                return false;
+            }
+            if ($value === 1 || $value === '1') {
+                return true;
+            }
+            return null; // invalid
         }
 
         /**
@@ -1595,28 +1603,40 @@ function woocommerceUpaymentsInit() {
             $subscription_interval = 0;
             $user_id               = get_current_user_id();
 
-            // Section AB: Explicit request-shape/channel detection.
-            // Do NOT use !empty($extension_data) as Classic-vs-Blocks discriminator.
+            // Section AN: Detect Store API/REST independently.
+            $is_store_api = defined('REST_REQUEST') && REST_REQUEST;
             $is_blocks_request = false;
-            $request_data = json_decode(file_get_contents('php://input'), true);
+            $request_data = null;
             $extension_data = array();
 
-            if (is_array($request_data) && isset($request_data['extensions'])) {
-                if (!is_array($request_data['extensions'])) {
-                    // Malformed extensions — reject safely.
+            if ($is_store_api) {
+                // Store API: parse JSON only, never consume Classic POST.
+                $raw_input = file_get_contents('php://input');
+                if (is_string($raw_input) && $raw_input !== '') {
+                    $request_data = json_decode($raw_input, true);
+                }
+                if (!is_array($request_data)) {
+                    // Malformed JSON in Store API context — reject.
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (isset($request_data['extensions']['upayments'])) {
-                    if (!is_array($request_data['extensions']['upayments'])) {
-                        // Malformed namespace — reject safely.
+                if (isset($request_data['extensions'])) {
+                    if (!is_array($request_data['extensions'])) {
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
-                    $extension_data = $request_data['extensions']['upayments'];
-                    $is_blocks_request = true;
+                    if (array_key_exists('upayments', $request_data['extensions'])) {
+                        if (!is_array($request_data['extensions']['upayments'])) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
+                        $extension_data = $request_data['extensions']['upayments'];
+                    }
+                    // Missing upayments namespace => empty extension data (not Classic fallback).
                 }
+                $is_blocks_request = true;
             }
+            // Classic POST path is only for actual Classic checkout (not Store API).
 
             if ($is_blocks_request) {
                 // Blocks path: read save_card and card_token only.
@@ -1630,7 +1650,12 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if (isset($extension_data['save_card'])) {
-                    $isSaveCardRequested = $this->normalize_save_card($extension_data['save_card']);
+                    $parsed_save = self::parse_save_card_strict($extension_data['save_card']);
+                    if ($parsed_save === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $isSaveCardRequested = $parsed_save;
                 }
 
                 if (isset($extension_data['upay_subscription_plan'])) {
@@ -1652,8 +1677,17 @@ function woocommerceUpaymentsInit() {
                 // Section AC: Reject non-scalar security-sensitive fields.
                 $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
 
-                if (isset($_POST["save_card"]) && is_scalar($_POST["save_card"])) {
-                    $isSaveCardRequested = $this->normalize_save_card(wp_unslash($_POST["save_card"]));
+                if (isset($_POST["save_card"])) {
+                    if (!is_scalar($_POST["save_card"])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $parsed_save = self::parse_save_card_strict(wp_unslash($_POST["save_card"]));
+                    if ($parsed_save === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $isSaveCardRequested = $parsed_save;
                 }
 
                 if (isset($_POST["card_token"])) {
@@ -2146,10 +2180,18 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
             $amount_str = (string) $order_total;
-            if (strlen($amount_str) > 22) {
+            // Section I: Strict positive plain-decimal grammar.
+            if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)
+                || strlen($amount_str) > 22
+                || strpos($amount_str, 'e') !== false
+                || strpos($amount_str, 'E') !== false
+                || (float) $amount_str <= 0
+            ) {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
+            // Final amount as JSON number, not quoted string.
+            $amount_number = (float) $amount_str;
 
             // Section H: Reference preflight.
             $reference_id = (string) $order_id;
@@ -2158,18 +2200,25 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Section I: Callback URL preflight.
-            if (empty($success_url) || strlen($success_url) > 250) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-            if (empty($error_url) || strlen($error_url) > 250) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-            if (empty($ipn_url) || strlen($ipn_url) > 250) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            // Section M: Callback URL validation — absolute http/https with host.
+            $urls_to_validate = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+            );
+            foreach ($urls_to_validate as $url_key => $url_val) {
+                if (!is_scalar($url_val) || (string) $url_val === '' || strlen((string) $url_val) > 250) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $parsed = wp_parse_url((string) $url_val);
+                if (!$parsed || !isset($parsed['scheme']) || !isset($parsed['host'])
+                    || ($parsed['scheme'] !== 'http' && $parsed['scheme'] !== 'https')
+                    || $parsed['host'] === ''
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
             // Section L: Customer payload normalization.
@@ -2204,7 +2253,7 @@ function woocommerceUpaymentsInit() {
                     'id'          => $unique_order_id,
                     'description' => $order_description,
                     'currency'    => $currency,
-                    'amount'      => $amount_str,
+                    'amount'      => $amount_number,
                 ),
                 'reference'       => array(
                     'id' => $reference_id,
@@ -2221,7 +2270,7 @@ function woocommerceUpaymentsInit() {
                     'customerUniqueToken' => $canonical_token,
                 ),
                 'device'          => array(
-                    'browser'          => 'Mozilla/5.0',
+                    'browser'          => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0',
                     'browserDetails'   => array(
                         'screenWidth'                 => '1920',
                         'screenHeight'                => '1080',
@@ -3101,7 +3150,10 @@ function woocommerceUpaymentsInit() {
             );
         }
 
-        public function getSavedCardsForCurrentUser()
+        /**
+         * Section AH: Defense in depth — require normalized payment state.
+         */
+        public function getSavedCardsForCurrentUser($payment_data = null)
         {
             $user_id = get_current_user_id();
             if ($user_id <= 0) {
@@ -3109,6 +3161,20 @@ function woocommerceUpaymentsInit() {
             }
 
             if ($this->saveCardEnabled !== 'yes') {
+                return null;
+            }
+
+            // Section AH: Require normalized payment state.
+            if ($payment_data === null) {
+                $payment_data = $this->getPaymentIcons();
+            }
+            if (!is_array($payment_data)
+                || !isset($payment_data['whitelabled'])
+                || $payment_data['whitelabled'] !== true
+                || !isset($payment_data['payment'])
+                || !is_array($payment_data['payment'])
+                || !isset($payment_data['payment']['cc'])
+            ) {
                 return null;
             }
 
@@ -3132,15 +3198,34 @@ function woocommerceUpaymentsInit() {
                 return '';
             }
             $str = (string) $value;
-            // Remove invalid UTF-8 sequences.
-            $str = mb_convert_encoding($str, 'UTF-8', 'UTF-8');
-            if ($str === '' || $str === false) {
+            if ($str === '') {
                 return '';
             }
-            if (mb_strlen($str, 'UTF-8') <= $max_chars) {
+            // Remove invalid UTF-8 sequences using PCRE (always available).
+            $str = preg_replace('/[\x00-\x7F][\x80-\xBF]+/u', '', $str);
+            $str = preg_replace('/[\xC0-\xDF](?![\x80-\xBF])/u', '', $str);
+            $str = preg_replace('/[\xE0-\xEF](?![\x80-\xBF]{2})/u', '', $str);
+            $str = preg_replace('/[\xF0-\xF7](?![\x80-\xBF]{3})/u', '', $str);
+            if ($str === '' || $str === null) {
+                return '';
+            }
+            // Fast path: mbstring available.
+            if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+                if (mb_strlen($str, 'UTF-8') <= $max_chars) {
+                    return $str;
+                }
+                return mb_substr($str, 0, $max_chars, 'UTF-8');
+            }
+            // PCRE fallback: count code points, then safely extract.
+            $matches = array();
+            if (preg_match_all('/./us', $str, $matches) === false) {
+                return '';
+            }
+            $chars = $matches[0];
+            if (count($chars) <= $max_chars) {
                 return $str;
             }
-            return mb_substr($str, 0, $max_chars, 'UTF-8');
+            return implode('', array_slice($chars, 0, $max_chars));
         }
 
         public function getPaymentIcons()

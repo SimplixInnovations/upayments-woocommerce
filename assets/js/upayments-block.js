@@ -73,8 +73,10 @@
                 });
             };            
 
+            // Section AK: Subscription handler uses current store state.
             const handleSubscriptionChange = (plan, interval) => {
-                const finalInterval = (plan === upayData.upay_subscription_plan) ? interval : '';
+                const current = getCurrentUpayData();
+                const finalInterval = (plan === current.upay_subscription_plan) ? interval : '';
                 updateCheckout({
                     upay_subscription_plan: plan,
                     upay_subscription_interval: finalInterval
@@ -144,7 +146,8 @@
                     }
                 }, toast.message),
 
-                is_subscription_enabled && hasCustomTypeProduct && createElement(
+                // Section AL: Subscription UI requires Whitelabel + CC enabled.
+                is_subscription_enabled && hasCustomTypeProduct && is_whitelabled && payment_icons && payment_icons.cc && createElement(
                     'div',
                     { className: 'upay-subscription-wrapper', style: { marginBottom: '20px', padding: '15px', background: '#f9f9f9', borderRadius: '8px', border: '1px solid #eee' } },
                     createElement('label', { style: { display: 'block', fontWeight: 'bold', marginBottom: '5px' } }, 
