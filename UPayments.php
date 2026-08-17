@@ -2894,20 +2894,13 @@ function woocommerceUpaymentsInit() {
             // -------------------------------------------------------
             $transport = $this->execute_upayments_request('check-payment-button-status', 'GET');
 
-            if (!$transport['transport_ok']) {
-                // Transport failure: cache failure sentinel for remaining cooldown.
-                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-                wc_clear_notices();
-                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-            }
-
-            // Section O: Strict HTTP status check.
+            // Section AH: Consolidated transport guard (no unsafe first dereference).
             if (!is_array($transport)
-                || !isset($transport['transport_ok']) || !$transport['transport_ok']
+                || !isset($transport['transport_ok']) || $transport['transport_ok'] !== true
                 || !isset($transport['http_status']) || (int) $transport['http_status'] !== 201
                 || !isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0
                 || !isset($transport['body']) || !is_scalar($transport['body'])
+                || (string) $transport['body'] === ''
             ) {
                 $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                 wc_clear_notices();
