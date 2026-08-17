@@ -75,7 +75,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Blocks saved-card server sanitization: each card entry sanitized to token/number/brand scalars before passing to JS.
 - Blocks defensive JS: card.token/number/brand require non-null object guard before access.
 - Blocks mount no longer unconditionally resets subscription plan/interval state.
-- HTTP 422 fails closed as http_422; no duplicate-token inference, provider-message matching, or automatic retry.
+- HTTP 422 fails closed as http_422 with no duplicate-token inference, no provider-message matching, and no automatic collision retry — the response reason is captured verbatim without any retry or collision-detection semantics.
 - All identity read/classification paths are side-effect free; only explicit canonical establishment creates the identity secret.
 - Force-refresh user provenance cache before authoritative provenance reads; stale cached usermeta cannot hide provenance.
 - Verify provenance persistence after creation with exact field comparison; failed verification blocks Charge.
@@ -90,7 +90,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Blocks event handlers use current store state helper to avoid stale render closure.
 - Defensive order/product boundary: invalid order or unloadable product fails safely.
 - Mixed subscription order rejection: custom+normal products reject subscription request.
-- Blocks vs Classic request channel uses explicit `extensions.upayments` detection, not `!empty()`.
+- Blocks vs Classic request channel uses authoritative WooCommerce Store API namespace detection (`/wc/store/v1/` POST with `REST_REQUEST` set), not broad `REST_REQUEST` alone — unrelated REST traffic is no longer misclassified as Blocks.
 - Security-sensitive request field shapes validated: non-scalar card_token, source, plan, interval rejected.
 - Rebuild Charge payload as single PHP array with one `order` key; fix duplicate-key regression and JSON encoding.
 - Non-Whitelabel source allowlist bypass fixed; Non-Whitelabel uses null source without rejection.

@@ -99,12 +99,46 @@ defined( 'ABSPATH' ) || exit;
             <?php
             $user_id = get_current_user_id();
             $is_logged_in = $user_id > 0;
-            if ($is_logged_in && $save_card_enabled) {
+            // Classic Retrieve gating:
+            //   - valid normalized availability (already validated above)
+            //   - Whitelabel exact true
+            //   - CC explicitly enabled
+            //   - logged in
+            //   - Save Card feature enabled
+            //   - existing read-only identity secret/scope/generation
+            //   - valid current provenance
+            // Otherwise ZERO Retrieve call. The gateway helper now requires the
+            // exact already-normalized state and refuses null defaults.
+            $can_retrieve_saved_cards_classic = false;
+            if ($is_logged_in && $save_card_enabled && $payment_data_valid) {
+                $cc_enabled_classic = (
+                    isset($payment_data['payment'])
+                    && is_array($payment_data['payment'])
+                    && array_key_exists('cc', $payment_data['payment'])
+                    && is_scalar($payment_data['payment']['cc'])
+                    && (string) $payment_data['payment']['cc'] !== ''
+                );
+                if ($whitelabled === true && $cc_enabled_classic) {
+                    $api_key_classic = isset($gateway->apiKey) && is_string($gateway->apiKey) ? $gateway->apiKey : '';
+                    $scope_classic = \UPayments\Token\CustomerTokenIdentity::get_existing_scope_fingerprint(
+                        $api_key_classic,
+                        $gateway->getMode()
+                    );
+                    $generation_classic = \UPayments\Token\CustomerTokenIdentity::get_existing_generation_id();
+                    if (is_string($scope_classic) && is_string($generation_classic)) {
+                        $provenance_classic = \UPayments\Token\CustomerTokenIdentity::read_provenance($user_id, $scope_classic);
+                        if (is_array($provenance_classic) && isset($provenance_classic['state']) && $provenance_classic['state'] === 'valid') {
+                            $can_retrieve_saved_cards_classic = true;
+                        }
+                    }
+                }
+            }
+            if ($can_retrieve_saved_cards_classic) {
             ?>
                 <input id="save_card" type="hidden" name="save_card" value="0"/>
                 <?php
-                $savedCards = $gateway->getSavedCardsForCurrentUser();
-                
+                $savedCards = $gateway->getSavedCardsForCurrentUser($payment_data);
+
                 if (is_array($savedCards) && isset($savedCards['result']) && $savedCards['result'] === 'success' && isset($savedCards['data']) && is_array($savedCards['data']))
                 {
                     $cardList = $savedCards['data'];

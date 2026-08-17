@@ -634,12 +634,12 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        if (!isset($transport['http_status']) || !is_scalar($transport['http_status'])) {
+        if (!isset($transport['http_status']) || !is_int($transport['http_status'])) {
             $result['reason'] = 'transport_failure';
             return $result;
         }
 
-        $http_status = (int) $transport['http_status'];
+        $http_status = $transport['http_status'];
 
         if ($http_status <= 0) {
             $result['reason'] = 'transport_failure';
@@ -822,7 +822,6 @@ class CustomerTokenIdentity {
         $has_current_scope_orphan = false;
         $has_prior_scope_same_gen = false;
         $has_card_without_identity = false;
-        $has_card_token_malformed = false;
 
         while ($scanned_unique_count < self::HISTORY_MAX_ORDERS) {
             try {
@@ -1053,7 +1052,6 @@ class CustomerTokenIdentity {
         if (!$is_complete
             && !$has_generation_mismatch
             && !$has_malformed
-            && !$has_card_token_malformed
             && !$has_card_without_identity
             && !$has_unscoped
             && !$has_current_scope_orphan
@@ -1066,7 +1064,7 @@ class CustomerTokenIdentity {
             return array('classification' => self::HISTORY_SECRET_GENERATION_MISMATCH, 'reason' => 'generation_mismatch');
         }
 
-        if ($has_malformed || $has_card_token_malformed) {
+        if ($has_malformed) {
             return array('classification' => self::HISTORY_MALFORMED_SCOPED, 'reason' => 'malformed_snapshot');
         }
 
