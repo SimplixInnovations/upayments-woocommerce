@@ -919,8 +919,13 @@ class CustomerTokenIdentity {
                 $gen_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_generation_v1');
                 $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
 
-                // Section M: Card-token cardinality on EVERY order.
-                if ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
+                // Section P: Check duplicate/invalid cardinality BEFORE presence logic.
+                if ($token_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $kind_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $scope_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $gen_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $card_card['status'] === self::META_DUPLICATE_OR_INVALID
+                ) {
                     $has_malformed = true;
                     continue;
                 }
@@ -950,12 +955,6 @@ class CustomerTokenIdentity {
 
                 // Nonempty token — validate basic grammar.
                 if (!$token_is_valid_grammar) {
-                    $has_malformed = true;
-                    continue;
-                }
-
-                // Check for duplicate customer-token metadata.
-                if ($token_card['status'] === self::META_DUPLICATE_OR_INVALID) {
                     $has_malformed = true;
                     continue;
                 }

@@ -219,7 +219,7 @@ function woocommerceUpaymentsInit() {
             $mode = $this->getMode() ? 'test' : 'live';
             $fingerprint = hash_hmac('sha256', $mode . '|' . $this->apiKey, wp_salt('auth'));
             $short_hash = substr($fingerprint, 0, 16);
-            return 'upay_pm_v2_' . $short_hash;
+            return 'upay_pm_v3_' . $short_hash;
         }
 
         /**
@@ -1459,19 +1459,39 @@ function woocommerceUpaymentsInit() {
 
             foreach ($order->get_items('line_item') as $item)
             {
-                // Section Z: Defensive product boundary.
+                // Section J: Product boundary — fail, do not skip.
                 if (!$item || !($item instanceof \WC_Order_Item_Product)) {
-                    continue;
+                    $this->log('Invalid line item in order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
 
                 /** @var WC_Order_Item_Product $item */
                 $product = $item->get_product();
                 if (!$product || !($product instanceof \WC_Product)) {
-                    continue;
+                    $this->log('Unloadable product in order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
 
                 $sale_price = $product->get_regular_price();
                 $sale_price = !empty($sale_price) ? $sale_price : 0;
+
+                // Section K: Product payload normalization.
+                $product_name_str = $item->get_name();
+                if (function_exists('mb_substr')) {
+                    $product_name_str = mb_substr($product_name_str, 0, 255);
+                } else {
+                    $product_name_str = substr($product_name_str, 0, 255);
+                }
+
+                $qty = isset($item_data["quantity"]) ? (int) $item_data["quantity"] : 0;
+                if ($qty <= 0 || $qty > 9999999) {
+                    $this->log('Invalid product quantity.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
                 if($product->get_type() === 'custom_type'){
                     $cart_has_custom_product = true;
                 }
@@ -1650,16 +1670,17 @@ function woocommerceUpaymentsInit() {
 
             // === CROSS-PATH VALIDATION (applies to both Classic and Blocks) ===
 
-            // Payment source server allowlist.
-            if (!in_array($src, self::$ALLOWED_PAYMENT_SOURCES, true)) {
-                $this->log('Invalid payment source rejected: ' . $src, 'warning');
-                WC()->session->set("refresh_totals", true);
-                wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
-                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-            }
-
-            // Whitelabel enabled-method check: fail closed if payment map unavailable.
+            // Section C: Source validation only for Whitelabel.
             if ($whitelabled) {
+                // Payment source server allowlist.
+                if ($src === null || !in_array($src, self::$ALLOWED_PAYMENT_SOURCES, true)) {
+                    $this->log('Invalid payment source rejected.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                // Whitelabel enabled-method check: fail closed if payment map unavailable.
                 if (!is_array($payment_data)
                     || !isset($payment_data['payment'])
                     || !is_array($payment_data['payment'])
@@ -1675,6 +1696,13 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
+            } else {
+                // Non-Whitelabel: $src must be null (hosted checkout).
+                if ($src !== null) {
+                    $this->log('Non-Whitelabel: source must be null.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
             // Subscription plan allowlist.
@@ -1685,11 +1713,29 @@ function woocommerceUpaymentsInit() {
                 return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
 
-            // Subscription-context enforcement: non-one_time plan requires
-            // subscription feature active AND subscription product in cart.
+            // Section N: Subscription-context enforcement with mixed-order rejection.
             if ($subscription_plan !== 'one_time') {
-                if ($this->autoDeduction !== 'yes' || !$cart_has_custom_product) {
-                    $this->log('Subscription plan rejected outside subscription context.', 'warning');
+                // Derive order subscription composition from actual order items.
+                $order_has_subscription_product = false;
+                $order_has_normal_product = false;
+                foreach ($order->get_items('line_item') as $item) {
+                    if ($item && $item instanceof \WC_Order_Item_Product) {
+                        $p = $item->get_product();
+                        if ($p && $p instanceof \WC_Product) {
+                            if ($p->get_type() === 'custom_type') {
+                                $order_has_subscription_product = true;
+                            } else {
+                                $order_has_normal_product = true;
+                            }
+                        }
+                    }
+                }
+
+                if ($this->autoDeduction !== 'yes'
+                    || !$order_has_subscription_product
+                    || $order_has_normal_product
+                ) {
+                    $this->log('Subscription plan rejected: mixed order or invalid context.', 'warning');
                     WC()->session->set("refresh_totals", true);
                     wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
@@ -2042,78 +2088,31 @@ function woocommerceUpaymentsInit() {
                 $this->log("Multimerchant payment data prepared.");
             }
 
-            $params = json_encode([
-                "returnUrl" => $success_url, 
-                "cancelUrl" => $error_url, 
-                "notificationUrl" => $ipn_url, 
-                "products" => $productArrayNew,
-                "order" =>[
-                    "amount" => $order_total, 
-                    "currency" => $this->getCurrencyCode($order_data["currency"]) , 
-                    "id" => $unique_order_id, 
-                ], 
-                "reference" => [
-                    "id" => "".$order_id, 
-                ], 
-                "customer" => array_merge(
-                    array(
-                        "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"],
-                        "email" => $order_data["billing"]["email"],
-                    ),
-                    // uniqueId: preserve existing legacy compatibility behavior.
-                    $customer_unique_id !== '' ? array(
-                        "uniqueId" => $customer_unique_id,
-                    ) : array(),
-                    // mobile: independent provider representation (only when valid international format).
-                    $provider_mobile !== '' ? array(
-                        "mobile" => $provider_mobile,
-                    ) : array()
-                ),
-                "plugin" => [
-                    "src" => "woocommerce", 
-                ], 
-                "is_whitelabled" => $whitelabled, 
-                "language" => "en", 
-                "isSaveCard" => $isSaveCard, 
-                // Section AD: Non-Whitelabel omits paymentGateway.
-                // Section AE: Mandatory order description.
-                "order" => [
-                    "description" => substr('WooCommerce order #' . $order_id, 0, 500),
-                ], 
-                "tokens" => [
-                    "creditCard" => $credit_card_token,
-                    "customerUniqueToken" => $canonical_token,
-                ], 
-                "device" => [
-                    "browser" => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0", 
-                    "browserDetails" => [
-                        "screenWidth" => "1920", 
-                        "screenHeight" => "1080", 
-                        "colorDepth" => "24", 
-                        "javaEnabled" => "false", 
-                        "language" => "en", 
-                        "timeZone" => "-180",
-                        "3DSecureChallengeWindowSize" => "500_X_600"
-                    ], 
-                ], 
-                "extraMerchantData" => $extraMerchantData,
-            ]);
-
-            // Section AD: Add paymentGateway only for Whitelabel.
-            if ($whitelabled && $src !== null) {
-                $params['paymentGateway'] = array('src' => $src);
+            // Section E: Build base provider payload as PHP array.
+            // Section G: Order field preflight.
+            $order_description = 'WooCommerce order #' . $order_id;
+            if (strlen($order_description) > 500) {
+                $order_description = substr($order_description, 0, 500);
+            }
+            $currency = $this->getCurrencyCode($order_data["currency"]);
+            if (!preg_match('/^[A-Z]{3}$/', $currency)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            $amount_str = (string) $order_total;
+            if (strlen($amount_str) > 22) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Section AF: Provider payload field-length preflight.
-            $customer_name = $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"];
-            if (strlen($customer_name) > 50) {
-                $customer_name = mb_substr($customer_name, 0, 50);
-            }
-            if (isset($params['customer']['name'])) {
-                $params['customer']['name'] = $customer_name;
+            // Section H: Reference preflight.
+            $reference_id = (string) $order_id;
+            if (strlen($reference_id) > 35) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Validate mandatory fields.
+            // Section I: Callback URL preflight.
             if (empty($success_url) || strlen($success_url) > 250) {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2126,22 +2125,84 @@ function woocommerceUpaymentsInit() {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            if (empty($unique_order_id) || strlen($unique_order_id) > 40) {
-                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+
+            // Section L: Customer payload normalization.
+            $customer_name = $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"];
+            if (function_exists('mb_substr')) {
+                $customer_name = mb_substr($customer_name, 0, 50);
+            } else {
+                $customer_name = substr($customer_name, 0, 50);
             }
 
-            // Product name/description: normalize to 255 chars.
-            if (isset($params['products'])) {
-                foreach ($params['products'] as &$product_entry) {
-                    if (isset($product_entry['name'])) {
-                        $product_entry['name'] = mb_substr($product_entry['name'], 0, 255);
-                    }
-                    if (isset($product_entry['description'])) {
-                        $product_entry['description'] = mb_substr($product_entry['description'], 0, 255);
-                    }
+            $customer_data = array(
+                'name' => $customer_name,
+            );
+            $email = isset($order_data["billing"]["email"]) && is_scalar($order_data["billing"]["email"]) ? (string) $order_data["billing"]["email"] : '';
+            if ($email !== '' && strlen($email) <= 50 && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $customer_data['email'] = $email;
+            }
+            if ($customer_unique_id !== '' && strlen($customer_unique_id) <= 50) {
+                $customer_data['uniqueId'] = $customer_unique_id;
+            }
+            if ($provider_mobile !== '') {
+                $customer_data['mobile'] = $provider_mobile;
+            }
+
+            // Build payload as PHP array (Section B: single order key).
+            $payload = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+                'products'        => $productArrayNew,
+                'order'           => array(
+                    'id'          => $unique_order_id,
+                    'description' => $order_description,
+                    'currency'    => $currency,
+                    'amount'      => $amount_str,
+                ),
+                'reference'       => array(
+                    'id' => $reference_id,
+                ),
+                'customer'        => $customer_data,
+                'plugin'          => array(
+                    'src' => 'woocommerce',
+                ),
+                'is_whitelabled'  => $whitelabled,
+                'language'        => 'en',
+                'isSaveCard'      => $isSaveCard,
+                'tokens'          => array(
+                    'creditCard'          => $credit_card_token,
+                    'customerUniqueToken' => $canonical_token,
+                ),
+                'device'          => array(
+                    'browser'          => 'Mozilla/5.0',
+                    'browserDetails'   => array(
+                        'screenWidth'                 => '1920',
+                        'screenHeight'                => '1080',
+                        'colorDepth'                  => '24',
+                        'javaEnabled'                 => 'false',
+                        'language'                    => 'en',
+                        'timeZone'                    => '-180',
+                        '3DSecureChallengeWindowSize' => '500_X_600',
+                    ),
+                ),
+                'extraMerchantData' => $extraMerchantData,
+            );
+
+            // Section D: Whitelabel paymentGateway only.
+            if ($whitelabled && $src !== null) {
+                if (strlen($src) > 11) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                unset($product_entry);
+                $payload['paymentGateway'] = array('src' => $src);
+            }
+
+            $params = wp_json_encode($payload);
+            if (!is_string($params) || $params === '') {
+                $this->log('Charge payload encoding failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
             $this->log(__("Create payment request prepared.", $this->domain));

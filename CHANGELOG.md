@@ -92,6 +92,15 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Mixed subscription order rejection: custom+normal products reject subscription request.
 - Blocks vs Classic request channel uses explicit `extensions.upayments` detection, not `!empty()`.
 - Security-sensitive request field shapes validated: non-scalar card_token, source, plan, interval rejected.
+- Rebuild Charge payload as single PHP array with one `order` key; fix duplicate-key regression and JSON encoding.
+- Non-Whitelabel source allowlist bypass fixed; Non-Whitelabel uses null source without rejection.
+- Mixed subscription order server-authoritative rejection: validates actual order items for custom/normal composition.
+- Deterministic provider preflight before token creation: order, reference, callback URL, product, customer field bounds.
+- History duplicate/invalid cardinality checked before presence logic for all five security keys.
+- Canonical availability cache v3 with strict schema validation for cached success.
+- Version availability cache (`upay_pm_v3_`) to prevent stale pre-H11 cached data.
+- Consolidated availability transport guard; no unsafe first dereference.
+- Product boundary: invalid line items fail payment instead of being silently skipped.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.
