@@ -1741,6 +1741,31 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
+            // Section G: Check for residual migration evidence on current order.
+            // Token-dependent operations must not proceed alongside preserved legacy/corrupt evidence.
+            $token_dependent_operation = $isSaveCard || $subscription_plan !== 'one_time' || $has_selected_card;
+
+            if ($token_dependent_operation) {
+                $residual_keys = array(
+                    '_upay_customer_unique_token',
+                    '_upay_customer_token_kind_v1',
+                    '_upay_customer_token_scope_v1',
+                    '_upay_customer_token_generation_v1',
+                    '_upay_credit_card_token',
+                );
+                $has_residual_evidence = false;
+                foreach ($residual_keys as $rkey) {
+                    if ($order->meta_exists($rkey)) {
+                        $has_residual_evidence = true;
+                        break;
+                    }
+                }
+                if ($has_residual_evidence) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
             // CASE: Selected saved card requires membership validation.
             if ($has_selected_card) {
                 if ($user_id <= 0) {
@@ -1837,35 +1862,81 @@ function woocommerceUpaymentsInit() {
             }
 
             // Write current attempt snapshots.
-            // First validate runtime token context (Section W).
-            $expected_scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
-            $expected_generation = CustomerTokenIdentity::get_generation_id();
+            // Section J: Ordinary payment (null tuple) must NOT initialize token identity.
+            $is_ordinary_payment = ($canonical_token === null && $token_kind === null && $token_scope === null && $token_generation === null);
 
-            if (!CustomerTokenIdentity::validate_token_runtime_context(
-                $canonical_token,
-                $token_kind,
-                $token_scope,
-                $token_generation,
-                $expected_scope !== null ? $expected_scope : '',
-                $expected_generation !== null ? $expected_generation : ''
-            )) {
-                $this->log('Runtime token context validation failed.', 'warning');
-                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
-                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            if (!$is_ordinary_payment) {
+                // Token-dependent: validate runtime context with authoritative expected values.
+                $expected_scope = CustomerTokenIdentity::get_scope_fingerprint($this->apiKey, $this->getMode());
+                $expected_generation = CustomerTokenIdentity::get_generation_id();
+
+                if (!CustomerTokenIdentity::validate_token_runtime_context(
+                    $canonical_token,
+                    $token_kind,
+                    $token_scope,
+                    $token_generation,
+                    $expected_scope !== null ? $expected_scope : '',
+                    $expected_generation !== null ? $expected_generation : ''
+                )) {
+                    $this->log('Runtime token context validation failed.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
+            // Section H: Unique snapshot writes.
             if ($has_selected_card) {
-                $order->add_meta_data("_upay_credit_card_token", $credit_card_token);
+                $order->delete_meta_data("_upay_credit_card_token");
+                $order->add_meta_data("_upay_credit_card_token", $credit_card_token, true);
             }
 
-            if ($canonical_token !== null && $token_kind !== null && $token_scope !== null && $token_generation !== null) {
-                $order->add_meta_data("_upay_customer_unique_token", $canonical_token);
-                $order->add_meta_data("_upay_customer_token_kind_v1", $token_kind);
-                $order->add_meta_data("_upay_customer_token_scope_v1", $token_scope);
-                $order->add_meta_data("_upay_customer_token_generation_v1", $token_generation);
+            if (!$is_ordinary_payment) {
+                $order->delete_meta_data("_upay_customer_unique_token");
+                $order->delete_meta_data("_upay_customer_token_kind_v1");
+                $order->delete_meta_data("_upay_customer_token_scope_v1");
+                $order->delete_meta_data("_upay_customer_token_generation_v1");
+                $order->add_meta_data("_upay_customer_unique_token", $canonical_token, true);
+                $order->add_meta_data("_upay_customer_token_kind_v1", $token_kind, true);
+                $order->add_meta_data("_upay_customer_token_scope_v1", $token_scope, true);
+                $order->add_meta_data("_upay_customer_token_generation_v1", $token_generation, true);
             }
 
             $order->save_meta_data();
+
+            // Section I: Persistence verification before Charge.
+            if (!$is_ordinary_payment || $has_selected_card) {
+                $verify_order = wc_get_order($order_id);
+                if (!$verify_order) {
+                    $this->log('Persistence verification: unable to reload order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $verify_keys = array();
+                if (!$is_ordinary_payment) {
+                    $verify_keys['_upay_customer_unique_token'] = $canonical_token;
+                    $verify_keys['_upay_customer_token_kind_v1'] = $token_kind;
+                    $verify_keys['_upay_customer_token_scope_v1'] = $token_scope;
+                    $verify_keys['_upay_customer_token_generation_v1'] = $token_generation;
+                }
+                if ($has_selected_card) {
+                    $verify_keys['_upay_credit_card_token'] = $credit_card_token;
+                }
+
+                foreach ($verify_keys as $vkey => $expected_value) {
+                    $v_card = CustomerTokenIdentity::get_historical_meta_cardinality($verify_order, $vkey);
+                    if ($v_card['status'] !== CustomerTokenIdentity::META_EXACTLY_ONE) {
+                        $this->log('Persistence verification failed: ' . $vkey, 'warning');
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    if ((string) $v_card['value'] !== (string) $expected_value) {
+                        $this->log('Persistence verification value mismatch: ' . $vkey, 'warning');
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                }
+            }
 
             $extraMerchantData = null;
             if ($this->multiMerchant == "yes") {
@@ -2488,30 +2559,18 @@ function woocommerceUpaymentsInit() {
             return password_hash($this->apiKey, PASSWORD_BCRYPT);
         }
 
+        /**
+         * Get customer unique token from phone.
+         *
+         * @deprecated Retained temporarily to avoid undefined-method breakage for
+         *             third-party customizations. New code must use CustomerTokenIdentity.
+         *             Future code-quality/public-API phase will decide final removal.
+         * @param string $phone Unused. Previously used as customer token.
+         * @return string Empty string. Phone is no longer used as token identity.
+         */
         public function getCustomerUniqueToken($phone)
         {
-            $token = "";
-            $phone = trim($phone);
-            if (!empty($phone))
-            {
-                $token = $phone;
-                $params = json_encode(["customerUniqueToken" => $token, ]);
-                $transport = $this->execute_upayments_request('create-customer-unique-token', 'POST', $params);
-
-                if ($transport['transport_ok']) {
-                    $result = json_decode((string) $transport['body'], true);
-                    if (is_array($result)) {
-                        if (!empty($result["errors"])) {
-                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
-                        } elseif (!empty($result["status"])) {
-                            $token = $token;
-                        } else {
-                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
-                        }
-                    }
-                }
-            }
-            return $token;
+            return '';
         }
 
         public function getUpayPaymentMethods()

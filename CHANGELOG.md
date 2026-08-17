@@ -40,7 +40,7 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Fix Classic template to render Save Card toggle only for logged-in users with save_card enabled.
 - Fix Classic `toggleSaveCard()` to safely handle missing checkbox element.
 - Fix Blocks `handleSubscriptionChange` to not restore stale card_token/save_card state.
-- Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Phone requirements are enforced only at the payment boundary for flows that require customer token identity.
+- Stop UPayments from requiring billing phone when saving unrelated WooCommerce Account Details, preventing blocked profile saves. Billing phone is WooCommerce customer/order data according to merchant settings; provider customer.mobile is a separate PR15 validated international representation; customer.uniqueId is a legacy compatibility field; tokens.customerUniqueToken is canonical/legacy-compatible identity NOT derived from phone and NOT requiring phone to establish.
 - Stop persistently overriding WooCommerce phone-field configuration on every request.
 - Stop globally forcing billing phone required through UPayments Classic field filters, allowing other gateways to respect merchant phone settings.
 - Escape UPayments payment metadata at render time in admin order details and order-details template.
@@ -53,6 +53,16 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Implement fail-closed behavior when refresh coordination is unavailable (lock contention, unsupported database, or gate-persistence failure).
 - Harden checkout request validation: strict payment-source allowlist, consistent Classic/Blocks subscription plan and interval validation, deterministic save-card input handling, fail-closed charge-response structure and redirect URL validation, generic customer-facing provider failure messages, subscription-context enforcement, guest-subscription rejection, and fail-closed payment-method availability state.
 - Verify UPayments callback payment state against the authenticated Get Payment Status API before allowing WooCommerce paid-order transitions.
+- Neutralize legacy `getCustomerUniqueToken()` to safe empty-string stub; no provider calls, no phone token derivation. Retained temporarily for third-party compatibility.
+- Fix history completeness: safety cap (200 orders) no longer treated as scan completion; `expected_total > 200` with clean first-200 returns INDETERMINATE, not NONE/PRIOR_SCOPE_ONLY.
+- Add historical order meta cardinality enforcement: duplicate metadata for token/kind/scope/generation/card keys classified as MALFORMED_SCOPED via reusable WC_Order helper.
+- Add current-order residual migration evidence check: token-dependent operations fail closed if preserved legacy/corrupt identity evidence exists on the order.
+- Use unique meta semantics (`delete_meta_data` + `add_meta_data($key, $value, true)`) for all identity snapshot writes.
+- Verify snapshot persistence via fresh `wc_get_order()` reload before Charge dispatch; any missing/duplicate/wrong-value snapshot blocks Charge.
+- Ordinary non-token payments no longer initialize token identity secret, scope, or generation.
+- Fix Blocks `getExtensionData()` to read full extension map then access NAMESPACE, not pass namespace selector argument.
+- Fix Blocks Save Card toggle to require `is_logged_in` in addition to `save_card_enabled` and CC source.
+- Add page-consistency guards: scanned count cannot exceed expected_total, page number cannot continue beyond max_pages.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.

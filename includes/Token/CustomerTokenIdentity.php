@@ -571,6 +571,56 @@ class CustomerTokenIdentity {
     }
 
     // ────────────────────────────────────────────────────────
+    // HISTORICAL ORDER META CARDINALITY HELPER
+    // ────────────────────────────────────────────────────────
+
+    const META_ABSENT = 0;
+    const META_EXACTLY_ONE = 1;
+    const META_DUPLICATE_OR_INVALID = 2;
+
+    /**
+     * Check historical order metadata cardinality.
+     *
+     * Returns array with 'status' (META_ABSENT, META_EXACTLY_ONE, META_DUPLICATE_OR_INVALID)
+     * and 'value' (the scalar value when exactly one, null otherwise).
+     *
+     * Uses WC_Order APIs only — no direct SQL.
+     */
+    public static function get_historical_meta_cardinality($order, $key) {
+        if (!$order) {
+            return array('status' => self::META_DUPLICATE_OR_INVALID, 'value' => null);
+        }
+
+        if (!$order->meta_exists($key)) {
+            return array('status' => self::META_ABSENT, 'value' => null);
+        }
+
+        // Retrieve ALL matching metadata entries.
+        $all_meta = $order->get_meta($key, false);
+
+        // WooCommerce returns array of WC_Meta_Data objects when $single=false.
+        if (!is_array($all_meta) || count($all_meta) !== 1) {
+            return array('status' => self::META_DUPLICATE_OR_INVALID, 'value' => null);
+        }
+
+        // Extract value from the single WC_Meta_Data entry.
+        $entry = $all_meta[0];
+        if ($entry instanceof \WC_Meta_Data) {
+            $value = $entry->get_value();
+        } elseif (is_array($entry) && isset($entry['value'])) {
+            $value = $entry['value'];
+        } else {
+            return array('status' => self::META_DUPLICATE_OR_INVALID, 'value' => null);
+        }
+
+        if (!is_scalar($value)) {
+            return array('status' => self::META_DUPLICATE_OR_INVALID, 'value' => null);
+        }
+
+        return array('status' => self::META_EXACTLY_ONE, 'value' => $value);
+    }
+
+    // ────────────────────────────────────────────────────────
     // HISTORY INSPECTOR (paginated, trustworthy)
     // ────────────────────────────────────────────────────────
 
@@ -652,9 +702,24 @@ class CustomerTokenIdentity {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'oversized_page');
             }
 
+            // Page number must not continue beyond expected_max_pages.
+            if ($expected_max_pages !== null && $page > $expected_max_pages && !empty($orders->orders)) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'page_beyond_max');
+            }
+
+            // Scanned count must not exceed expected_total.
+            if ($expected_total !== null && $scanned_unique_count + count($orders->orders) > $expected_total) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'scanned_exceeds_total');
+            }
+
             // Unexpected empty page.
             if (empty($orders->orders) && $scanned_unique_count < $expected_total) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unexpected_empty_page');
+            }
+
+            // expected_total=0 must be compatible with empty result.
+            if ($expected_total === 0 && empty($orders->orders)) {
+                break;
             }
 
             if (empty($orders->orders)) {
@@ -679,40 +744,33 @@ class CustomerTokenIdentity {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unloadable_order');
                 }
 
-                // ── Historical customer token meta ──
-                $has_token = $order->meta_exists('_upay_customer_unique_token');
+                // ── Historical customer token meta (Section E: cardinality) ──
+                $token_card = self::get_historical_meta_cardinality($order, '_upay_customer_unique_token');
 
-                if (!$has_token) {
-                    // No customer-token evidence — check card-token-only (Section P).
-                    $has_card = $order->meta_exists('_upay_credit_card_token');
-                    if ($has_card) {
-                        $card_val = $order->get_meta('_upay_credit_card_token', true);
-                        if (!is_scalar($card_val)) {
-                            $has_card_token_malformed = true;
-                        } elseif ((string) $card_val !== '') {
-                            $has_card_without_identity = true;
-                        }
+                if ($token_card['status'] === self::META_ABSENT) {
+                    // No customer-token evidence — check card-token-only.
+                    $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
+                    if ($card_card['status'] === self::META_EXACTLY_ONE && (string) $card_card['value'] !== '') {
+                        $has_card_without_identity = true;
+                    } elseif ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
+                        $has_card_token_malformed = true;
                     }
                     continue;
                 }
 
-                $token = $order->get_meta('_upay_customer_unique_token', true);
-                if (!is_scalar($token)) {
+                if ($token_card['status'] === self::META_DUPLICATE_OR_INVALID) {
                     $has_malformed = true;
                     continue;
                 }
 
-                $token_str = (string) $token;
+                $token_str = (string) $token_card['value'];
                 if ($token_str === '') {
                     // Empty token — no useful evidence, but check card-only.
-                    $has_card = $order->meta_exists('_upay_credit_card_token');
-                    if ($has_card) {
-                        $card_val = $order->get_meta('_upay_credit_card_token', true);
-                        if (!is_scalar($card_val)) {
-                            $has_card_token_malformed = true;
-                        } elseif ((string) $card_val !== '') {
-                            $has_card_without_identity = true;
-                        }
+                    $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
+                    if ($card_card['status'] === self::META_EXACTLY_ONE && (string) $card_card['value'] !== '') {
+                        $has_card_without_identity = true;
+                    } elseif ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
+                        $has_card_token_malformed = true;
                     }
                     continue;
                 }
@@ -723,10 +781,23 @@ class CustomerTokenIdentity {
                     continue;
                 }
 
-                // ── Snapshot presence matrix (Section N) ──
-                $has_kind = $order->meta_exists('_upay_customer_token_kind_v1');
-                $has_scope = $order->meta_exists('_upay_customer_token_scope_v1');
-                $has_generation = $order->meta_exists('_upay_customer_token_generation_v1');
+                // ── Snapshot presence matrix (Section N: cardinality) ──
+                $kind_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_kind_v1');
+                $scope_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_scope_v1');
+                $gen_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_generation_v1');
+
+                $has_kind = $kind_card['status'] === self::META_EXACTLY_ONE;
+                $has_scope = $scope_card['status'] === self::META_EXACTLY_ONE;
+                $has_generation = $gen_card['status'] === self::META_EXACTLY_ONE;
+
+                $any_duplicate = ($kind_card['status'] === self::META_DUPLICATE_OR_INVALID)
+                    || ($scope_card['status'] === self::META_DUPLICATE_OR_INVALID)
+                    || ($gen_card['status'] === self::META_DUPLICATE_OR_INVALID);
+
+                if ($any_duplicate) {
+                    $has_malformed = true;
+                    continue;
+                }
 
                 $all_three_present = $has_kind && $has_scope && $has_generation;
                 $all_three_absent = !$has_kind && !$has_scope && !$has_generation;
@@ -744,18 +815,9 @@ class CustomerTokenIdentity {
                 }
 
                 // All three present — validate (Section O).
-                $kind = $order->get_meta('_upay_customer_token_kind_v1', true);
-                $scope = $order->get_meta('_upay_customer_token_scope_v1', true);
-                $generation = $order->get_meta('_upay_customer_token_generation_v1', true);
-
-                if (!is_scalar($kind) || !is_scalar($scope) || !is_scalar($generation)) {
-                    $has_malformed = true;
-                    continue;
-                }
-
-                $kind_str = (string) $kind;
-                $scope_str = (string) $scope;
-                $gen_str = (string) $generation;
+                $kind_str = (string) $kind_card['value'];
+                $scope_str = (string) $scope_card['value'];
+                $gen_str = (string) $gen_card['value'];
 
                 if ($kind_str === '' || $scope_str === '' || $gen_str === '') {
                     $has_malformed = true;
@@ -803,10 +865,12 @@ class CustomerTokenIdentity {
         }
 
         // Completeness: genuinely scanned all expected orders.
+        // Safety cap does NOT mean scan was complete — only expected_total <= cap AND scanned >= expected_total.
         $is_complete = ($expected_total !== null)
-            && ($scanned_unique_count >= $expected_total || $scanned_unique_count >= self::HISTORY_MAX_ORDERS);
+            && ($expected_total <= self::HISTORY_MAX_ORDERS)
+            && ($scanned_unique_count >= $expected_total);
 
-        // If cap reached without completing, and no definitive blocker found yet: INDETERMINATE.
+        // If scan is incomplete and no definitive blocker found yet: INDETERMINATE.
         if (!$is_complete
             && !$has_generation_mismatch
             && !$has_malformed
@@ -815,7 +879,7 @@ class CustomerTokenIdentity {
             && !$has_unscoped
             && !$has_current_scope_orphan
         ) {
-            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'safety_cap_reached');
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'incomplete_scan');
         }
 
         // Blocker precedence (Section Q).

@@ -62,7 +62,10 @@
             };
 
             const updateCheckout = (newData) => {
-                const currentData = wp.data.select('wc/store/checkout').getExtensionData('upayments') || {};
+                const allExtensionData = wp.data.select('wc/store/checkout').getExtensionData() || {};
+                const currentData = (allExtensionData[NAMESPACE] && typeof allExtensionData[NAMESPACE] === 'object')
+                    ? allExtensionData[NAMESPACE]
+                    : {};
                 setExtensionData(NAMESPACE, {
                     ...currentData,
                     ...newData
@@ -86,7 +89,7 @@
                     });
                     showToast("Saved card selected");
                 } else if (type === 'cc') {
-                    const currentSaveValue = (is_logged_in && save_card_enabled) ? (upayData.save_card || '0') : '0';
+                    const currentSaveValue = (is_logged_in && save_card_enabled && upayData.save_card === '1') ? '1' : '0';
                     updateCheckout({
                         upayment_payment_type: type,
                         card_token: null,
@@ -325,7 +328,7 @@
                             ))
                         ),
 
-                        save_card_enabled && upayData.upayment_payment_type === 'cc' && !upayData.card_token && (
+                        is_logged_in && save_card_enabled && upayData.upayment_payment_type === 'cc' && !upayData.card_token && (
                             createElement('div', { 
                                     style: { 
                                         display: 'flex', 
