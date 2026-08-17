@@ -63,6 +63,19 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Fix Blocks `getExtensionData()` to read full extension map then access NAMESPACE, not pass namespace selector argument.
 - Fix Blocks Save Card toggle to require `is_logged_in` in addition to `save_card_enabled` and CC source.
 - Add page-consistency guards: scanned count cannot exceed expected_total, page number cannot continue beyond max_pages.
+- Add read-only secret record access for cleanup paths; cleanup never creates a new identity secret.
+- Force-refresh order metadata from storage before security-sensitive decisions; stale cached metadata cannot influence token classification.
+- Use raw/edit context for security metadata reads, preventing frontend filters from transforming security evidence.
+- Add card-token cardinality check in stale cleanup; duplicate/malformed card-token metadata preserves all identity evidence.
+- Stage UPayments_Checkout_Selected after cleanup/refresh/residual-evidence gate to prevent forced refresh from erasing payment-source metadata.
+- Strict Charge HTTP 201 enforcement; non-201 responses fail closed without success redirect processing.
+- Strict payment-button availability response: require HTTP 201, status === true (boolean), normalized isWhiteLabel/payButtons.
+- Version availability cache (`upay_pm_v2_`) to prevent stale pre-H9 cached data from bypassing strict parser.
+- getPaymentIcons consumes only normalized availability data with strict boolean/integer checks.
+- Blocks saved-card server sanitization: each card entry sanitized to token/number/brand scalars before passing to JS.
+- Blocks defensive JS: card.token/number/brand require non-null object guard before access.
+- Blocks mount no longer unconditionally resets subscription plan/interval state.
+- HTTP 422 fails closed as http_422; no duplicate-token inference, provider-message matching, or automatic retry.
 - Prevent a WPML String Translation fatal error by ensuring the UPayments gettext text domain is always a valid string during gateway construction.
 - Correct the plugin `Text Domain` header from a URL to the stable `upayments` domain.
 - Prevent UPayments frontend CSS from overriding WooCommerce My Account navigation/content layout and generic responsive table styling.

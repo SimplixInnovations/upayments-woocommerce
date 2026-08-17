@@ -71,6 +71,30 @@ class CustomerTokenIdentity {
     // SECRET RECORD
     // ────────────────────────────────────────────────────────
 
+    const SECRET_ABSENT = 'absent';
+    const SECRET_VALID = 'valid';
+    const SECRET_INVALID = 'invalid';
+
+    /**
+     * Read-only secret record access. NEVER creates a secret.
+     *
+     * @return array with 'state' (SECRET_ABSENT/SECRET_VALID/SECRET_INVALID) and 'record' (when VALID).
+     */
+    public static function read_existing_secret_record() {
+        $missing = new \stdClass();
+        $existing = get_option(self::SECRET_OPTION, $missing);
+
+        if ($existing === $missing) {
+            return array('state' => self::SECRET_ABSENT, 'record' => null);
+        }
+
+        if (is_array($existing) && self::is_valid_secret_record($existing)) {
+            return array('state' => self::SECRET_VALID, 'record' => $existing);
+        }
+
+        return array('state' => self::SECRET_INVALID, 'record' => null);
+    }
+
     public static function get_or_create_secret_record() {
         global $wpdb;
 
@@ -571,6 +595,28 @@ class CustomerTokenIdentity {
     }
 
     // ────────────────────────────────────────────────────────
+    // FORCE-FRESH ORDER METADATA HELPER
+    // ────────────────────────────────────────────────────────
+
+    /**
+     * Force a fresh metadata read from storage for security-sensitive decisions.
+     *
+     * @param object $order WC_Order instance.
+     * @return bool true on success, false on failure.
+     */
+    public static function force_refresh_order_meta($order) {
+        if (!$order || !method_exists($order, 'read_meta_data')) {
+            return false;
+        }
+        try {
+            $order->read_meta_data(true);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    // ────────────────────────────────────────────────────────
     // HISTORICAL ORDER META CARDINALITY HELPER
     // ────────────────────────────────────────────────────────
 
@@ -595,8 +641,8 @@ class CustomerTokenIdentity {
             return array('status' => self::META_ABSENT, 'value' => null);
         }
 
-        // Retrieve ALL matching metadata entries.
-        $all_meta = $order->get_meta($key, false);
+        // Retrieve ALL matching metadata entries in raw/edit context.
+        $all_meta = $order->get_meta($key, false, 'edit');
 
         // WooCommerce returns array of WC_Meta_Data objects when $single=false.
         if (!is_array($all_meta) || count($all_meta) !== 1) {
@@ -742,6 +788,10 @@ class CustomerTokenIdentity {
                 $order = wc_get_order($order_id_int);
                 if (!$order) {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unloadable_order');
+                }
+
+                if (!self::force_refresh_order_meta($order)) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'force_refresh_failed');
                 }
 
                 // ── Historical customer token meta (Section E: cardinality) ──
@@ -1426,18 +1476,24 @@ class CustomerTokenIdentity {
             }
         }
 
-        // Each key must have exactly one value.
+        // Each key must have exactly one value (edit context).
         foreach ($keys as $key) {
-            $vals = $order->get_meta($key, false);
+            $vals = $order->get_meta($key, false, 'edit');
             if (!is_array($vals) || count($vals) !== 1) {
                 return true; // duplicate — preserve
             }
         }
 
-        $kind = $order->get_meta('_upay_customer_token_kind_v1', true);
-        $scope = $order->get_meta('_upay_customer_token_scope_v1', true);
-        $generation = $order->get_meta('_upay_customer_token_generation_v1', true);
-        $token = $order->get_meta('_upay_customer_unique_token', true);
+        // Card-token cardinality check (Section G).
+        $card_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
+        if ($card_card['status'] === self::META_DUPLICATE_OR_INVALID) {
+            return true; // malformed card token — preserve all
+        }
+
+        $kind = $order->get_meta('_upay_customer_token_kind_v1', true, 'edit');
+        $scope = $order->get_meta('_upay_customer_token_scope_v1', true, 'edit');
+        $generation = $order->get_meta('_upay_customer_token_generation_v1', true, 'edit');
+        $token = $order->get_meta('_upay_customer_unique_token', true, 'edit');
 
         if (!is_scalar($kind) || !is_scalar($scope) || !is_scalar($generation) || !is_scalar($token)) {
             return true; // non-scalar — preserve
@@ -1460,8 +1516,13 @@ class CustomerTokenIdentity {
             return true; // malformed generation — preserve
         }
 
-        $current_generation = self::get_generation_id();
-        if ($current_generation === null || (string) $generation !== $current_generation) {
+        // Use read-only secret access (Section H) — never create a secret.
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] !== self::SECRET_VALID) {
+            return true; // secret absent/invalid — preserve evidence
+        }
+
+        if ((string) $generation !== $secret_result['record']['generation_id']) {
             return true; // different generation — preserve
         }
 

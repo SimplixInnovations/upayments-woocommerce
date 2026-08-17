@@ -219,7 +219,7 @@ function woocommerceUpaymentsInit() {
             $mode = $this->getMode() ? 'test' : 'live';
             $fingerprint = hash_hmac('sha256', $mode . '|' . $this->apiKey, wp_salt('auth'));
             $short_hash = substr($fingerprint, 0, 16);
-            return 'upay_pm_' . $short_hash;
+            return 'upay_pm_v2_' . $short_hash;
         }
 
         /**
@@ -1685,12 +1685,6 @@ function woocommerceUpaymentsInit() {
             // After contract validation: only new CC + explicit opt-in.
             $isSaveCard = $isSaveCardRequested && !$has_selected_card;
 
-            // Stage UPayments_Checkout_Selected only after source is validated.
-            if ($whitelabled) {
-                $order->delete_meta_data("UPayments_Checkout_Selected");
-                $order->add_meta_data("UPayments_Checkout_Selected", $src);
-            }
-
             // Read phone through WC Order API (works for both Classic and Blocks).
             $billing_phone_raw = $order->get_billing_phone();
             $phone = is_scalar($billing_phone_raw) ? (string) $billing_phone_raw : '';
@@ -1741,7 +1735,13 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Section G: Check for residual migration evidence on current order.
+            // Section I: Force-fresh current order metadata after cleanup.
+            if (!CustomerTokenIdentity::force_refresh_order_meta($order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section K: Check for residual migration evidence on current order (cardinality helper).
             // Token-dependent operations must not proceed alongside preserved legacy/corrupt evidence.
             $token_dependent_operation = $isSaveCard || $subscription_plan !== 'one_time' || $has_selected_card;
 
@@ -1755,7 +1755,16 @@ function woocommerceUpaymentsInit() {
                 );
                 $has_residual_evidence = false;
                 foreach ($residual_keys as $rkey) {
-                    if ($order->meta_exists($rkey)) {
+                    $r_card = CustomerTokenIdentity::get_historical_meta_cardinality($order, $rkey);
+                    if ($r_card['status'] === CustomerTokenIdentity::META_EXACTLY_ONE) {
+                        // Empty string card token is not usable evidence.
+                        if ($rkey === '_upay_credit_card_token' && (string) $r_card['value'] === '') {
+                            continue;
+                        }
+                        $has_residual_evidence = true;
+                        break;
+                    }
+                    if ($r_card['status'] === CustomerTokenIdentity::META_DUPLICATE_OR_INVALID) {
                         $has_residual_evidence = true;
                         break;
                     }
@@ -1764,6 +1773,12 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
+            }
+
+            // Section J: Stage UPayments_Checkout_Selected AFTER cleanup/refresh/residual gate.
+            if ($whitelabled) {
+                $order->delete_meta_data("UPayments_Checkout_Selected");
+                $order->add_meta_data("UPayments_Checkout_Selected", $src);
             }
 
             // CASE: Selected saved card requires membership validation.
@@ -1903,11 +1918,17 @@ function woocommerceUpaymentsInit() {
 
             $order->save_meta_data();
 
-            // Section I: Persistence verification before Charge.
+            // Section M: Durable persistence verification before Charge.
             if (!$is_ordinary_payment || $has_selected_card) {
                 $verify_order = wc_get_order($order_id);
                 if (!$verify_order) {
                     $this->log('Persistence verification: unable to reload order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if (!CustomerTokenIdentity::force_refresh_order_meta($verify_order)) {
+                    $this->log('Persistence verification: force refresh failed.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
@@ -2012,14 +2033,20 @@ function woocommerceUpaymentsInit() {
 
             $transport = $this->execute_upayments_request('charge', 'POST', $params);
 
-            if (!$transport['transport_ok']) {
-                $this->log('UPayments charge request failed at transport layer.', 'warning');
+            // Section S: Strict HTTP 201 check for Charge.
+            if (!is_array($transport)
+                || !isset($transport['transport_ok']) || !$transport['transport_ok']
+                || !isset($transport['http_status']) || (int) $transport['http_status'] !== 201
+                || !isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0
+                || !isset($transport['body']) || !is_scalar($transport['body'])
+            ) {
+                $this->log('UPayments charge request failed.', 'warning');
                 WC()->session->set("refresh_totals", true);
                 wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
                 return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
 
-            $response = $transport['body'];
+            $response = (string) $transport['body'];
             $this->log('Create payment HTTP response received.');
 
             // Charge response processing — hardened structural validation.
@@ -2699,36 +2726,91 @@ function woocommerceUpaymentsInit() {
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            $result = json_decode((string) $transport['body'], true);
-            if (!is_array($result)) {
-                // Malformed JSON: cache failure sentinel.
+            // Section O: Strict HTTP status check.
+            if (!is_array($transport)
+                || !isset($transport['transport_ok']) || !$transport['transport_ok']
+                || !isset($transport['http_status']) || (int) $transport['http_status'] !== 201
+                || !isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0
+                || !isset($transport['body']) || !is_scalar($transport['body'])
+            ) {
                 $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                 wc_clear_notices();
                 wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            if (array_key_exists('status', $result) && !empty($result['status'])) {
-                // Status truthy: require data to be an array before reading.
-                if (!isset($result['data']) || !is_array($result['data'])) {
-                    $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-                    wc_clear_notices();
-                    wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                // Application-level success.
-                $payment_methods = $result['data'];
-                $payment_methods['result'] = 'success';
-                // Cache success for remaining cooldown window.
-                $this->set_cached_payment_methods($payment_methods, $new_not_before);
-                return $payment_methods;
+            $result = json_decode((string) $transport['body'], true);
+            if (!is_array($result)) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Status not present or falsy: cache failure sentinel.
-            $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-            wc_clear_notices();
-            wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            // Section O: Strict status === true check. Do NOT accept '1', 1, 'true', etc.
+            if (!array_key_exists('status', $result) || $result['status'] !== true) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            if (!isset($result['data']) || !is_array($result['data'])) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section P: Normalize availability payload.
+            $payment_methods = $result['data'];
+
+            if (!array_key_exists('isWhiteLabel', $payment_methods)) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $wl = $payment_methods['isWhiteLabel'];
+            if ($wl === true || $wl === 1 || $wl === '1') {
+                $payment_methods['isWhiteLabel'] = true;
+            } elseif ($wl === false || $wl === 0 || $wl === '0') {
+                $payment_methods['isWhiteLabel'] = false;
+            } else {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            if (!array_key_exists('payButtons', $payment_methods) || !is_array($payment_methods['payButtons'])) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $known_buttons = array('knet', 'credit_card', 'apple_pay_knet', 'apple_pay', 'samsung_pay', 'google_pay');
+            foreach ($known_buttons as $btn) {
+                if (array_key_exists($btn, $payment_methods['payButtons'])) {
+                    $bv = $payment_methods['payButtons'][$btn];
+                    if ($bv === true || $bv === 1 || $bv === '1') {
+                        $payment_methods['payButtons'][$btn] = 1;
+                    } elseif ($bv === false || $bv === 0 || $bv === '0') {
+                        $payment_methods['payButtons'][$btn] = 0;
+                    } else {
+                        $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                        wc_clear_notices();
+                        wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                }
+            }
+
+            $payment_methods['result'] = 'success';
+            $this->set_cached_payment_methods($payment_methods, $new_not_before);
+            return $payment_methods;
         }
 
         public function getSavedCards($customer_token)
@@ -2837,36 +2919,36 @@ function woocommerceUpaymentsInit() {
                 ? $data['payButtons']
                 : array();
 
-            $whitelabled = !empty($data['isWhiteLabel']);
+            $whitelabled = isset($data['isWhiteLabel']) && $data['isWhiteLabel'] === true;
             $methods     = [];
 
             // If ONLY normal products in cart → allow all methods
             if (!$isSubscriptionContext) {
-                if (!empty($payment_methods['knet']) && (int) $payment_methods['knet'] === 1) {
+                if (isset($payment_methods['knet']) && $payment_methods['knet'] === 1) {
                     $methods['payment']['knet'] = __('KNET', $this->domain);
                 }
 
-                if (!empty($payment_methods['apple_pay_knet']) && (int) $payment_methods['apple_pay_knet'] === 1) {
+                if (isset($payment_methods['apple_pay_knet']) && $payment_methods['apple_pay_knet'] === 1) {
                     $methods['payment']['apple-pay-knet'] = __('Apple Pay KNET', $this->domain);
                 }
 
-                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                if (isset($payment_methods['credit_card']) && $payment_methods['credit_card'] === 1) {
                     $methods['payment']['cc'] = __('Credit Card', $this->domain);
                 }
 
-                if (!empty($payment_methods['apple_pay']) && (int) $payment_methods['apple_pay'] === 1) {
+                if (isset($payment_methods['apple_pay']) && $payment_methods['apple_pay'] === 1) {
                     $methods['payment']['apple-pay'] = __('Apple Pay Credit Card', $this->domain);
                 }
 
-                if (!empty($payment_methods['samsung_pay']) && (int) $payment_methods['samsung_pay'] === 1) {
+                if (isset($payment_methods['samsung_pay']) && $payment_methods['samsung_pay'] === 1) {
                     $methods['payment']['samsung-pay'] = __('Samsung Pay', $this->domain);
                 }
 
-                if (!empty($payment_methods['google_pay']) && (int) $payment_methods['google_pay'] === 1) {
+                if (isset($payment_methods['google_pay']) && $payment_methods['google_pay'] === 1) {
                     $methods['payment']['google-pay'] = __('Google Pay', $this->domain);
                 }
             } else { // If subscription product in cart → ONLY CC allowed (per API requirement)
-                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                if (isset($payment_methods['credit_card']) && $payment_methods['credit_card'] === 1) {
                     $methods['payment']['cc'] = __('Credit Card', $this->domain);
                 }
             }

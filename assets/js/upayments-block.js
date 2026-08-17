@@ -38,14 +38,6 @@
                 []
             );
 
-            useEffect(() => {
-                setExtensionData(NAMESPACE, {
-                    ...upayData,
-                    upay_subscription_plan: 'one_time',
-                    upay_subscription_interval: '0'
-                });
-            }, []);
-
             const [toast, setToast] = useState({ message: '', show: false });
 
             const showToast = (msg) => {
@@ -179,7 +171,11 @@
                             },
                             saved_cards.map((card, index) => 
                                 {
-                                    const token = card.token;
+                                    if (!card || typeof card !== 'object') return null;
+                                    const token = typeof card.token === 'string' && card.token !== '' ? card.token : null;
+                                    if (!token) return null;
+                                    const number = typeof card.number === 'string' ? card.number : '';
+                                    const brand = typeof card.brand === 'string' ? card.brand : '';
                                     return createElement('button', 
                                         {
                                             key: token || index,
@@ -213,7 +209,7 @@
                                                 textAlign: 'left', 
                                                 fontSize: '14px' 
                                             }
-                                        }, `${card.number} (${card.brand})`),
+                                        }, `${number} (${brand})`),
                                         createElement('span', { 
                                             style: { 
                                                 marginLeft: 'auto', 
