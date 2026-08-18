@@ -246,7 +246,12 @@ function wc_get_orders($args) {
     $obj = new stdClass();
     $obj->orders = $orders;
     $obj->total = (int) $state['history_total'];
-    $obj->max_num_pages = (int) $state['history_max_pages'];
+    // Per-page max_pages override takes priority over the global default.
+    if (isset($state['history_max_pages_per_page'][$page])) {
+        $obj->max_num_pages = (int) $state['history_max_pages_per_page'][$page];
+    } else {
+        $obj->max_num_pages = (int) $state['history_max_pages'];
+    }
     return $obj;
 }
 function wc_get_order($order_id) {
@@ -1253,7 +1258,7 @@ class CustomStub {
 $GLOBALS['wpdb'] = new CustomStub();
 $state['history_max_pages_per_page'] = [1 => 2, 2 => 3];
 $state['history_pages'] = [1 => [1, 2], 2 => [3, 4]];
-$state['history_total'] = 4;
+$state['history_total'] = 6; // > 4 to avoid scanned_exceeds_total
 $state['history_max_pages'] = 2;
 foreach ([1, 2, 3, 4] as $oid) {
     $o = new FakeWCOrder($oid);
