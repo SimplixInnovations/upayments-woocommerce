@@ -916,16 +916,17 @@ upay_assert_eq(upay_call_static('WC_Upayments', 'build_amount_json_token', [[]])
 $payload = [
     'order' => [
         'id' => 'x', 'description' => 'y', 'currency' => 'KWD',
-        '__UPAY_ORDER_AMOUNT_SENTINEL__' => null,
+        'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__',
     ],
-    'extraMerchantData' => '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__',
+    'extraMerchantData' => [
+        ['amount' => '__UPAY_MM_AMOUNT_SENTINEL__', 'knetCharge' => 0.5, 'knetChargeType' => 'fixed', 'ccCharge' => 0.5, 'ccChargeType' => 'fixed', 'ibanNumber' => 'KW81CBKU0000000000001234560101'],
+    ],
 ];
 $raw = json_encode($payload);
-$mm_json = '[{"amount":12.50,"knetCharge":0.5}]';
-$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', $mm_json, '12.50']);
+$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', '12.50']);
 upay_assert($out !== null, 'PHP-INJ-1 sentinel replacement with MM succeeds', 'runtime');
 upay_assert_eq(strpos($out, '__UPAY_ORDER_AMOUNT_SENTINEL__'), false, 'PHP-INJ-2 order sentinel removed', 'runtime');
-upay_assert_eq(strpos($out, '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__'), false, 'PHP-INJ-3 MM sentinel removed', 'runtime');
+upay_assert_eq(strpos($out, '__UPAY_MM_AMOUNT_SENTINEL__'), false, 'PHP-INJ-3 MM amount sentinel removed', 'runtime');
 upay_assert_eq(stripos($out, 'e+'), false, 'PHP-INJ-4 no exponent', 'runtime');
 $decoded = json_decode($out, true);
 upay_assert_eq($decoded['order']['amount'], 12.5, 'PHP-INJ-5 order.amount is JSON NUMBER (not quoted)', 'runtime');
@@ -937,41 +938,39 @@ upay_assert_eq(strpos($out, '"amount":"12.50"') === false, true, 'PHP-INJ-8 amou
 $payload = [
     'order' => [
         'id' => 'x', 'description' => 'y', 'currency' => 'KWD',
-        '__UPAY_ORDER_AMOUNT_SENTINEL__' => null,
+        'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__',
     ],
     'extraMerchantData' => null,
 ];
 $raw = json_encode($payload);
-$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', null, null]);
+$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', null]);
 upay_assert($out !== null, 'PHP-INJ-9 no-MM sentinel case succeeds', 'runtime');
-upay_assert_eq(strpos($out, '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__'), false, 'PHP-INJ-10 no MM marker in result', 'runtime');
+upay_assert_eq(strpos($out, '__UPAY_MM_AMOUNT_SENTINEL__'), false, 'PHP-INJ-10 no MM marker in result', 'runtime');
 
 // Missing order sentinel => reject
 $payload = ['order' => ['id' => 'x', 'amount' => 5]];
 $raw = json_encode($payload);
-upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null, null]), null, 'PHP-INJ-11 missing order sentinel rejected', 'runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null]), null, 'PHP-INJ-11 missing order sentinel rejected', 'runtime');
 
-// Double sentinel => reject (counts as duplicate amount keys)
-$payload = ['order' => ['id' => 'x', '__UPAY_ORDER_AMOUNT_SENTINEL__' => null, '__UPAY_ORDER_AMOUNT_SENTINEL__' => null]];
+// Double sentinel => reject
+$payload = [
+    'order' => ['id' => 'x', 'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__'],
+    'order_extra' => ['amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__'],
+];
 $raw = json_encode($payload);
-$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null, null]);
-// After substitution, the result would have two "amount" keys. Production must
-// detect that as invalid via the sentinel-occurrence check. We assert the
-// function returns null (rejecting) or the result has only one "amount" key.
-$has_double_amount = $result !== null && substr_count($result, '"amount":') >= 2;
-upay_assert_eq($has_double_amount, false, 'PHP-INJ-12 double order sentinel rejected (no double amount keys in result)', 'runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null]), null, 'PHP-INJ-12 double order sentinel rejected', 'runtime');
 
 // Quoted-looking token => reject
-$payload = ['order' => ['id' => 'x', '__UPAY_ORDER_AMOUNT_SENTINEL__' => null]];
+$payload = ['order' => ['id' => 'x', 'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__']];
 $raw = json_encode($payload);
-$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50"', null, null]);
+$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50"', null]);
 upay_assert_eq($result, null, 'PHP-INJ-13 invalid token rejected', 'runtime');
 
 // MM-only sentinel provided but no MM present in payload => reject
-$payload = ['order' => ['id' => 'x', '__UPAY_ORDER_AMOUNT_SENTINEL__' => null]];
+$payload = ['order' => ['id' => 'x', 'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__']];
 $raw = json_encode($payload);
-$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', $mm_json, '12.50']);
-upay_assert_eq($result, null, 'PHP-INJ-14 MM JSON provided but no MM sentinel in payload rejected', 'runtime');
+$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', '12.50']);
+upay_assert_eq($result, null, 'PHP-INJ-14 MM token provided but no MM sentinel in payload rejected', 'runtime');
 
 // ---------------------------------------------------------------------------
 // 8. classify_checkout_request_context (pure classifier)
@@ -1431,7 +1430,9 @@ upay_assert_eq($result['state'], 'invalid', 'PHP-CUI-10 wrong-version record ret
 
 upay_reset_state();
 upay_with_history_secret();
+// Re-read $gen from the freshly created secret to avoid stale generation values.
 $state =& upay_test_state();
+$gen = $state['options'][\UPayments\Token\CustomerTokenIdentity::SECRET_OPTION]['generation_id'];
 $state['force_user_cache_refresh_failure'] = true;
 $result = \UPayments\Token\CustomerTokenIdentity::read_provenance(1, str_repeat('a', 32));
 upay_assert_eq($result['state'], 'invalid', 'PHP-RP-1 force refresh fail returns invalid', 'runtime');
@@ -1487,7 +1488,7 @@ upay_assert(strpos($upay_source, 'is_store_api_checkout_request') !== false, 'PH
 upay_assert(strpos($upay_source, 'classify_checkout_request_context') !== false, 'PHP-SRC-3 classify_checkout_request_context defined', 'static');
 upay_assert(strpos($upay_source, 'normalize_store_api_route') !== false, 'PHP-SRC-4 normalize_store_api_route defined', 'static');
 upay_assert(strpos($upay_source, "'__UPAY_ORDER_AMOUNT_SENTINEL__'") !== false, 'PHP-SRC-5 order amount sentinel present', 'static');
-upay_assert(strpos($upay_source, "'__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__'") !== false, 'PHP-SRC-6 MM block sentinel present', 'static');
+upay_assert(strpos($upay_source, "'__UPAY_MM_AMOUNT_SENTINEL__'") !== false, 'PHP-SRC-6 MM amount sentinel present', 'static');
 upay_assert_eq(strpos($upay_source, '$amount_number'), false, 'PHP-SRC-7 no $amount_number', 'static');
 upay_assert_eq(strpos($upay_source, "(float) \$amount_str <= 0"), false, 'PHP-SRC-8 no float positivity', 'static');
 upay_assert(strpos($upay_source, 'parse_subscription_plan_strict') !== false, 'PHP-SRC-9 strict plan parser defined', 'static');

@@ -1338,6 +1338,7 @@ class CustomerTokenIdentity {
             self::HISTORY_CURRENT_SCOPE_ORPHAN,
             self::HISTORY_SECRET_GENERATION_MISMATCH,
             self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY,
+            self::HISTORY_PRIOR_SCOPE_ONLY,
         );
 
         if (in_array($history['classification'], $blocking_states, true)) {
@@ -1395,9 +1396,16 @@ class CustomerTokenIdentity {
                 return $result;
             }
 
-            if ($history['classification'] !== self::HISTORY_NONE
-                && $history['classification'] !== self::HISTORY_PRIOR_SCOPE_ONLY
-            ) {
+            // HISTORY_PRIOR_SCOPE_ONLY is a HARD runtime blocker: do not re-establish
+            // a new canonical identity on top of a prior-scope same-generation history.
+            // Phase 9I owns that migration decision. Treat it as legacy-migration
+            // required even though it isn't in $blocking_states.
+            if ($history['classification'] === self::HISTORY_PRIOR_SCOPE_ONLY) {
+                $result['reason'] = 'legacy_migration_required';
+                return $result;
+            }
+
+            if ($history['classification'] !== self::HISTORY_NONE) {
                 $result['reason'] = 'legacy_migration_required';
                 return $result;
             }

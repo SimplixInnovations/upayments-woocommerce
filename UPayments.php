@@ -250,47 +250,47 @@ function woocommerceUpaymentsInit() {
          *                                 MultiMerchant was not constructed.
          * @return string|null Final JSON or null on any verification failure.
          */
-        private static function inject_amount_token_into_payload_json($payload_json, $order_token, $mm_json, $mm_token) {
+        private static function inject_amount_token_into_payload_json($payload_json, $order_token, $mm_token) {
             if (!is_string($payload_json) || $payload_json === '') {
                 return null;
             }
             if (!is_string($order_token) || $order_token === '') {
                 return null;
             }
-            if ($mm_json !== null && !is_string($mm_json)) {
-                return null;
-            }
 
             // === Order amount injection ===
-            $order_placeholder = '"__UPAY_ORDER_AMOUNT_SENTINEL__":null';
-            $order_count = substr_count($payload_json, $order_placeholder);
+            // The order.amount field carries the value '__UPAY_ORDER_AMOUNT_SENTINEL__'
+            // (as a JSON string). We replace the literal string with the validated
+            // amount as a JSON NUMBER (no quotes).
+            $order_placeholder = '__UPAY_ORDER_AMOUNT_SENTINEL__';
+            $order_count = substr_count($payload_json, '"' . $order_placeholder . '"');
             if ($order_count !== 1) {
                 return null;
             }
-            $order_replacement = '"amount":' . $order_token;
-            $result = str_replace($order_placeholder, $order_replacement, $payload_json);
+            // Replace the quoted sentinel with the quoted token, e.g.
+            // "amount":"__UPAY_ORDER_AMOUNT_SENTINEL__" -> "amount":12.50
+            $result = str_replace(
+                '"' . $order_placeholder . '"',
+                $order_token,
+                $payload_json
+            );
             if ($result === $payload_json) {
                 return null;
             }
 
             // === MultiMerchant amount injection ===
-            // The MM block is provided as a pre-built JSON literal so the amount
-            // value is a JSON NUMBER (not quoted) with no possibility of float
-            // conversion. We replace a single string sentinel with the entire
-            // JSON array literal.
-            if ($mm_json !== null) {
-                $mm_placeholder = '"__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__"';
-                $mm_count = substr_count($result, $mm_placeholder);
+            if ($mm_token !== null) {
+                $mm_placeholder = '__UPAY_MM_AMOUNT_SENTINEL__';
+                $mm_count = substr_count($result, '"' . $mm_placeholder . '"');
                 if ($mm_count !== 1) {
                     return null;
                 }
-                $result = str_replace($mm_placeholder, $mm_json, $result);
+                $result = str_replace('"' . $mm_placeholder . '"', $mm_token, $result);
                 if ($result === $payload_json) {
                     return null;
                 }
             } else {
-                // Ensure no stray MM sentinel remains.
-                if (strpos($result, '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__') !== false) {
+                if (strpos($result, '__UPAY_MM_AMOUNT_SENTINEL__') !== false) {
                     return null;
                 }
             }
@@ -320,8 +320,8 @@ function woocommerceUpaymentsInit() {
                 return null;
             }
 
-            // MM amount verification (only when MM JSON supplied).
-            if ($mm_json !== null) {
+            // MM amount verification (only when MM token supplied).
+            if ($mm_token !== null) {
                 if (!isset($decoded['extraMerchantData']) || !is_array($decoded['extraMerchantData'])) {
                     return null;
                 }
@@ -339,19 +339,28 @@ function woocommerceUpaymentsInit() {
                 if (preg_match('/"amount"\s*:\s*"[^"]+"\s*,\s*"knetCharge"/', $result)) {
                     return null;
                 }
-                // If a token is provided, verify it appears verbatim in the JSON.
-                if ($mm_token !== null) {
-                    $mm_amount_pattern = '/"extraMerchantData"\s*:\s*\[\s*\{[^}]*"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/s';
-                    if (!preg_match($mm_amount_pattern, $result, $mm_m)) {
-                        return null;
-                    }
-                    if (stripos($mm_m[1], 'e') !== false) {
-                        return null;
-                    }
-                    if ($mm_m[1] !== $mm_token) {
-                        return null;
-                    }
+                $mm_amount_pattern = '/"extraMerchantData"\s*:\s*\[\s*\{[^}]*"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/s';
+                if (!preg_match($mm_amount_pattern, $result, $mm_m)) {
+                    return null;
                 }
+                if (stripos($mm_m[1], 'e') !== false) {
+                    return null;
+                }
+                if ($mm_m[1] !== $mm_token) {
+                    return null;
+                }
+                // MM amount must equal order amount (per provider contract).
+                if (abs((float) $mm_token - (float) $order_token) > 0.0001) {
+                    return null;
+                }
+            }
+
+            // Final structural sanity: no leftover sentinels.
+            if (strpos($result, '__UPAY_ORDER_AMOUNT_SENTINEL__') !== false) {
+                return null;
+            }
+            if (strpos($result, '__UPAY_MM_AMOUNT_SENTINEL__') !== false) {
+                return null;
             }
 
             return $result;
@@ -2489,13 +2498,17 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Supported charge-type semantics: only 'flat' or 'percentage'.
-                if (!in_array($knet_charge_type, array('flat', 'percentage'), true)) {
+                // Supported charge-type semantics: only 'fixed' or 'percentage'.
+                // Legacy stored values may contain 'flat' (admin UI was updated to
+                // produce 'fixed'). We accept 'flat' as an alias for 'fixed' so old
+                // saved configurations continue to work, but new code uses 'fixed'.
+                $valid_charge_types = array('fixed', 'percentage', 'flat');
+                if (!in_array($knet_charge_type, $valid_charge_types, true)) {
                     $this->log('MultiMerchant: invalid knetChargeType.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (!in_array($cc_charge_type, array('flat', 'percentage'), true)) {
+                if (!in_array($cc_charge_type, $valid_charge_types, true)) {
                     $this->log('MultiMerchant: invalid ccChargeType.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2503,23 +2516,37 @@ function woocommerceUpaymentsInit() {
                 // All checks passed: build the deterministic provider-bound structure.
                 // The amount field uses a sentinel that is later replaced by the validated
                 // JSON number token. No float conversion happens here.
-                $extraMerchantData = '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__';
+                // Per the provider contract, the sum of extraMerchantData.amount values
+                // must equal order.amount. For this plugin's single-entry implementation,
+                // we assert exact equality.
+                $extraMerchantData = array(
+                    array(
+                        'amount'         => '__UPAY_MM_AMOUNT_SENTINEL__',
+                        'knetCharge'     => $knet_charge,
+                        'knetChargeType' => $knet_charge_type,
+                        'ccCharge'       => $cc_charge,
+                        'ccChargeType'   => $cc_charge_type,
+                        'ibanNumber'     => $iban,
+                    ),
+                );
             }
 
             // Build deterministic base payload (token fields are null placeholders).
             // The order.amount field uses a placeholder so we can inject the
             // validated plain decimal JSON token without float conversion.
-            $extra_merchant_data_payload = $extraMerchantData; // string sentinel or null
+            // extraMerchantData is a real PHP array (not a string sentinel) so it is
+            // encoded naturally by wp_json_encode(); only its 'amount' value is replaced
+            // by the validated amount token via the MM amount sentinel below.
             $payload = array(
                 'returnUrl'       => $success_url,
                 'cancelUrl'       => $error_url,
                 'notificationUrl' => $ipn_url,
                 'products'        => $productArrayNew,
                 'order'           => array(
-                    'id'                        => $unique_order_id,
-                    'description'               => $order_description,
-                    'currency'                  => $currency,
-                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => null,
+                    'id'          => $unique_order_id,
+                    'description' => $order_description,
+                    'currency'    => $currency,
+                    'amount'      => '__UPAY_ORDER_AMOUNT_SENTINEL__',
                 ),
                 'reference'       => array(
                     'id' => $reference_id,
@@ -2547,7 +2574,7 @@ function woocommerceUpaymentsInit() {
                         '3DSecureChallengeWindowSize' => '500_X_600',
                     ),
                 ),
-                'extraMerchantData' => $extra_merchant_data_payload,
+                'extraMerchantData' => $extraMerchantData,
             );
 
             // Whitelabel: add paymentGateway.
@@ -2559,6 +2586,23 @@ function woocommerceUpaymentsInit() {
                 $payload['paymentGateway'] = array('src' => $src);
             }
 
+            // Per the provider contract, extraMerchantData.amount values must sum
+            // to order.amount. For this plugin's single-entry implementation, the MM
+            // amount must equal order.amount exactly.
+            if ($extraMerchantData !== null) {
+                $mm_amount_sum = 0.0;
+                foreach ($extraMerchantData as $mm_row) {
+                    if (isset($mm_row['amount']) && is_numeric($mm_row['amount'])) {
+                        $mm_amount_sum += (float) $mm_row['amount'];
+                    }
+                }
+                if (abs($mm_amount_sum - (float) $amount_str) > 0.0001) {
+                    $this->log('MultiMerchant: amount sum does not equal order amount.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
             // Pre-token JSON dry-run: encode the deterministic payload and
             // inject the validated amount JSON tokens in place of the sentinels.
             $preflight_raw = wp_json_encode($payload);
@@ -2567,16 +2611,9 @@ function woocommerceUpaymentsInit() {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            // The MM sentinel is only present when MultiMerchant is enabled and valid.
-            // When MM is enabled, we build the JSON literal string for the entire
-            // extraMerchantData block with the validated amount token as a JSON NUMBER.
-            $mm_json_literal = null;
-            $mm_token_for_injection = null;
-            if ($extra_merchant_data_payload === '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__') {
-                $mm_json_literal = '[{"amount":' . $amount_json_token . ',"knetCharge":' . $knet_charge . ',"knetChargeType":"' . $knet_charge_type . '","ccCharge":' . $cc_charge . ',"ccChargeType":"' . $cc_charge_type . '","ibanNumber":"' . $iban . '"}]';
-                $mm_token_for_injection = $amount_json_token;
-            }
-            $preflight_json = self::inject_amount_token_into_payload_json($preflight_raw, $amount_json_token, $mm_json_literal, $mm_token_for_injection);
+            // The MM amount sentinel is only present when MultiMerchant is enabled and valid.
+            $mm_amount_for_injection = ($extraMerchantData !== null) ? $amount_json_token : null;
+            $preflight_json = self::inject_amount_token_into_payload_json($preflight_raw, $amount_json_token, $mm_amount_for_injection);
             if (!is_string($preflight_json) || $preflight_json === '') {
                 $this->log('Deterministic amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2844,7 +2881,7 @@ function woocommerceUpaymentsInit() {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            $params = self::inject_amount_token_into_payload_json($final_raw, $amount_json_token, $mm_json_literal, $mm_token_for_injection);
+            $params = self::inject_amount_token_into_payload_json($final_raw, $amount_json_token, $mm_amount_for_injection);
             if (!is_string($params) || $params === '') {
                 $this->log('Final amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
