@@ -544,7 +544,7 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $generation_id = self::get_generation_id();
+        $generation_id = self::get_existing_generation_id();
         if ($generation_id === null) {
             return false;
         }
@@ -1113,6 +1113,15 @@ class CustomerTokenIdentity {
     public static function inspect_bootstrap_history($user_id) {
         if ($user_id <= 0) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'not_logged_in');
+        }
+        // A helper intended for initialization semantics must not be reused
+        // against an established identity root.
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] === self::SECRET_VALID) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'not_bootstrap_candidate');
+        }
+        if ($secret_result['state'] === self::SECRET_INVALID) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_secret');
         }
 
         $secret_result = self::read_existing_secret_record();
