@@ -1285,6 +1285,30 @@ class CustomerTokenIdentity {
             return $result;
         }
 
+        // === Read-only preflight: do NOT mutate identity state before confirming
+        // the historical order evidence will not block canonical establishment. ===
+        $preflight_history = self::inspect_customer_history($user_id, '__UPAY_PREFLIGHT_SCOPE__');
+        $preflight_prior = self::inspect_current_user_prior_provenance($user_id);
+        $preflight_blocking_states = array(
+            self::HISTORY_INDETERMINATE,
+            self::HISTORY_UNSCOPED_LEGACY,
+            self::HISTORY_MALFORMED_SCOPED,
+            self::HISTORY_CURRENT_SCOPE_ORPHAN,
+            self::HISTORY_SECRET_GENERATION_MISMATCH,
+            self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY,
+            self::HISTORY_PRIOR_SCOPE_ONLY,
+        );
+        if (in_array($preflight_history['classification'], $preflight_blocking_states, true)
+            || $preflight_history['classification'] !== self::HISTORY_NONE
+        ) {
+            $result['reason'] = 'legacy_migration_required';
+            return $result;
+        }
+        if ($preflight_prior['state'] === 'read_failure') {
+            $result['reason'] = 'read_failure';
+            return $result;
+        }
+
         $scope = self::get_scope_fingerprint($api_key, $is_test_mode);
         if ($scope === null) {
             $result['reason'] = 'scope_failure';
@@ -1396,15 +1420,10 @@ class CustomerTokenIdentity {
                 return $result;
             }
 
-            // HISTORY_PRIOR_SCOPE_ONLY is a HARD runtime blocker: do not re-establish
-            // a new canonical identity on top of a prior-scope same-generation history.
-            // Phase 9I owns that migration decision. Treat it as legacy-migration
-            // required even though it isn't in $blocking_states.
-            if ($history['classification'] === self::HISTORY_PRIOR_SCOPE_ONLY) {
-                $result['reason'] = 'legacy_migration_required';
-                return $result;
-            }
-
+            // HISTORY_PRIOR_SCOPE_ONLY is in $blocking_states above. After the lock
+            // we simply check $blocking_states again. If somehow a new classification
+            // were added in the future that is not in $blocking_states, this guard
+            // rejects any non-HISTORY_NONE outcome as legacy-migration-required.
             if ($history['classification'] !== self::HISTORY_NONE) {
                 $result['reason'] = 'legacy_migration_required';
                 return $result;

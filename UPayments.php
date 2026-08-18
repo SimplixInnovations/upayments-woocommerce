@@ -349,8 +349,11 @@ function woocommerceUpaymentsInit() {
                 if ($mm_m[1] !== $mm_token) {
                     return null;
                 }
-                // MM amount must equal order amount (per provider contract).
-                if (abs((float) $mm_token - (float) $order_token) > 0.0001) {
+                // MM amount must equal order amount exactly (per provider contract).
+                // Both tokens are already validated plain-decimal strings; no float
+                // conversion is performed. Compare the canonical provider-bound
+                // decimal representations character-for-character.
+                if ($mm_token !== $order_token) {
                     return null;
                 }
             }
@@ -2476,8 +2479,22 @@ function woocommerceUpaymentsInit() {
             $extraMerchantData = null;
             if ($this->multiMerchant === 'yes') {
                 $iban = isset($this->ibanNumber) && is_string($this->ibanNumber) ? trim($this->ibanNumber) : '';
-                $knet_charge = isset($this->knetCharge) && is_numeric($this->knetCharge) ? (float) $this->knetCharge : null;
-                $cc_charge = isset($this->ccCharge) && is_numeric($this->ccCharge) ? (float) $this->ccCharge : null;
+                $knet_charge_raw = isset($this->knetCharge) && is_string($this->knetCharge) ? trim($this->knetCharge) : '';
+                $cc_charge_raw = isset($this->ccCharge) && is_string($this->ccCharge) ? trim($this->ccCharge) : '';
+                // Strict plain-decimal parsing: reject exponent notation, signs,
+                // whitespace, commas, and any non-canonical form.
+                if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $knet_charge_raw)) {
+                    $this->log('MultiMerchant: invalid knetCharge format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $cc_charge_raw)) {
+                    $this->log('MultiMerchant: invalid ccCharge format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $knet_charge = $knet_charge_raw; // string, no float conversion
+                $cc_charge = $cc_charge_raw;
                 $knet_charge_type = isset($this->knetChargeType) && is_scalar($this->knetChargeType) ? trim((string) $this->knetChargeType) : '';
                 $cc_charge_type = isset($this->ccChargeType) && is_scalar($this->ccChargeType) ? trim((string) $this->ccChargeType) : '';
 
@@ -2487,22 +2504,23 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Strict numeric bounds for charges.
-                if ($knet_charge === null || $knet_charge <= 0 || $knet_charge > 9999999.9999) {
+                // Strict numeric bounds for charges (string comparison, no float).
+                if ($knet_charge === '' || bccomp($knet_charge, '0', 8) !== 1 || bccomp($knet_charge, '9999999.9999', 8) === 1) {
                     $this->log('MultiMerchant: invalid knetCharge.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if ($cc_charge === null || $cc_charge <= 0 || $cc_charge > 9999999.9999) {
+                if ($cc_charge === '' || bccomp($cc_charge, '0', 8) !== 1 || bccomp($cc_charge, '9999999.9999', 8) === 1) {
                     $this->log('MultiMerchant: invalid ccCharge.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Supported charge-type semantics: only 'fixed' or 'percentage'.
-                // Legacy stored values may contain 'flat' (admin UI was updated to
-                // produce 'fixed'). We accept 'flat' as an alias for 'fixed' so old
-                // saved configurations continue to work, but new code uses 'fixed'.
-                $valid_charge_types = array('fixed', 'percentage', 'flat');
+                // Charge-type semantics: canonical values are 'fixed' or 'percentage'.
+                // Anything else (including legacy 'flat', capitalization, whitespace, or
+                // any non-canonical form) is rejected. Historical values stored as 'flat'
+                // are reported as a migration/compatibility fact below; we do NOT silently
+                // send 'flat' to the provider.
+                $valid_charge_types = array('fixed', 'percentage');
                 if (!in_array($knet_charge_type, $valid_charge_types, true)) {
                     $this->log('MultiMerchant: invalid knetChargeType.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2518,7 +2536,9 @@ function woocommerceUpaymentsInit() {
                 // JSON number token. No float conversion happens here.
                 // Per the provider contract, the sum of extraMerchantData.amount values
                 // must equal order.amount. For this plugin's single-entry implementation,
-                // we assert exact equality.
+                // we assign the same validated amount token to both order.amount and
+                // extraMerchantData[0].amount, and the post-injection verification
+                // in inject_amount_token_into_payload_json() enforces exact equality.
                 $extraMerchantData = array(
                     array(
                         'amount'         => '__UPAY_MM_AMOUNT_SENTINEL__',
@@ -2586,22 +2606,12 @@ function woocommerceUpaymentsInit() {
                 $payload['paymentGateway'] = array('src' => $src);
             }
 
-            // Per the provider contract, extraMerchantData.amount values must sum
-            // to order.amount. For this plugin's single-entry implementation, the MM
-            // amount must equal order.amount exactly.
-            if ($extraMerchantData !== null) {
-                $mm_amount_sum = 0.0;
-                foreach ($extraMerchantData as $mm_row) {
-                    if (isset($mm_row['amount']) && is_numeric($mm_row['amount'])) {
-                        $mm_amount_sum += (float) $mm_row['amount'];
-                    }
-                }
-                if (abs($mm_amount_sum - (float) $amount_str) > 0.0001) {
-                    $this->log('MultiMerchant: amount sum does not equal order amount.', 'warning');
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-            }
+            // The MM amount equality (per provider contract) is enforced after
+            // sentinel injection in the raw JSON (not by trying to add sentinel
+            // strings). The injection substitutes the same validated amount token
+            // for both order.amount and extraMerchantData[0].amount, so the raw-JSON
+            // equality check in inject_amount_token_into_payload_json() is the
+            // authoritative verification.
 
             // Pre-token JSON dry-run: encode the deterministic payload and
             // inject the validated amount JSON tokens in place of the sentinels.
