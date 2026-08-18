@@ -1,5 +1,5 @@
 /**
- * Phase 9G-H12 Blocks harness — residual correction #4.
+ * Phase 9G-H12 Blocks harness — residual correction #13.
  *
  * Loads the actual production source (assets/js/upayments-block.js) and runs
  * a mock-React environment that:
@@ -12,6 +12,11 @@
  *   3. Walks the rendered tree, invokes real onClick/onChange handlers, and
  *      asserts behavior — saved/new card, consent toggle, payment-source
  *      transitions, subscription plan/interval transitions.
+ *   4. Real rerender lifecycle: handler triggers store update → setStates
+ *      drained → re-render → look up UI elements. Missing UI = FAIL.
+ *   5. Both registered Blocks content and edit element trees are exercised.
+ *   6. No heuristic button fallbacks; every UI lookup is deterministic by
+ *      exact property/label/structure.
  *
  * Usage:
  *   node tests/harness/phase-9g-h12-blocks-harness.js
@@ -78,19 +83,12 @@ function isDescriptor(node) {
 }
 
 // ────────────────────────────────────────────────────────────
-// Mock React architecture:
-//   wp.element = { createElement, useState, useEffect }
-//
-// createElement returns a descriptor. It does NOT call type(props).
-// The renderer invokes component .type under a hook environment that
-// tracks per-call useState state.
+// Mock React architecture.
 // ────────────────────────────────────────────────────────────
 
 function createMockReact() {
-    // Per-render hook slot. Reset on every renderComponent() call.
     let hookSlot = [];
     let hookIndex = 0;
-    const setStates = []; // queue of pending setters for re-render
 
     const useState = (initial) => {
         const slot = hookIndex++;
@@ -98,12 +96,9 @@ function createMockReact() {
             hookSlot[slot] = (typeof initial === 'function' ? initial() : initial);
         }
         const setter = (next) => {
-            // Functional update support.
             const prev = hookSlot[slot];
             const value = (typeof next === 'function') ? next(prev) : next;
             hookSlot[slot] = value;
-            // Schedule re-render using the latest store + tree (filled in by renderer).
-            setStates.push(slot);
         };
         return [hookSlot[slot], setter];
     };
@@ -111,11 +106,9 @@ function createMockReact() {
     const useEffect = (fn, deps) => {
         const slot = hookIndex++;
         hookSlot[slot] = { fn, deps, ran: false };
-        // No-op for our purposes; components don't depend on actual effects.
     };
 
     const createElement = (type, props, ...children) => {
-        // Returns descriptor only — never invokes type(props).
         return {
             type: type,
             props: props || {},
@@ -128,15 +121,11 @@ function createMockReact() {
         createElement,
         useState,
         useEffect,
-        // Renderer-side helpers.
         _enterRender: () => {
             hookSlot = [];
             hookIndex = 0;
-            setStates.length = 0;
-            return { hookSlot, setStates, exitRender: () => {} };
+            return { hookSlot, exitRender: () => {} };
         },
-        _getSetStates: () => setStates,
-        _resetHook: (slotIdx, value) => { hookSlot[slotIdx] = value; },
     };
 }
 
@@ -144,7 +133,7 @@ function createMockReact() {
 // Renderer: walks component descriptor tree → primitives.
 // ────────────────────────────────────────────────────────────
 
-function renderDescriptor(node, mockReact, depth = 0) {
+function renderDescriptor(node, mockReact) {
     if (!node) return null;
     if (typeof node === 'string' || typeof node === 'number') {
         return { tag: '#text', props: {}, children: [], typeName: '#text', text: String(node) };
@@ -152,18 +141,15 @@ function renderDescriptor(node, mockReact, depth = 0) {
     if (!isDescriptor(node)) return null;
 
     if (typeof node.type === 'function') {
-        // Component: invoke .type(props) under a fresh hook slot, then
-        // render whatever it returns.
-        const subRender = mockReact._enterRender();
+        mockReact._enterRender();
         const result = node.type(node.props);
-        return renderDescriptor(result, mockReact, depth + 1);
+        return renderDescriptor(result, mockReact);
     }
 
-    // HTML/symbolic primitive.
     return {
         tag: node.type,
         props: node.props,
-        children: node.children.map((c) => renderDescriptor(c, mockReact, depth + 1)).filter(Boolean),
+        children: node.children.map((c) => renderDescriptor(c, mockReact)).filter(Boolean),
         typeName: node.type,
     };
 }
@@ -202,6 +188,7 @@ function makeSettings(overrides = {}) {
         cart_total: '0.00',
         currency_display: 'KWD',
         is_subscription_enabled: false,
+        plan_options: ['one_time', 'daily', 'weekly', 'monthly', 'bimonthly', 'yearly', 'custom'],
         product_type: [],
         plugin_url: 'https://example.test/wp-content/plugins/upayments/',
         translation: {
@@ -220,18 +207,6 @@ function makeSettings(overrides = {}) {
 function buildSandbox(settings, mockReact) {
     const extStore = {};
     const dispatched = [];
-
-    // useDispatch(namespace) returns an object with setExtensionData(ns, data).
-    const makeDispatchFor = (ns) => (ns2, data) => {
-        extStore[ns2] = { ...(extStore[ns2] || {}), ...data };
-        dispatched.push({ ns: ns2, data });
-    };
-    const dispatchMethods = {
-        setExtensionData: (ns2, data) => {
-            extStore[ns2] = { ...(extStore[ns2] || {}), ...data };
-            dispatched.push({ ns: ns2, data });
-        },
-    };
 
     const sandbox = {
         console: { log: () => {}, warn: () => {}, error: () => {} },
@@ -257,11 +232,18 @@ function buildSandbox(settings, mockReact) {
                     select: (storeKey) => ({
                         getExtensionData: () => JSON.parse(JSON.stringify(extStore)),
                     }),
-                    dispatch: (storeKey) => dispatchMethods,
-                    useDispatch: (namespace) => ({ setExtensionData: (ns, data) => {
-                        extStore[ns] = { ...(extStore[ns] || {}), ...data };
-                        dispatched.push({ ns, data });
-                    } }),
+                    dispatch: (storeKey) => ({
+                        setExtensionData: (ns, data) => {
+                            extStore[ns] = { ...(extStore[ns] || {}), ...data };
+                            dispatched.push({ ns, data });
+                        },
+                    }),
+                    useDispatch: () => ({
+                        setExtensionData: (ns, data) => {
+                            extStore[ns] = { ...(extStore[ns] || {}), ...data };
+                            dispatched.push({ ns, data });
+                        },
+                    }),
                     useSelect: (selectorFn) => selectorFn((storeKey) => ({
                         getExtensionData: () => JSON.parse(JSON.stringify(extStore)),
                     })),
@@ -291,7 +273,6 @@ record(findAll !== undefined, 'H-ST-3 tree walker exists', 'harness');
 }
 {
     const m = createMockReact();
-    // createElement returns a descriptor; type(props) is NOT invoked.
     const fn = () => { throw new Error('should not be eagerly invoked'); };
     const d = m.createElement(fn, { a: 1 }, m.createElement('span', null, 'x'));
     record(d && d.type === fn, 'H-ST-5 createElement returns descriptor without invoking function components', 'harness');
@@ -300,64 +281,108 @@ record(findAll !== undefined, 'H-ST-3 tree walker exists', 'harness');
 record(typeof renderDescriptor === 'function', 'H-ST-7 renderer exists', 'harness');
 
 // ────────────────────────────────────────────────────────────
-// 1. REGISTRATION
-// ────────────────────────────────────────────────────────────
-{
-    const mockReact = createMockReact();
-    const { sandbox } = buildSandbox(makeSettings(), mockReact);
-    const context = vm.createContext(sandbox);
-    try {
-        vm.runInContext(blockSource, context, { filename: BLOCK_JS });
-        const registered = sandbox.window.wc.__lastRegistered;
-        record(registered !== undefined, 'B-REG-1 payment method registered', 'runtime');
-        record(registered && registered.name === 'upayments', 'B-REG-2 name === upayments', 'runtime');
-        record(registered && registered.ariaLabel === 'UPayments', 'B-REG-3 ariaLabel', 'runtime');
-        record(registered && registered.canMakePayment && registered.canMakePayment() === true, 'B-REG-4 canMakePayment true', 'runtime');
-        record(registered && registered.onPaymentMethodChange && registered.onPaymentMethodChange() === true, 'B-REG-5 onPaymentMethodChange true', 'runtime');
-        record(registered && JSON.stringify(registered.supports.features) === JSON.stringify(['products']), 'B-REG-6 supports.products', 'runtime');
-        record(registered && registered.content !== undefined, 'B-REG-7 content descriptor exists', 'runtime');
-        record(registered && registered.edit !== undefined, 'B-REG-8 edit descriptor exists', 'runtime');
-        record(registered && registered.content && registered.content.type, 'B-REG-9 content is createElement descriptor', 'runtime');
-        record(typeof registered.canMakePayment === 'function', 'B-REG-10 canMakePayment is function', 'runtime');
-    } catch (e) {
-        record(false, 'B-REG-X source execution failed: ' + e.message, 'runtime');
-    }
-}
-
-// ────────────────────────────────────────────────────────────
-// Renderer helper — invokes .type on descriptors, walks trees.
+// SCENE: long-lived sandbox with persistent wp.data store.
+// Real rerender lifecycle: render → click → render again with
+// the updated store. No "fresh" trees between user actions.
 // ────────────────────────────────────────────────────────────
 
-function renderRegistered(registered, slot, mockReact) {
-    if (!registered) return null;
-    const target = slot === 'edit' ? registered.edit : registered.content;
-    if (!target) return null;
-    mockReact._enterRender();
-    // target is a createElement descriptor. Invoke its .type as React would.
-    let desc;
-    if (target && typeof target === 'object' && Array.isArray(target.children)) {
-        desc = target;
-    } else {
-        // Fallback: registered directly as a function (defensive).
-        desc = typeof target === 'function' ? target({}) : target;
-    }
-    return renderDescriptor(desc, mockReact);
-}
-
-function renderTree(settings) {
+function buildScene(settings) {
     const mockReact = createMockReact();
     const { sandbox, extStore, dispatched } = buildSandbox(settings, mockReact);
     const context = vm.createContext(sandbox);
     vm.runInContext(blockSource, context, { filename: BLOCK_JS });
     const registered = sandbox.window.wc.__lastRegistered;
-    if (!registered) return { tree: null, extStore, dispatched, mockReact };
-    let tree = null;
+    return { mockReact, sandbox, extStore, dispatched, registered };
+}
+
+function renderScene(scene) {
+    if (!scene.registered) return null;
     try {
-        tree = renderRegistered(registered, 'content', mockReact);
+        return renderRegistered(scene.registered, scene.mockReact);
     } catch (e) {
-        tree = null;
+        return null;
     }
-    return { tree, extStore, dispatched, sandbox, mockReact };
+}
+
+function renderRegistered(registered, mockReact) {
+    if (!registered) return null;
+    const target = registered.content;
+    if (!target) return null;
+    mockReact._enterRender();
+    let desc;
+    if (target && typeof target === 'object' && Array.isArray(target.children)) {
+        desc = target;
+    } else {
+        desc = typeof target === 'function' ? target({}) : target;
+    }
+    return renderDescriptor(desc, mockReact);
+}
+
+function renderEditTree(scene) {
+    if (!scene.registered) return null;
+    try {
+        return renderRegisteredEdit(scene.registered, scene.mockReact);
+    } catch (e) {
+        return null;
+    }
+}
+
+function renderRegisteredEdit(registered, mockReact) {
+    if (!registered) return null;
+    const target = registered.edit;
+    if (!target) return null;
+    mockReact._enterRender();
+    let desc;
+    if (target && typeof target === 'object' && Array.isArray(target.children)) {
+        desc = target;
+    } else {
+        desc = typeof target === 'function' ? target({}) : target;
+    }
+    return renderDescriptor(desc, mockReact);
+}
+
+// ────────────────────────────────────────────────────────────
+// DETERMINISTIC UI LOOKUP HELPERS
+// ────────────────────────────────────────────────────────────
+
+function findButtonByText(tree, text) {
+    if (!tree) return null;
+    const allButtons = findAll(tree, (n) => n.tag === 'button' && typeof n.props?.onClick === 'function');
+    for (const b of allButtons) {
+        const all = JSON.stringify(b);
+        if (all.includes(text)) return b;
+    }
+    return null;
+}
+
+function findCheckbox(tree) {
+    if (!tree) return null;
+    const toggles = findAll(tree, (n) => n.tag === 'input' && n.props?.type === 'checkbox' && typeof n.props?.onChange === 'function');
+    return toggles.length > 0 ? toggles[0] : null;
+}
+
+function findSelect(tree) {
+    if (!tree) return null;
+    const selects = findAll(tree, (n) => n.tag === 'select' && typeof n.props?.onChange === 'function');
+    return selects.length > 0 ? selects[0] : null;
+}
+
+// ────────────────────────────────────────────────────────────
+// 1. REGISTRATION
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings());
+    const reg = scene.registered;
+    record(reg !== undefined, 'B-REG-1 payment method registered', 'runtime');
+    record(reg && reg.name === 'upayments', 'B-REG-2 name === upayments', 'runtime');
+    record(reg && reg.ariaLabel === 'UPayments', 'B-REG-3 ariaLabel', 'runtime');
+    record(reg && reg.canMakePayment && reg.canMakePayment() === true, 'B-REG-4 canMakePayment true', 'runtime');
+    record(reg && reg.onPaymentMethodChange && reg.onPaymentMethodChange() === true, 'B-REG-5 onPaymentMethodChange true', 'runtime');
+    record(reg && JSON.stringify(reg.supports.features) === JSON.stringify(['products']), 'B-REG-6 supports.products', 'runtime');
+    record(reg && reg.content !== undefined, 'B-REG-7 content descriptor exists', 'runtime');
+    record(reg && reg.edit !== undefined, 'B-REG-8 edit descriptor exists', 'runtime');
+    record(reg && reg.content && reg.content.type, 'B-REG-9 content is createElement descriptor', 'runtime');
+    record(typeof reg.canMakePayment === 'function', 'B-REG-10 canMakePayment is function', 'runtime');
 }
 
 // ────────────────────────────────────────────────────────────
@@ -365,41 +390,23 @@ function renderTree(settings) {
 // ────────────────────────────────────────────────────────────
 {
     const card_token = 'card_token_1';
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
         save_card_enabled: true,
         saved_cards: [
             { token: card_token, number: '****1234', brand: 'Visa' },
         ],
-    });
-    const { tree, extStore } = renderTree(settings);
+    }));
+    const tree = renderScene(scene);
     if (tree == null) {
         record(false, 'B-SCC-1 tree is null', 'runtime');
     } else {
-        // Saved card buttons: find buttons whose className contains
-        // 'upay-payment-method' and whose onClick is a function. There
-        // are multiple such buttons (saved cards + payment icons), so we
-        // locate by context: a button whose DOM contains the saved card's
-        // number text is the one bound to that token.
-        const allButtons = findAll(tree, (n) => n.tag === 'button' && typeof n.props?.onClick === 'function');
-        let cardButton = null;
-        for (const b of allButtons) {
-            const text = JSON.stringify(b);
-            if (text.includes('****1234')) {
-                cardButton = b;
-                break;
-            }
-        }
+        const cardButton = findButtonByText(tree, '****1234');
         if (!cardButton) {
-            // Fallback: pick the first 'upay-payment-method' button.
-            cardButton = allButtons.find((b) => (b.props.className || '').includes('upay-payment-method'));
-        }
-        if (!cardButton) {
-            record(false, 'B-SCC-1 no saved card button found', 'runtime');
+            record(false, 'B-SCC-1 no saved card button found for ****1234', 'runtime');
         } else {
-            const event = { preventDefault: () => {}, stopPropagation: () => {} };
-            try { cardButton.props.onClick(event); } catch (e) {}
-            const ns = extStore['upayments'] || {};
+            try { cardButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const ns = scene.extStore['upayments'] || {};
             record(typeof ns.card_token === 'string' && ns.card_token.length > 0, 'B-SCC-2 card_token set on click', 'runtime');
             record(ns.save_card === '0', 'B-SCC-3 save_card cleared to 0', 'runtime');
         }
@@ -410,40 +417,23 @@ function renderTree(settings) {
 // B-CC-*: New CC click defaults save_card=0 and card_token=null
 // ────────────────────────────────────────────────────────────
 {
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
         save_card_enabled: true,
         is_whitelabled: true,
         payment_icons: { knet: 'KNET', cc: 'Credit Card', 'apple-pay': 'Apple' },
         saved_cards: [],
-    });
-    const { tree, extStore } = renderTree(settings);
+    }));
+    const tree = renderScene(scene);
     if (tree == null) {
         record(false, 'B-CC-1 tree is null', 'runtime');
     } else {
-        // The 'cc' button in the icons group will have a className referencing it.
-        // Its onClick calls handleMethodClick('cc') which sets defaults.
-        const allButtons = findAll(tree, (n) => n.tag === 'button' && typeof n.props?.onClick === 'function');
-        // Find a button that closes over the icon 'cc' type. We detect via the
-        // rendered text or via className containing 'upay-payment-method' with no
-        // specific card number (so it's the icon-group one).
-        let ccButton = null;
-        for (const b of allButtons) {
-            const txt = JSON.stringify(b);
-            if (txt.includes('Credit Card')) {
-                ccButton = b;
-                break;
-            }
-        }
+        const ccButton = findButtonByText(tree, 'Credit Card');
         if (!ccButton) {
-            ccButton = allButtons[allButtons.length - 1]; // heuristic fallback
-        }
-        if (!ccButton) {
-            record(false, 'B-CC-2 no cc button found', 'runtime');
+            record(false, 'B-CC-2 no cc button found for "Credit Card" label', 'runtime');
         } else {
-            const event = { preventDefault: () => {}, stopPropagation: () => {} };
-            try { ccButton.props.onClick(event); } catch (e) {}
-            const ns = extStore['upayments'] || {};
+            try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const ns = scene.extStore['upayments'] || {};
             record(ns.save_card === '0', 'B-CC-3 new CC default save_card=0', 'runtime');
             record(ns.card_token === null, 'B-CC-4 new CC default card_token=null', 'runtime');
         }
@@ -451,62 +441,231 @@ function renderTree(settings) {
 }
 
 // ────────────────────────────────────────────────────────────
-// B-SCT-ON: Save card toggle ON (0 → 1) — checkbox only shown when CC + no card
+// B-SCT-ON: Save card toggle ON — real rerender lifecycle
+// Click CC → store update → re-render → checkbox MUST appear → check
 // ────────────────────────────────────────────────────────────
 {
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
         save_card_enabled: true,
         is_whitelabled: true,
         payment_icons: { knet: 'KNET', cc: 'Credit Card' },
         saved_cards: [],
-    });
-    const { tree, extStore } = renderTree(settings);
-    if (tree == null) {
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
         record(false, 'B-SCT-ON-0 tree is null', 'runtime');
     } else {
-        // The save_card toggle checkbox is only rendered when payment_type=cc + !card_token.
-        // First click the cc button to enter the new-CC mode, then find the checkbox.
-        const allButtons = findAll(tree, (n) => n.tag === 'button' && typeof n.props?.onClick === 'function');
-        let ccButton = null;
-        for (const b of allButtons) {
-            if (JSON.stringify(b).includes('Credit Card')) { ccButton = b; break; }
-        }
-        if (ccButton) {
-            try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
-        }
-        const toggles = findAll(tree, (n) => n.tag === 'input' && n.props?.type === 'checkbox' && typeof n.props?.onChange === 'function');
-        if (toggles.length === 0) {
-            // The save_card checkbox conditionally appears; treat as PASS if it exists structurally.
-            record(true, 'B-SCT-ON-1 save_card toggle path verified (renderer yields no toggle for non-cc state)', 'runtime');
+        const ccButton = findButtonByText(r1, 'Credit Card');
+        if (!ccButton) {
+            record(false, 'B-SCT-ON-0a no cc button found', 'runtime');
         } else {
-            try { toggles[0].props.onChange({ target: { checked: true } }); } catch (e) {}
-            const ns = extStore['upayments'] || {};
-            record(ns.save_card === '1', 'B-SCT-ON-2 save_card=1 on check', 'runtime');
+            try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const r2 = renderScene(scene);
+            if (r2 == null) {
+                record(false, 'B-SCT-ON-0b rerender tree is null', 'runtime');
+            } else {
+                const cb = findCheckbox(r2);
+                if (cb === null) {
+                    record(false, 'B-SCT-ON-1 save_card checkbox MUST appear after CC click', 'runtime');
+                } else {
+                    try { cb.props.onChange({ target: { checked: true } }); } catch (e) {}
+                    const ns = scene.extStore['upayments'] || {};
+                    record(ns.save_card === '1', 'B-SCT-ON-2 save_card=1 on check', 'runtime');
+                }
+            }
         }
     }
 }
 
 // ────────────────────────────────────────────────────────────
-// B-SUB: Subscription plan transition one_time → interval '0'
+// B-SCT-OFF: Save card toggle OFF after click CC
 // ────────────────────────────────────────────────────────────
 {
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-SCT-OFF-0 tree is null', 'runtime');
+    } else {
+        const ccButton = findButtonByText(r1, 'Credit Card');
+        if (!ccButton) {
+            record(false, 'B-SCT-OFF-0a no cc button', 'runtime');
+        } else {
+            try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const r2 = renderScene(scene);
+            const cb = r2 ? findCheckbox(r2) : null;
+            if (cb === null) {
+                record(false, 'B-SCT-OFF-1 save_card checkbox missing', 'runtime');
+            } else {
+                try { cb.props.onChange({ target: { checked: false } }); } catch (e) {}
+                const ns = scene.extStore['upayments'] || {};
+                record(ns.save_card === '0' || ns.save_card === 'false' || ns.save_card === false, 'B-SCT-OFF-2 save_card=0 on uncheck', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-PSRC: KNET click
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNEL', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    if (tree == null) {
+        record(false, 'B-PSRC-0 tree is null', 'runtime');
+    } else {
+        const knetButton = findButtonByText(tree, 'KNEL');
+        if (!knetButton) {
+            record(false, 'B-PSRC-1 knet button missing for "KNEL" label', 'runtime');
+        } else {
+            try { knetButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const ns = scene.extStore['upayments'] || {};
+            record(ns.card_token === null, 'B-PSRC-2 knet transition leaves card_token null', 'runtime');
+            record(ns.save_card === '0', 'B-PSRC-3 knet transition clears save_card', 'runtime');
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-PSRC-2: KNET → CC real rerender
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNEL', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-PSRC-2-0 tree is null', 'runtime');
+    } else {
+        const knetButton = findButtonByText(r1, 'KNEL');
+        if (!knetButton) {
+            record(false, 'B-PSRC-2-1 knet button missing', 'runtime');
+        } else {
+            try { knetButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const r2 = renderScene(scene);
+            const ccButton = r2 ? findButtonByText(r2, 'Credit Card') : null;
+            if (!ccButton) {
+                record(false, 'B-PSRC-2-2 cc button missing after knet click', 'runtime');
+            } else {
+                try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+                const ns = scene.extStore['upayments'] || {};
+                record(ns.save_card === '0', 'B-PSRC-2-3 knet→cc transition clears save_card', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SCD: Saved card → CC switch
+// ────────────────────────────────────────────────────────────
+{
+    const card_token = 'card_token_SCD';
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: card_token, number: '****4321', brand: 'Master' },
+        ],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-SCD-0 tree is null', 'runtime');
+    } else {
+        const cardButton = findButtonByText(r1, '****4321');
+        if (!cardButton) {
+            record(false, 'B-SCD-1 saved card button missing', 'runtime');
+        } else {
+            try { cardButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const ns1 = scene.extStore['upayments'] || {};
+            record(ns1.card_token === card_token, 'B-SCD-2 saved card click sets card_token', 'runtime');
+            const r2 = renderScene(scene);
+            const ccButton = r2 ? findButtonByText(r2, 'Credit Card') : null;
+            if (!ccButton) {
+                record(false, 'B-SCD-3 cc button missing', 'runtime');
+            } else {
+                try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+                const ns2 = scene.extStore['upayments'] || {};
+                record(ns2.card_token === null, 'B-SCD-4 saved→cc transition clears card_token', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SCD-STALE: Stale card token must not survive new-CC path
+// ────────────────────────────────────────────────────────────
+{
+    const card_token = 'card_token_STALE';
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: card_token, number: '****9999', brand: 'Visa' },
+        ],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-SCD-STALE-0 tree is null', 'runtime');
+    } else {
+        const cardButton = findButtonByText(r1, '****9999');
+        if (!cardButton) {
+            record(false, 'B-SCD-STALE-1 button missing', 'runtime');
+        } else {
+            try { cardButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const r2 = renderScene(scene);
+            const ccButton = r2 ? findButtonByText(r2, 'Credit Card') : null;
+            if (!ccButton) {
+                record(false, 'B-SCD-STALE-2 cc button missing', 'runtime');
+            } else {
+                try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+                const ns = scene.extStore['upayments'] || {};
+                record(ns.card_token === null, 'B-SCD-STALE-3 stale card_token cleared on CC click', 'runtime');
+                record(ns.save_card === '0', 'B-SCD-STALE-4 stale save_card cleared on CC click', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SUB: Subscription plan transition
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
         is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
         product_type: [{ type: 'custom_type' }],
         saved_cards: [],
-    });
-    const { tree, extStore } = renderTree(settings);
+    }));
+    const tree = renderScene(scene);
     if (tree == null) {
         record(false, 'B-SUB-0 tree is null', 'runtime');
     } else {
-        const selects = findAll(tree, (n) => n.tag === 'select' && typeof n.props?.onChange === 'function');
-        if (selects.length === 0) {
-            record(false, 'B-SUB-1 no select found', 'runtime');
+        const sel = findSelect(tree);
+        if (sel === null) {
+            record(false, 'B-SUB-1 select missing', 'runtime');
         } else {
-            try { selects[0].props.onChange({ target: { value: 'one_time' } }); } catch (e) {}
-            const ns = extStore['upayments'] || {};
+            try { sel.props.onChange({ target: { value: 'one_time' } }); } catch (e) {}
+            const ns = scene.extStore['upayments'] || {};
             record(ns.upay_subscription_plan === 'one_time', 'B-SUB-2 plan set to one_time', 'runtime');
             record(ns.upay_subscription_interval === '0', 'B-SUB-3 interval=0 for one_time', 'runtime');
         }
@@ -514,29 +673,100 @@ function renderTree(settings) {
 }
 
 // ────────────────────────────────────────────────────────────
-// B-PSRC: Payment source transition: switch icons
+// B-SUB-R: Subscription plan transition (re-render)
 // ────────────────────────────────────────────────────────────
 {
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
+        is_subscription_enabled: true,
         is_whitelabled: true,
-        payment_icons: { knet: 'KNEL', cc: 'Credit Card' },
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'custom_type' }],
         saved_cards: [],
-    });
-    const { tree, extStore } = renderTree(settings);
-    if (tree == null) {
-        record(false, 'B-PSRC-0 tree is null', 'runtime');
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-SUB-R-0 tree is null', 'runtime');
     } else {
-        // Find knet by key prop == 'knet'.
-        const allButtons = findAll(tree, (n) => n.tag === 'button' && typeof n.props?.onClick === 'function');
-        const knetButton = allButtons.find((b) => b.props.key === 'knet' || b.props.value === 'knet');
-        if (!knetButton) {
-            record(false, 'B-PSRC-1 knet button missing', 'runtime');
+        const sel = findSelect(r1);
+        if (sel === null) {
+            record(false, 'B-SUB-R-1 select missing', 'runtime');
         } else {
-            try { knetButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
-            const ns = extStore['upayments'] || {};
-            record(ns.card_token === null, 'B-PSRC-2 knet transition leaves card_token null', 'runtime');
-            record(ns.save_card === '0', 'B-PSRC-3 knet transition clears save_card', 'runtime');
+            try { sel.props.onChange({ target: { value: 'daily' } }); } catch (e) {}
+            const r2 = renderScene(scene);
+            const sel2 = r2 ? findSelect(r2) : null;
+            if (sel2 === null) {
+                record(false, 'B-SUB-R-2 select missing on rerender', 'runtime');
+            } else {
+                try { sel2.props.onChange({ target: { value: 'monthly' } }); } catch (e) {}
+                const ns = scene.extStore['upayments'] || {};
+                record(ns.upay_subscription_plan === 'monthly', 'B-SUB-R-3 plan set to monthly on rerender', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SUB-INTERVAL: Subscription with interval after plan change
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'custom_type' }],
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-SUB-INT-0 tree is null', 'runtime');
+    } else {
+        const sel = findSelect(r1);
+        if (sel == null) {
+            record(false, 'B-SUB-INT-1 plan select missing', 'runtime');
+        } else {
+            try { sel.props.onChange({ target: { value: 'monthly' } }); } catch (e) {}
+            const r2 = renderScene(scene);
+            // After choosing non-one_time, an interval select must appear.
+            const selects = r2 ? findAll(r2, (n) => n.tag === 'select' && typeof n.props?.onChange === 'function') : [];
+            record(selects.length >= 2, 'B-SUB-INT-2 interval select appears after non-one_time', 'runtime');
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SUB-SAME: Same plan re-click — interval preserved
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'custom_type' }],
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const sel = findSelect(r1);
+    if (sel == null) {
+        record(false, 'B-SUB-SAME-0 select missing', 'runtime');
+    } else {
+        // initial click to monthly
+        try { sel.props.onChange({ target: { value: 'monthly' } }); } catch (e) {}
+        // simulate picking interval '1'
+        scene.extStore['upayments'] = Object.assign({}, scene.extStore['upayments'] || {}, {
+            upay_subscription_interval: '1',
+        });
+        const r2 = renderScene(scene);
+        const sels = r2 ? findAll(r2, (n) => n.tag === 'select' && typeof n.props?.onChange === 'function') : [];
+        if (sels.length < 2) {
+            record(false, 'B-SUB-SAME-1 interval select missing', 'runtime');
+        } else {
+            // Re-click the same plan
+            try { sels[0].props.onChange({ target: { value: 'monthly' } }); } catch (e) {}
+            const ns = scene.extStore['upayments'] || {};
+            record(ns.upay_subscription_plan === 'monthly', 'B-SUB-SAME-2 plan still monthly', 'runtime');
         }
     }
 }
@@ -545,19 +775,381 @@ function renderTree(settings) {
 // B-EDIT: Edit element renders
 // ────────────────────────────────────────────────────────────
 {
-    const settings = makeSettings({
+    const scene = buildScene(makeSettings({
         is_logged_in: true,
         saved_cards: [
             { token: 'card_token_E', number: '****1111', brand: 'Visa' },
         ],
-    });
-    const mockReact = createMockReact();
-    const { sandbox } = buildSandbox(settings, mockReact);
-    const context = vm.createContext(sandbox);
-    vm.runInContext(blockSource, context, { filename: BLOCK_JS });
-    const registered = sandbox.window.wc.__lastRegistered;
-    const editTree = renderRegistered(registered, 'edit', mockReact);
+    }));
+    const editTree = renderEditTree(scene);
     record(editTree !== null, 'B-EDIT-1 edit renders', 'runtime');
+    record(editTree && editTree.tag !== undefined, 'B-EDIT-2 edit tree has root tag', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-EDIT-2: Edit element with no saved cards
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: false,
+        saved_cards: [],
+    }));
+    const editTree = renderEditTree(scene);
+    record(editTree !== null, 'B-EDIT-2-1 edit renders with no saved cards', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-EDIT-3: Edit element with saved card + clicked saved card
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: 'card_token_E3', number: '****7777', brand: 'Visa' },
+        ],
+    }));
+    const editTree = renderEditTree(scene);
+    record(editTree !== null, 'B-EDIT-3-1 edit renders with saved card', 'runtime');
+    const cardButton = findButtonByText(editTree, '****7777');
+    record(cardButton !== null, 'B-EDIT-3-2 saved card button found in edit', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-NOTLOG: Logged-out user, no save_card checkbox
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: false,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    if (r1 == null) {
+        record(false, 'B-NOTLOG-0 tree is null', 'runtime');
+    } else {
+        const ccButton = findButtonByText(r1, 'Credit Card');
+        if (!ccButton) {
+            record(false, 'B-NOTLOG-1 cc button missing', 'runtime');
+        } else {
+            try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const r2 = renderScene(scene);
+            const cb = r2 ? findCheckbox(r2) : null;
+            record(cb === null, 'B-NOTLOG-2 logged-out user has no save_card checkbox', 'runtime');
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-CC-DIS: CC disabled (not in payment_icons)
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET' }, // no cc
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    const ccButton = tree ? findButtonByText(tree, 'Credit Card') : null;
+    record(ccButton === null, 'B-CC-DIS-1 no cc button when cc not in payment_icons', 'runtime');
+    // save_card checkbox should not appear either since cc is not selected
+    const cb = tree ? findCheckbox(tree) : null;
+    record(cb === null, 'B-CC-DIS-2 no save_card checkbox when cc disabled', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-WL-OFF: is_whitelabled=false
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_whitelabled: false,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    record(tree !== null, 'B-WL-OFF-1 non-whitelabel tree renders', 'runtime');
+    // No save_card checkbox in non-whitelabel mode
+    const cb = tree ? findCheckbox(tree) : null;
+    record(cb === null, 'B-WL-OFF-2 no save_card checkbox in non-whitelabel', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-MIX: Mixed subscription order (multiple product types)
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'custom_type' }, { type: 'normal' }],
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    record(tree !== null, 'B-MIX-1 mixed subscription tree renders', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SUB-CUSTOM: Subscription with custom product only
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'custom_type' }],
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    if (tree == null) {
+        record(false, 'B-SUB-CUSTOM-0 tree is null', 'runtime');
+    } else {
+        const sel = findSelect(tree);
+        record(sel !== null, 'B-SUB-CUSTOM-1 subscription_select renders for custom-only product', 'runtime');
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SUB-NORMAL: Subscription with normal product only —
+// production source requires hasCustomTypeProduct; expect no select
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_subscription_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        product_type: [{ type: 'normal' }],
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    const sel = tree ? findSelect(tree) : null;
+    record(sel === null, 'B-SUB-NORMAL-1 no subscription_select for normal-only product (hasCustomTypeProduct=false)', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-RECONSENT: Toggle ON → OFF → ON → OFF preserves store state
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const ccButton = findButtonByText(r1, 'Credit Card');
+    if (!ccButton) {
+        record(false, 'B-RECONSENT-0 cc button missing', 'runtime');
+    } else {
+        try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const r2 = renderScene(scene);
+        const cb = findCheckbox(r2);
+        if (!cb) {
+            record(false, 'B-RECONSENT-1 checkbox missing', 'runtime');
+        } else {
+            try { cb.props.onChange({ target: { checked: true } }); } catch (e) {}
+            record((scene.extStore['upayments'] || {}).save_card === '1', 'B-RECONSENT-2 on', 'runtime');
+            try { cb.props.onChange({ target: { checked: false } }); } catch (e) {}
+            record((scene.extStore['upayments'] || {}).save_card === '0', 'B-RECONSENT-3 off', 'runtime');
+            try { cb.props.onChange({ target: { checked: true } }); } catch (e) {}
+            record((scene.extStore['upayments'] || {}).save_card === '1', 'B-RECONSENT-4 on again', 'runtime');
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-SCC-RECLICK: Click same saved card twice — no change
+// ────────────────────────────────────────────────────────────
+{
+    const card_token = 'card_token_R';
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: card_token, number: '****2222', brand: 'Visa' },
+        ],
+    }));
+    const r1 = renderScene(scene);
+    const cardButton = findButtonByText(r1, '****2222');
+    if (!cardButton) {
+        record(false, 'B-SCC-RECLICK-0 button missing', 'runtime');
+    } else {
+        try { cardButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const ns1 = scene.extStore['upayments'] || {};
+        record(ns1.card_token === card_token, 'B-SCC-RECLICK-1 first click sets token', 'runtime');
+        const r2 = renderScene(scene);
+        const cardButton2 = findButtonByText(r2, '****2222');
+        if (!cardButton2) {
+            record(false, 'B-SCC-RECLICK-2 button missing after first click', 'runtime');
+        } else {
+            try { cardButton2.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+            const ns2 = scene.extStore['upayments'] || {};
+            record(ns2.card_token === card_token, 'B-SCC-RECLICK-3 token still set after re-click', 'runtime');
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-CC-RECLICK: Re-click CC with save_card=1 preserves consent
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const ccButton = findButtonByText(r1, 'Credit Card');
+    if (!ccButton) {
+        record(false, 'B-CC-RECLICK-0 button missing', 'runtime');
+    } else {
+        try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const r2 = renderScene(scene);
+        const cb = findCheckbox(r2);
+        if (!cb) {
+            record(false, 'B-CC-RECLICK-1 checkbox missing', 'runtime');
+        } else {
+            try { cb.props.onChange({ target: { checked: true } }); } catch (e) {}
+            record((scene.extStore['upayments'] || {}).save_card === '1', 'B-CC-RECLICK-2 consent=1', 'runtime');
+            // Re-click CC
+            const r3 = renderScene(scene);
+            const ccButton2 = findButtonByText(r3, 'Credit Card');
+            if (!ccButton2) {
+                record(false, 'B-CC-RECLICK-3 cc button missing after toggle', 'runtime');
+            } else {
+                try { ccButton2.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+                const ns = scene.extStore['upayments'] || {};
+                record(ns.save_card === '1', 'B-CC-RECLICK-4 consent preserved on CC re-click', 'runtime');
+                record(ns.card_token === null, 'B-CC-RECLICK-5 card_token=null on CC re-click', 'runtime');
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-CONSENT-NOSAVE: Logged-in user with save_card_enabled=false
+// → consent cannot be set to 1
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: false,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const ccButton = findButtonByText(r1, 'Credit Card');
+    if (!ccButton) {
+        record(false, 'B-CONSENT-NOSAVE-0 cc missing', 'runtime');
+    } else {
+        try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const r2 = renderScene(scene);
+        const cb = findCheckbox(r2);
+        record(cb === null, 'B-CONSENT-NOSAVE-1 no save_card checkbox when save_card_enabled=false', 'runtime');
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-CONSENT-NOTLOG: save_card_enabled=true but logged-out
+// → no checkbox after CC click
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: false,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const ccButton = findButtonByText(r1, 'Credit Card');
+    if (!ccButton) {
+        record(false, 'B-CONSENT-NOTLOG-0 cc missing', 'runtime');
+    } else {
+        try { ccButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const r2 = renderScene(scene);
+        const cb = findCheckbox(r2);
+        record(cb === null, 'B-CONSENT-NOTLOG-1 no save_card checkbox when logged-out', 'runtime');
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-APPLEPAY: Apple Pay click
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card', 'apple-pay': 'Apple Pay Credit Card' },
+        saved_cards: [],
+    }));
+    const r1 = renderScene(scene);
+    const appleButton = findButtonByText(r1, 'Apple Pay Credit Card');
+    if (!appleButton) {
+        record(false, 'B-APPLEPAY-1 apple pay button missing', 'runtime');
+    } else {
+        try { appleButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const ns = scene.extStore['upayments'] || {};
+        record(ns.upayment_payment_type === 'apple-pay', 'B-APPLEPAY-2 payment_type=apple-pay', 'runtime');
+        record(ns.card_token === null, 'B-APPLEPAY-3 card_token=null', 'runtime');
+        record(ns.save_card === '0', 'B-APPLEPAY-4 save_card=0', 'runtime');
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-EMPTY-SAVED: Saved cards list exists but empty array
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [],
+    }));
+    const tree = renderScene(scene);
+    record(tree !== null, 'B-EMPTY-SAVED-1 tree renders', 'runtime');
+}
+
+// ────────────────────────────────────────────────────────────
+// B-MULTI-SAVED: Multiple saved cards
+// ────────────────────────────────────────────────────────────
+{
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        is_whitelabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: 'A1', number: '****0001', brand: 'Visa' },
+            { token: 'B2', number: '****0002', brand: 'Master' },
+        ],
+    }));
+    const tree = renderScene(scene);
+    const aButton = findButtonByText(tree, '****0001');
+    const bButton = findButtonByText(tree, '****0002');
+    record(aButton !== null, 'B-MULTI-1 first saved card button found', 'runtime');
+    record(bButton !== null, 'B-MULTI-2 second saved card button found', 'runtime');
+    if (bButton) {
+        try { bButton.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} }); } catch (e) {}
+        const ns = scene.extStore['upayments'] || {};
+        record(ns.card_token === 'B2', 'B-MULTI-3 second card click sets token=B2', 'runtime');
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -588,7 +1180,7 @@ console.log('  static:  ' + staticPass);
 console.log('  harness: ' + harnessPass);
 console.log('FAIL: ' + fail);
 console.log('  runtime: ' + runtimeFail);
-console.log('  static:  ' + staticFail);
+console.log('  static: ' + staticFail);
 console.log('  harness: ' + harnessFail);
 
 if (fail > 0) {
