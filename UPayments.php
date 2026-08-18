@@ -183,17 +183,19 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
-         * Build a safe JSON number token for order.amount.
+         * Build a safe JSON number token for provider amount fields.
          *
          * Returns the validated plain decimal string when it is a valid JSON
          * number token (digits + optional '.') that:
          *  - contains no exponent
          *  - contains no leading sign
-         *  - is numerically positive
+         *  - has at least one non-zero integer digit (rejects all-zero values)
+         *  - contains no whitespace
          *  - fits in 22 characters
          *
-         * Returns null when the input cannot be represented as a safe JSON
-         * number. The caller MUST fail closed on null.
+         * No float conversion is performed. The validated string IS the JSON
+         * number token. Returns null when the input cannot be represented as a
+         * safe JSON number. The caller MUST fail closed on null.
          *
          * @param string $amount_str Validated plain decimal input.
          * @return string|null JSON-safe number token or null.
@@ -202,56 +204,98 @@ function woocommerceUpaymentsInit() {
             if (!is_string($amount_str)) {
                 return null;
             }
-            // Strict grammar: positive plain decimal, no exponent, no sign.
+            // Strict grammar: plain decimal, no exponent, no sign, no whitespace.
             if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)) {
                 return null;
             }
             if (strlen($amount_str) === 0 || strlen($amount_str) > 22) {
                 return null;
             }
-            // Reject any whitespace anywhere.
             if (preg_match('/\s/', $amount_str)) {
                 return null;
             }
-            // Numeric positivity (defensive).
-            if ((float) $amount_str <= 0) {
+            // Reject all-zero numerics.
+            $is_positive = false;
+            for ($i = 0; $i < strlen($amount_str); $i++) {
+                $c = $amount_str[$i];
+                if ($c >= '1' && $c <= '9') {
+                    $is_positive = true;
+                    break;
+                }
+            }
+            if (!$is_positive) {
                 return null;
             }
-            // The string IS the JSON number token: digits + optional '.'.
             return $amount_str;
         }
 
         /**
-         * Inject a pre-validated JSON number token for order.amount into a
-         * previously-encoded payload JSON string.
+         * Inject pre-validated JSON number tokens for provider amount fields.
          *
-         * The input JSON must contain the placeholder marker produced by the
-         * deterministic payload builder ("__UPAY_AMOUNT_PLACEHOLDER__":null).
-         * The placeholder key is renamed to "amount" and the value is replaced
-         * with the literal validated token (no PHP float conversion). The
-         * function verifies the resulting JSON is structurally valid, the
-         * order.amount key is present, and the raw token contains no exponent.
+         * Replaces exact-occurrence placeholders:
+         *   "__UPAY_ORDER_AMOUNT_SENTINEL__":null  ->  "amount":<order token>
+         *   "__UPAY_MM_AMOUNT_SENTINEL__":null    ->  "amount":<mm token>
          *
-         * @param string $payload_json The encoded payload with placeholder.
-         * @param string $token        The validated JSON number token.
-         * @return string|null Final JSON or null on verification failure.
+         * Verifies the final raw JSON:
+         *   - exactly one occurrence-count for each sentinel substitution
+         *   - the order.amount token appears exactly once, as a JSON NUMBER
+         *     (not quoted), with no exponent, no sign, no comma
+         *   - if MultiMerchant was constructed, the MM amount token appears
+         *     exactly once, as a JSON NUMBER (not quoted), with no exponent
+         *   - the decoded JSON is structurally valid
+         *
+         * @param string $payload_json   Encoded payload with sentinels.
+         * @param string $order_token     Validated order.amount token.
+         * @param string|null $mm_token   Validated MM amount token, or null when
+         *                                 MultiMerchant was not constructed.
+         * @return string|null Final JSON or null on any verification failure.
          */
-        private static function inject_amount_token_into_payload_json($payload_json, $token) {
+        private static function inject_amount_token_into_payload_json($payload_json, $order_token, $mm_json, $mm_token) {
             if (!is_string($payload_json) || $payload_json === '') {
                 return null;
             }
-            if (!is_string($token) || $token === '') {
+            if (!is_string($order_token) || $order_token === '') {
                 return null;
             }
-            $placeholder = '"__UPAY_AMOUNT_PLACEHOLDER__":null';
-            if (strpos($payload_json, $placeholder) === false) {
+            if ($mm_json !== null && !is_string($mm_json)) {
                 return null;
             }
-            $replacement = '"amount":' . $token;
-            $result = str_replace($placeholder, $replacement, $payload_json);
+
+            // === Order amount injection ===
+            $order_placeholder = '"__UPAY_ORDER_AMOUNT_SENTINEL__":null';
+            $order_count = substr_count($payload_json, $order_placeholder);
+            if ($order_count !== 1) {
+                return null;
+            }
+            $order_replacement = '"amount":' . $order_token;
+            $result = str_replace($order_placeholder, $order_replacement, $payload_json);
             if ($result === $payload_json) {
                 return null;
             }
+
+            // === MultiMerchant amount injection ===
+            // The MM block is provided as a pre-built JSON literal so the amount
+            // value is a JSON NUMBER (not quoted) with no possibility of float
+            // conversion. We replace a single string sentinel with the entire
+            // JSON array literal.
+            if ($mm_json !== null) {
+                $mm_placeholder = '"__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__"';
+                $mm_count = substr_count($result, $mm_placeholder);
+                if ($mm_count !== 1) {
+                    return null;
+                }
+                $result = str_replace($mm_placeholder, $mm_json, $result);
+                if ($result === $payload_json) {
+                    return null;
+                }
+            } else {
+                // Ensure no stray MM sentinel remains.
+                if (strpos($result, '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__') !== false) {
+                    return null;
+                }
+            }
+
+            // === Verification ===
             $decoded = json_decode($result, true);
             if (!is_array($decoded) || !isset($decoded['order']) || !is_array($decoded['order'])) {
                 return null;
@@ -259,19 +303,8 @@ function woocommerceUpaymentsInit() {
             if (!array_key_exists('amount', $decoded['order'])) {
                 return null;
             }
-            if (is_int($decoded['order']['amount'])) {
-                if ((string) $decoded['order']['amount'] !== $token) {
-                    return null;
-                }
-            } elseif (is_float($decoded['order']['amount'])) {
-                $expected_float = (float) $token;
-                $diff = abs($decoded['order']['amount'] - $expected_float);
-                if ($diff > 0.0000001) {
-                    return null;
-                }
-            } else {
-                return null;
-            }
+
+            // Order amount must be numeric with no exponent.
             $amount_pattern = '/"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/';
             if (!preg_match($amount_pattern, $result, $m)) {
                 return null;
@@ -279,6 +312,48 @@ function woocommerceUpaymentsInit() {
             if (stripos($m[1], 'e') !== false) {
                 return null;
             }
+            if ($m[1] !== $order_token) {
+                return null;
+            }
+            // Reject quoted "amount" tokens (must be a JSON NUMBER).
+            if (preg_match('/"amount"\s*:\s*"' . preg_quote($order_token, '/') . '"/', $result)) {
+                return null;
+            }
+
+            // MM amount verification (only when MM JSON supplied).
+            if ($mm_json !== null) {
+                if (!isset($decoded['extraMerchantData']) || !is_array($decoded['extraMerchantData'])) {
+                    return null;
+                }
+                $mm = $decoded['extraMerchantData'];
+                if (count($mm) !== 1) {
+                    return null;
+                }
+                if (!isset($mm[0]) || !is_array($mm[0])) {
+                    return null;
+                }
+                if (!array_key_exists('amount', $mm[0])) {
+                    return null;
+                }
+                // Reject quoted MM amount in JSON.
+                if (preg_match('/"amount"\s*:\s*"[^"]+"\s*,\s*"knetCharge"/', $result)) {
+                    return null;
+                }
+                // If a token is provided, verify it appears verbatim in the JSON.
+                if ($mm_token !== null) {
+                    $mm_amount_pattern = '/"extraMerchantData"\s*:\s*\[\s*\{[^}]*"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/s';
+                    if (!preg_match($mm_amount_pattern, $result, $mm_m)) {
+                        return null;
+                    }
+                    if (stripos($mm_m[1], 'e') !== false) {
+                        return null;
+                    }
+                    if ($mm_m[1] !== $mm_token) {
+                        return null;
+                    }
+                }
+            }
+
             return $result;
         }
 
@@ -383,15 +458,94 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Normalize a request URI/path into a canonical REST route for the Store API.
+         *
+         * Supports pretty permalinks (e.g. /wp-json/wc/store/v1/checkout),
+         * plain-permalink rest_route form (?rest_route=/wc/store/v1/checkout),
+         * and WordPress installed in a subdirectory (e.g. /shop/wp-json/wc/store/v1/checkout).
+         *
+         * @param string $uri Raw REQUEST_URI.
+         * @return string|null Canonical route (e.g. "/wc/store/v1/checkout") or null.
+         */
+        private static function normalize_store_api_route($uri) {
+            if (!is_string($uri) || $uri === '') {
+                return '';
+            }
+            $path = $uri;
+            $qpos = strpos($path, '?');
+            if ($qpos !== false) {
+                $query = substr($path, $qpos + 1);
+                $path = substr($path, 0, $qpos);
+                if (preg_match('/(?:^|&)rest_route=([^&]+)/', $query, $m)) {
+                    $rest_route = rawurldecode($m[1]);
+                    if (strpos($rest_route, '/') !== 0) {
+                        $rest_route = '/' . $rest_route;
+                    }
+                    return $rest_route;
+                }
+            }
+            // Strip /index.php prefix if present.
+            if (strpos($path, '/index.php') === 0) {
+                $path = substr($path, strlen('/index.php'));
+                if ($path === '' || $path[0] !== '/') {
+                    $path = '/' . $path;
+                }
+                return $path;
+            }
+            // Strip everything up to and including the /wp-json/ segment, preserving
+            // any preceding subdirectory prefix.
+            $wj = strpos($path, '/wp-json/');
+            if ($wj !== false) {
+                $path = substr($path, $wj + strlen('/wp-json/') - 1);
+                if ($path === '' || $path[0] !== '/') {
+                    $path = '/' . $path;
+                }
+                return $path;
+            }
+            // Already a route-like path.
+            return $path;
+        }
+
+        /**
+         * Pure classifier used to identify a real WooCommerce Store API
+         * checkout request. The wrapper is_store_api_checkout_request() gathers
+         * the runtime context and delegates here.
+         *
+         * @param bool   $is_rest_request REST_REQUEST state.
+         * @param string $normalized_route Route normalized via normalize_store_api_route().
+         * @param string $method Uppercase HTTP method.
+         * @return bool
+         */
+        public static function classify_checkout_request_context($is_rest_request, $normalized_route, $method) {
+            if ($is_rest_request !== true) {
+                return false;
+            }
+            if (!is_string($method) || strtoupper($method) !== 'POST') {
+                return false;
+            }
+            if (!is_string($normalized_route) || $normalized_route === '') {
+                return false;
+            }
+            // Exact endpoint match: must be the checkout route, not just the namespace.
+            // Trailing slash is normalized to no-slash.
+            $route = rtrim($normalized_route, '/');
+            if ($route === '') {
+                return false;
+            }
+            // Reject other Store API endpoints (cart, products, etc.) by exact match.
+            return ($route === '/wc/store/v1/checkout');
+        }
+
+        /**
          * Detect the actual WooCommerce Store API checkout request.
          *
          * REST_REQUEST alone is too broad: any WP/Woo REST traffic (admin REST,
          * custom REST endpoints, third-party plugins) sets REST_REQUEST and
-         * would be misclassified as Blocks/Store API. Detect Store API
-         * checkout by its actual request URI namespace + method, which is the
-         * authoritative WooCommerce runtime signal.
+         * would be misclassified as Blocks/Store API. Resolve the actual
+         * canonical REST route and require it to match the Store API checkout
+         * endpoint.
          *
-         * @return bool true only when the request targets /wc/store/v1/ under REST_REQUEST.
+         * @return bool true only when the request targets /wc/store/v1/checkout under REST_REQUEST + POST.
          */
         private static function is_store_api_checkout_request() {
             if (!defined('REST_REQUEST') || !REST_REQUEST) {
@@ -401,24 +555,12 @@ function woocommerceUpaymentsInit() {
             if ($uri === '') {
                 return false;
             }
-            // Strip query string for namespace match.
-            $path = $uri;
-            $qpos = strpos($path, '?');
-            if ($qpos !== false) {
-                $path = substr($path, 0, $qpos);
-            }
-            // Defensive: only accept exact /wc/store/v1/ namespace, with the
-            // request URI parsing the path portion only.
-            if (strpos($path, '/wc/store/v1/') === false) {
+            $route = self::normalize_store_api_route($uri);
+            if ($route === null) {
                 return false;
             }
-            // Must be a checkout POST (the only Store API entry point our
-            // gateway consumes at process_payment time).
             $method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper((string) $_SERVER['REQUEST_METHOD']) : '';
-            if ($method !== 'POST') {
-                return false;
-            }
-            return true;
+            return self::classify_checkout_request_context(true, $route, $method);
         }
 
         /**
@@ -1902,11 +2044,19 @@ function woocommerceUpaymentsInit() {
                 // Presence is decided by array_key_exists so explicit JSON null cannot
                 // masquerade as absence.
                 if (self::field_present($extension_data, 'card_token')) {
-                    if (!is_scalar($extension_data['card_token'])) {
+                    $raw = $extension_data['card_token'];
+                    if ($raw === null) { $cardToken = null; }
+                    elseif (is_string($raw)) {
+                        $cardToken = trim($raw);
+                    } elseif (is_int($raw)) {
+                        // Strict: integer token not supported by the existing frozen contract.
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    } else {
+                        // Arrays, objects, bools, floats are invalid.
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
-                    $cardToken = trim((string) $extension_data['card_token']);
                 }
 
                 if (self::field_present($extension_data, 'save_card')) {
@@ -1922,11 +2072,16 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if (self::field_present($extension_data, 'upay_subscription_plan')) {
-                    if (!is_scalar($extension_data['upay_subscription_plan'])) {
+                    $parsed_plan = self::parse_subscription_plan_strict($extension_data['upay_subscription_plan']);
+                    if ($parsed_plan === null) {
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
-                    $subscription_plan = sanitize_text_field($extension_data['upay_subscription_plan']);
+                    if (!self::is_valid_subscription_plan($parsed_plan)) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $subscription_plan = $parsed_plan;
                 }
                 if (self::field_present($extension_data, 'upay_subscription_interval')) {
                     if (!is_scalar($extension_data['upay_subscription_interval'])) {
@@ -1964,11 +2119,17 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if (self::field_present($classic_post, 'upay_subscription_plan')) {
-                    if (!is_scalar($classic_post['upay_subscription_plan'])) {
+                    $plan_raw = wp_unslash($classic_post['upay_subscription_plan']);
+                    $parsed_plan = self::parse_subscription_plan_strict($plan_raw);
+                    if ($parsed_plan === null) {
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
-                    $subscription_plan = sanitize_text_field(wp_unslash($classic_post['upay_subscription_plan']));
+                    if (!self::is_valid_subscription_plan($parsed_plan)) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $subscription_plan = $parsed_plan;
                 }
                 if (self::field_present($classic_post, 'upay_subscription_interval')) {
                     if (!is_scalar($classic_post['upay_subscription_interval'])) {
@@ -2207,15 +2368,29 @@ function woocommerceUpaymentsInit() {
             }
 
             // Amount: strict positive plain-decimal grammar.
+            // No IEEE-754 float conversion: the decimal string itself is the source of truth.
+            // Reject all-zero numerics (e.g. '0', '00', '0.0', '000.000').
             $amount_str = (string) $order_total;
             if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)
                 || strlen($amount_str) > 22
-                || (float) $amount_str <= 0
             ) {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            $amount_number = (float) $amount_str;
+            // Positivity check via decimal-string semantics: at least one character
+            // in the string (excluding the dot) must be a non-zero digit.
+            $is_positive = false;
+            for ($i = 0; $i < strlen($amount_str); $i++) {
+                $c = $amount_str[$i];
+                if ($c >= '1' && $c <= '9') {
+                    $is_positive = true;
+                    break;
+                }
+            }
+            if (!$is_positive) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
 
             // === SAFE AMOUNT-TO-JSON ENCODING ===
             // The provider-bound JSON token for order.amount must be a JSON number,
@@ -2326,24 +2501,15 @@ function woocommerceUpaymentsInit() {
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
                 // All checks passed: build the deterministic provider-bound structure.
-                // The amount field is the validated amount JSON token (string) which
-                // will be JSON-encoded as a number via injection. We use the validated
-                // decimal string here so the final encoded JSON contains no exponent.
-                $extraMerchantData = array(
-                    array(
-                        'amount'         => $amount_json_token,
-                        'knetCharge'     => $knet_charge,
-                        'knetChargeType' => $knet_charge_type,
-                        'ccCharge'       => $cc_charge,
-                        'ccChargeType'   => $cc_charge_type,
-                        'ibanNumber'     => $iban,
-                    ),
-                );
+                // The amount field uses a sentinel that is later replaced by the validated
+                // JSON number token. No float conversion happens here.
+                $extraMerchantData = '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__';
             }
 
             // Build deterministic base payload (token fields are null placeholders).
             // The order.amount field uses a placeholder so we can inject the
             // validated plain decimal JSON token without float conversion.
+            $extra_merchant_data_payload = $extraMerchantData; // string sentinel or null
             $payload = array(
                 'returnUrl'       => $success_url,
                 'cancelUrl'       => $error_url,
@@ -2353,7 +2519,7 @@ function woocommerceUpaymentsInit() {
                     'id'                        => $unique_order_id,
                     'description'               => $order_description,
                     'currency'                  => $currency,
-                    '__UPAY_AMOUNT_PLACEHOLDER__' => null,
+                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => null,
                 ),
                 'reference'       => array(
                     'id' => $reference_id,
@@ -2381,7 +2547,7 @@ function woocommerceUpaymentsInit() {
                         '3DSecureChallengeWindowSize' => '500_X_600',
                     ),
                 ),
-                'extraMerchantData' => $extraMerchantData,
+                'extraMerchantData' => $extra_merchant_data_payload,
             );
 
             // Whitelabel: add paymentGateway.
@@ -2394,14 +2560,23 @@ function woocommerceUpaymentsInit() {
             }
 
             // Pre-token JSON dry-run: encode the deterministic payload and
-            // inject the validated amount JSON token in place of the placeholder.
+            // inject the validated amount JSON tokens in place of the sentinels.
             $preflight_raw = wp_json_encode($payload);
             if (!is_string($preflight_raw) || $preflight_raw === '') {
                 $this->log('Deterministic payload encoding failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            $preflight_json = self::inject_amount_token_into_payload_json($preflight_raw, $amount_json_token);
+            // The MM sentinel is only present when MultiMerchant is enabled and valid.
+            // When MM is enabled, we build the JSON literal string for the entire
+            // extraMerchantData block with the validated amount token as a JSON NUMBER.
+            $mm_json_literal = null;
+            $mm_token_for_injection = null;
+            if ($extra_merchant_data_payload === '__UPAY_EXTRA_MERCHANT_DATA_SENTINEL__') {
+                $mm_json_literal = '[{"amount":' . $amount_json_token . ',"knetCharge":' . $knet_charge . ',"knetChargeType":"' . $knet_charge_type . '","ccCharge":' . $cc_charge . ',"ccChargeType":"' . $cc_charge_type . '","ibanNumber":"' . $iban . '"}]';
+                $mm_token_for_injection = $amount_json_token;
+            }
+            $preflight_json = self::inject_amount_token_into_payload_json($preflight_raw, $amount_json_token, $mm_json_literal, $mm_token_for_injection);
             if (!is_string($preflight_json) || $preflight_json === '') {
                 $this->log('Deterministic amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2652,29 +2827,11 @@ function woocommerceUpaymentsInit() {
                 }
             }
 
-            $extraMerchantData = null;
-            if ($this->multiMerchant == "yes") {
-                $this->log("multiMerchant enabled");
-                if(isset($this->ibanNumber) && isset($this->knetCharge) && $this->knetCharge > 0 && isset($this->ccCharge) &&((float) $this->knetCharge > 0) && (float) $this->ccCharge > 0) {
-
-                    $extraMerchantData[0] = [
-                        "amount" =>  $order_total,
-                        "knetCharge" => (float) $this->knetCharge,
-                        "knetChargeType" =>  $this->knetChargeType,
-                        "ccCharge" => $this->ccCharge,
-                        "ccChargeType" => $this->ccChargeType,
-                        "ibanNumber" => $this->ibanNumber
-                    ];
-                }
-                $this->log("Multimerchant payment data prepared.");
-            }
-
             // === PHASE D: FINAL CHARGE PAYLOAD COMPLETION ===
-            // The MultiMerchant structure was already authoritatively constructed
-            // during the deterministic pre-token phase above. Do NOT reconstruct it
-            // here — that would be a duplicate/dead construction path.
-            //
-            // Inject token-dependent fields into the already-validated deterministic payload.
+            // MultiMerchant structure was already authoritatively constructed during
+            // the deterministic pre-token phase above. It is provider payload data
+            // here, not a re-derivable input. Inject token-dependent fields into the
+            // already-validated deterministic payload.
             $payload['tokens'] = array(
                 'creditCard'          => $credit_card_token,
                 'customerUniqueToken' => $canonical_token,
@@ -2687,7 +2844,7 @@ function woocommerceUpaymentsInit() {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            $params = self::inject_amount_token_into_payload_json($final_raw, $amount_json_token);
+            $params = self::inject_amount_token_into_payload_json($final_raw, $amount_json_token, $mm_json_literal, $mm_token_for_injection);
             if (!is_string($params) || $params === '') {
                 $this->log('Final amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');

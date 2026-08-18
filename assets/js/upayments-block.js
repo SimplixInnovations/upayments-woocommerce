@@ -74,14 +74,23 @@
             };            
 
             // Section AK: Subscription handler uses current store state.
-            const handleSubscriptionChange = (plan, interval) => {
-                const current = getCurrentUpayData();
-                const finalInterval = (plan === current.upay_subscription_plan) ? interval : '';
-                updateCheckout({
-                    upay_subscription_plan: plan,
-                    upay_subscription_interval: finalInterval
-                });
-            };
+const handleSubscriptionChange = (plan, interval) => {
+        const current = getCurrentUpayData();
+        let finalInterval;
+        if (plan === 'one_time') {
+            // Server-side one_time requires interval '0' to pass allowlist validation.
+            finalInterval = '0';
+        } else if (plan !== current.upay_subscription_plan) {
+            // Switching to a non-one_time plan with no interval picked: reset.
+            finalInterval = '';
+        } else {
+            finalInterval = interval;
+        }
+        updateCheckout({
+            upay_subscription_plan: plan,
+            upay_subscription_interval: finalInterval
+        });
+    };
 
             // Section AJ: Method transitions use current store state.
             const handleMethodClick = (type, token = null) => {
