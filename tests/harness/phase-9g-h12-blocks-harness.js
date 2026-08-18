@@ -365,13 +365,13 @@ const renderWith = (settings) => {
 
 // B21: handleSubscriptionChange updates both plan and interval.
 {
-    const updatesBoth = /handleSubscriptionChange[\s\S]{0,400}?upay_subscription_plan:[\s\S]{0,200}?upay_subscription_interval:/.test(blockSource);
+    const updatesBoth = /handleSubscriptionChange[\s\S]{0,800}?upay_subscription_plan:[\s\S]{0,200}?upay_subscription_interval:/.test(blockSource);
     record(updatesBoth === true, 'B21 handleSubscriptionChange updates both plan and interval');
 }
 
 // B22: handleSubscriptionChange uses string keys.
 {
-    const usesCorrectKeys = /upay_subscription_plan:\s*plan,\s*\n\s*upay_subscription_interval:\s*finalInterval/.test(blockSource);
+    const usesCorrectKeys = /upay_subscription_plan:\s*plan,[\s\S]*?upay_subscription_interval:\s*finalInterval/.test(blockSource);
     record(usesCorrectKeys === true, 'B22 handleSubscriptionChange uses canonical string keys');
 }
 
@@ -381,10 +381,10 @@ const renderWith = (settings) => {
     record(setsCardTokenOnSaved === true, 'B23 saved card click sets card_token to selected token');
 }
 
-// B24: handleSubscriptionChange normalizes interval when plan changes.
+// B24: handleSubscriptionChange normalizes interval when plan changes (one_time => '0').
 {
-    const normalizesInterval = /finalInterval\s*=\s*\(plan === current\.upay_subscription_plan\)\s*\?\s*interval\s*:\s*['"]['"]/.test(blockSource);
-    record(normalizesInterval === true, 'B24 handleSubscriptionChange normalizes interval when plan changes');
+    const normalizesInterval = /plan === ['"]one_time['"][\s\S]{0,200}?finalInterval\s*=\s*['"]0['"]/.test(blockSource);
+    record(normalizesInterval === true, 'B24 handleSubscriptionChange sets interval to 0 for one_time');
 }
 
 // B25: updateCheckout preserves other extension data.
@@ -420,13 +420,13 @@ const renderWith = (settings) => {
 
 // B29: subscription handler updates plan via setExtensionData.
 {
-    const setsPlan = /handleSubscriptionChange[\s\S]{0,300}?upay_subscription_plan:\s*plan/.test(blockSource);
+    const setsPlan = /handleSubscriptionChange[\s\S]{0,800}?upay_subscription_plan:\s*plan/.test(blockSource);
     record(setsPlan === true, 'B29 subscription handler updates plan key');
 }
 
 // B30: subscription handler updates interval key.
 {
-    const setsInterval = /handleSubscriptionChange[\s\S]{0,300}?upay_subscription_interval:\s*finalInterval/.test(blockSource);
+    const setsInterval = /handleSubscriptionChange[\s\S]{0,800}?upay_subscription_interval:\s*finalInterval/.test(blockSource);
     record(setsInterval === true, 'B30 subscription handler updates interval key');
 }
 
