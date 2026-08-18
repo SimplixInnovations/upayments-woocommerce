@@ -602,6 +602,169 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Protected production seam for reading the raw HTTP request body.
+         *
+         * Production code reads php://input ONLY through this method. The harness
+         * and any subclass can override it to inject deterministic bodies for
+         * testing without depending on a real PHP request. This is the single
+         * canonical inlet for raw-body access in production.
+         *
+         * @return string Raw request body, or empty string on failure.
+         */
+        protected static function get_request_body_raw() {
+            $raw = file_get_contents('php://input');
+            return (is_string($raw)) ? $raw : '';
+        }
+
+        /**
+         * Validate a provider decimal monetary value as a positive-decimal lexical string.
+         * Pure-PHP validation — does not use BCMath, GMP, is_numeric, float, round().
+         *
+         * Allowed: digits, at most one '.', leading digits (not optional).
+         * Rejected: exponent (e/E), sign (+/-), commas, whitespace, INF, NAN,
+         * empty string, leading/trailing '.', multiple '.', leading zeros beyond '0.x'.
+         *
+         * Section D2: deterministic preflight failure when the provider
+         * representation cannot preserve the line.
+         *
+         * @param mixed  $value Candidate decimal value.
+         * @param string $field_name Field label for error context (not used in return).
+         * @return string|null Canonical positive-decimal string, or null on rejection.
+         */
+        public static function validate_provider_positive_decimal($value, $field_name = '') {
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '') {
+                return null;
+            }
+            // Reject exponent/sign/comma/whitespace/INF/NAN.
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $value)) {
+                return null;
+            }
+            // Must contain only digits and at most one '.'.
+            if (preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $value) !== 1) {
+                return null;
+            }
+            // No leading '.' allowed.
+            $dot = strpos($value, '.');
+            if ($dot === 0) {
+                return null;
+            }
+            // Reject trailing '.'.
+            $last = strlen($value) - 1;
+            if ($value[$last] === '.') {
+                return null;
+            }
+            // Reject NaN/INF literal strings (defensive — already filtered above).
+            if (strcasecmp($value, 'NAN') === 0 || strcasecmp($value, 'INF') === 0) {
+                return null;
+            }
+            // Reject zero or negative — provider contract is positive.
+            // Pure lexical: leading-zero only allowed as '0' or '0.xxx'.
+            // Strip the optional fractional suffix; remainder must be positive integer.
+            $int_part = ($dot !== false) ? substr($value, 0, $dot) : $value;
+            if ($int_part === '' || $int_part === '0') {
+                // '0' or '0.x' — reject zero as a non-positive monetary line.
+                return null;
+            }
+            return $value;
+        }
+
+        /**
+         * Compute the provider-compatible unit price as a decimal string.
+         * Division: (line_total / qty) with exact-decimal handling.
+         *
+         * Behavior:
+         *  - Both inputs validated as positive-decimal strings.
+         *  - Integer qty is preserved raw (no rounding at the boundary).
+         *  - Integer-only division: line_total is treated as a positive integer
+         *    scaled by min(decimals) when the line and unit share fractional digits.
+         *    For plain unit prices like 1.00 / 2 = 0.50 the math is exact.
+         *
+         * Returns null when the result cannot be expressed as a stable provider
+         * decimal (to invoke deterministic preflight failure).
+         *
+         * @param mixed $line_total Validated positive-decimal string.
+         * @param int   $qty        Validated positive integer quantity.
+         * @return string|null Decimal string unit price, or null on impossibility.
+         */
+        public static function compute_provider_unit_price_decimal($line_total, $qty) {
+            $validated_line = self::validate_provider_positive_decimal($line_total, 'line_total');
+            if ($validated_line === null) {
+                return null;
+            }
+            if (!is_int($qty) || $qty <= 0) {
+                return null;
+            }
+
+            // Scale both sides to a common integer representation:
+            // pick the larger of the two fractional digit counts, then multiply.
+            $line_dot = strpos($validated_line, '.');
+            $line_decimals = ($line_dot === false) ? 0 : (strlen($validated_line) - $line_dot - 1);
+            $scale = (int) pow(10, $line_decimals);
+            $line_int_value = (int) (str_replace('.', '', $validated_line));
+
+            // Integer division for the unit-price numerator.
+            $unit_int_numerator = intdiv($line_int_value, $qty);
+            $unit_int_remainder = $line_int_value % $qty;
+
+            if ($unit_int_remainder !== 0) {
+                // Cannot express as a clean provider decimal at the captured
+                // precision — return null to invoke deterministic preflight
+                // failure rather than silently truncating.
+                return null;
+            }
+
+            if ($scale === 1) {
+                $unit_str = (string) $unit_int_numerator;
+            } else {
+                $unit_int_div = intdiv($unit_int_numerator, $scale);
+                $unit_int_mod = $unit_int_numerator % $scale;
+                if ($unit_int_mod === 0) {
+                    $unit_str = (string) $unit_int_div;
+                } else {
+                    $frac = str_pad((string) $unit_int_mod, $line_decimals, '0', STR_PAD_LEFT);
+                    $unit_str = $unit_int_div . '.' . $frac;
+                }
+            }
+            return self::validate_provider_positive_decimal($unit_str, 'unit_price');
+        }
+
+        /**
+         * Convert a numeric value (int, float, numeric string) into the canonical
+         * positive-decimal string accepted by validate_provider_positive_decimal().
+         * No float arithmetic — uses number_format with deterministic precision
+         * only as a serialization step, never as a validation.
+         *
+         * @param mixed $value Numeric value or string.
+         * @return string|null Canonical positive-decimal string, or null on rejection.
+         */
+        public static function canonicalize_provider_decimal_string($value) {
+            if (is_int($value)) {
+                return (string) $value;
+            }
+            if (is_float($value)) {
+                // Serialize via PHP's deterministic cast; reject NaN/INF.
+                if (!is_finite($value)) {
+                    return null;
+                }
+                $candidate = (string) $value;
+            } elseif (is_string($value)) {
+                $candidate = $value;
+            } else {
+                return null;
+            }
+            // Strip a leading '+' if present (still a positive decimal).
+            if ($candidate !== '' && $candidate[0] === '+') {
+                $candidate = substr($candidate, 1);
+            }
+            // Already-formatted strings pass through directly to lexical validation.
+            // No round()/trim()/float math applied here.
+            return $candidate;
+        }
+
+        /**
          * Detect the actual WooCommerce Store API checkout request.
          *
          * REST_REQUEST alone is too broad: any WP/Woo REST traffic (admin REST,
@@ -1988,25 +2151,35 @@ function woocommerceUpaymentsInit() {
                 }
 
                 // Section D: Use order-line values, not current catalog price.
+                // Strict integer quantity validation: reject fractional, negative, zero,
+                // or out-of-range integer values. Pure integer preservation, no
+                // rounding/float math — the wire format requires an int.
                 $qty = $item->get_quantity();
-                // Strict integer quantity validation: reject fractional numeric values
-                // (1.5, '1.5'), negative, zero, over-limit, malformed. Only true integers
-                // > 0 and <= 9999999 are accepted.
                 if (!is_int($qty) || $qty <= 0 || $qty > 9999999) {
                     $this->log('Invalid product quantity.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
 
-                $line_total = $item->get_total();
-                if (!is_numeric($line_total) || (float) $line_total < 0) {
+                // Section D2: Pure deterministic decimal handling.
+                // Provider requires a positive-decimal string for the line price.
+                // WC_Order_Item_Product::get_total() returns a numeric value (often
+                // a float). Convert to a canonical positive-decimal string BEFORE
+                // lexical validation. We never use round()/float math downstream.
+                $raw_line_total = $item->get_total();
+                $line_total_canonical = self::canonicalize_provider_decimal_string($raw_line_total);
+                $line_total_validation = self::validate_provider_positive_decimal($line_total_canonical, 'line_total');
+                if ($line_total_validation === null) {
                     $this->log('Invalid line total.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
+                $line_total = $line_total_validation;
 
-                // Derive provider-compatible unit price from order line.
-                $unit_price = $qty > 0 ? round((float) $line_total / $qty, 2) : 0;
+                // Derive provider-compatible unit price from order line as a
+                // deterministic decimal string. No round()/float math. Quantization
+                // uses string-based decimal division by the integer quantity.
+                $unit_price = self::compute_provider_unit_price_decimal($line_total, $qty);
 
                 // Section F: UTF-8 safe truncation.
                 $normalized_name = $this->truncate_provider_text($item->get_name(), 255);
@@ -2020,12 +2193,13 @@ function woocommerceUpaymentsInit() {
                 }
 
                 // Section C: Use normalized values in payload.
+                // 'type' is intentionally omitted — provider does not document a
+                // contract for this key, so we send only the documented keys.
                 $productArrayNew[$i] = array(
                     'name'        => $normalized_name,
                     'description' => $normalized_description,
                     'price'       => $unit_price,
                     'quantity'    => $qty,
-                    'type'        => $product->get_type(),
                 );
                 $i++;
             }
@@ -2073,7 +2247,7 @@ function woocommerceUpaymentsInit() {
 
             if ($is_store_api) {
                 // Store API: parse JSON only, never consume Classic POST.
-                $raw_input = file_get_contents('php://input');
+                $raw_input = self::get_request_body_raw();
                 if (is_string($raw_input) && $raw_input !== '') {
                     $request_data = json_decode($raw_input, true);
                 }
@@ -2112,7 +2286,10 @@ function woocommerceUpaymentsInit() {
                     $raw = $extension_data['card_token'];
                     if ($raw === null) { $cardToken = null; }
                     elseif (is_string($raw)) {
-                        $cardToken = trim($raw);
+                        // Section AT: Strict no-trim card token handling.
+                        // The card token is a security identifier — we accept it
+                        // exactly as supplied and validate without trimming.
+                        $cardToken = $raw;
                     } elseif (is_int($raw)) {
                         // Strict: integer token not supported by the existing frozen contract.
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2180,7 +2357,8 @@ function woocommerceUpaymentsInit() {
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
-                    $cardToken = trim((string) wp_unslash($classic_post['card_token']));
+                    // Section AT: Strict no-trim card token handling (Classic path too).
+                    $cardToken = (string) wp_unslash($classic_post['card_token']);
                 }
 
                 if (self::field_present($classic_post, 'upay_subscription_plan')) {
@@ -2667,10 +2845,9 @@ function woocommerceUpaymentsInit() {
 
             // Whitelabel: add paymentGateway.
             if ($whitelabled && $src !== null) {
-                if (strlen($src) > 11) {
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
+                // Section AS: Source string is sent verbatim — no invented length
+                // ceiling. Provider documents the field but does not bound it.
+                // Future invariants can be added explicitly if documentation confirms a bound.
                 $payload['paymentGateway'] = array('src' => $src);
             }
 

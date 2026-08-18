@@ -127,32 +127,58 @@ class CustomerTokenIdentity {
 
     /**
      * Get existing scope fingerprint without creating a secret.
-     * Side-effect free: returns null if secret is absent/invalid.
+     * Read existing identity context atomically.
+     *
+     * Performs exactly one read of the secret option. Returns a snapshot
+     * containing the validated scope and generation from that exact record,
+     * so torn reads cannot produce a hybrid scope(A)+generation(B) combination.
+     *
+     * @return array{state:string, scope:?string, generation_id:?string}
+     */
+    public static function read_existing_identity_context() {
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] !== self::SECRET_VALID) {
+            return array(
+                'state' => $secret_result['state'],
+                'scope' => null,
+                'generation_id' => null,
+            );
+        }
+        return array(
+            'state' => self::SECRET_VALID,
+            'scope' => isset($secret_result['record']['scope']) ? (string) $secret_result['record']['scope'] : null,
+            'generation_id' => isset($secret_result['record']['generation_id']) ? (string) $secret_result['record']['generation_id'] : null,
+        );
+    }
+
+    /**
+     * Derive the current scope from the canonical identity context
+     * (one read of the secret option). Side-effect free: never creates a secret.
      *
      * @param string $api_key
      * @param bool   $is_test_mode
      * @return string|null Scope fingerprint or null.
      */
     public static function get_existing_scope_fingerprint($api_key, $is_test_mode) {
-        $secret_result = self::read_existing_secret_record();
-        if ($secret_result['state'] !== self::SECRET_VALID) {
+        $ctx = self::read_existing_identity_context();
+        if ($ctx['state'] !== self::SECRET_VALID || $ctx['scope'] === null) {
             return null;
         }
-        return self::derive_scope_fingerprint($api_key, $is_test_mode, $secret_result['record']);
+        return $ctx['scope'];
     }
 
     /**
-     * Get existing generation ID without creating a secret.
-     * Side-effect free: returns null if secret is absent/invalid.
+     * Get existing generation ID from the canonical identity context
+     * (one read of the secret option). Side-effect free: never creates a secret.
      *
      * @return string|null Generation ID or null.
      */
     public static function get_existing_generation_id() {
-        $secret_result = self::read_existing_secret_record();
-        if ($secret_result['state'] !== self::SECRET_VALID) {
+        $ctx = self::read_existing_identity_context();
+        if ($ctx['state'] !== self::SECRET_VALID || $ctx['generation_id'] === null) {
             return null;
         }
-        return $secret_result['record']['generation_id'];
+        return $ctx['generation_id'];
     }
 
     public static function get_or_create_secret_record() {
@@ -353,6 +379,19 @@ class CustomerTokenIdentity {
         return $lock;
     }
 
+    /**
+     * Bootstrap lock name (blog-scoped). Cannot be derived from API secret
+     * material, which does not exist before the bootstrap completes.
+     */
+    public static function get_bootstrap_lock_name() {
+        $blog_id = (string) get_current_blog_id();
+        $lock = 'upay_ctk_bootstrap_b' . $blog_id;
+        if (strlen($lock) > self::LOCK_MAX_LENGTH) {
+            return null;
+        }
+        return $lock;
+    }
+
     // ────────────────────────────────────────────────────────
     // TOKEN GENERATORS / VALIDATORS
     // ────────────────────────────────────────────────────────
@@ -522,8 +561,20 @@ class CustomerTokenIdentity {
     // CREATE PROVENANCE (immutable)
     // ────────────────────────────────────────────────────────
 
-    public static function create_provenance($user_id, $scope_fingerprint, $kind, $token, $source) {
+    public static function create_provenance(
+        $user_id,
+        $scope_fingerprint,
+        $expected_generation_id,
+        $kind,
+        $token,
+        $source
+    ) {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
+            return false;
+        }
+        if (!is_string($expected_generation_id)
+            || !self::is_valid_hex($expected_generation_id, self::GENERATION_ID_HEX_LENGTH)
+        ) {
             return false;
         }
 
@@ -544,10 +595,22 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $generation_id = self::get_existing_generation_id();
-        if ($generation_id === null) {
+        // Re-read the canonical identity context to prove the persisted
+        // scope+generation equals the exact context that authorized Create Token.
+        $ctx = self::read_existing_identity_context();
+        if ($ctx['state'] !== self::SECRET_VALID
+            || $ctx['scope'] === null
+            || $ctx['generation_id'] === null
+        ) {
             return false;
         }
+        if (!hash_equals((string) $ctx['scope'], (string) $scope_fingerprint)) {
+            return false;
+        }
+        if (!hash_equals((string) $ctx['generation_id'], (string) $expected_generation_id)) {
+            return false;
+        }
+        $generation_id = $expected_generation_id;
 
         $blog_id = (string) get_current_blog_id();
         $meta_key = self::get_user_meta_key($blog_id, $scope_fingerprint);
