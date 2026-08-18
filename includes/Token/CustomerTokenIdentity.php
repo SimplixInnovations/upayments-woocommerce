@@ -1477,11 +1477,8 @@ class CustomerTokenIdentity {
             }
         }
 
-        // SECRET_VALID path: derive scope and generation read-only.
+        // SECRET_VALID path: derive scope and generation strictly read-only.
         $scope = self::get_existing_scope_fingerprint($api_key, $is_test_mode);
-        if ($scope === null) {
-            $scope = self::get_scope_fingerprint($api_key, $is_test_mode);
-        }
         if ($scope === null) {
             $result['reason'] = 'scope_failure';
             return $result;

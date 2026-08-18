@@ -250,44 +250,24 @@ function woocommerceUpaymentsInit() {
             return $cmp > 0 ? 1 : -1;
         }
 
-        /**
-         * Pure-PHP positive-decimal string comparison.
-         *
-         * Returns true iff $value is strictly greater than $lower and strictly
-         * less than $upper, using exact-decimal string semantics. No BCMath, no float.
-         */
-        private static function positive_decimal_string_in_range($value, $lower, $upper) {
-            if (!is_string($value) || !is_string($lower) || !is_string($upper)) {
-                return false;
-            }
-            return (self::compare_nonnegative_decimal_strings($value, $lower) > 0
-                && self::compare_nonnegative_decimal_strings($value, $upper) < 0);
-        }
-
         private static function build_amount_json_token($amount_str) {
             if (!is_string($amount_str)) {
                 return null;
             }
-            // Strict grammar: plain decimal, no exponent, no sign, no whitespace.
-            if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)) {
-                return null;
-            }
-            if (strlen($amount_str) === 0 || strlen($amount_str) > 22) {
+            // Strict JSON-canonical grammar: positive plain-decimal, no leading-zero
+            // integer part (except for "0" itself), no exponent, no sign, no whitespace,
+            // no comma. Accepts "0.900", "0.750", "10.000", "25", "1", "1.0", etc.
+            if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $amount_str)) {
                 return null;
             }
             if (preg_match('/\s/', $amount_str)) {
                 return null;
             }
-            // Reject all-zero numerics.
-            $is_positive = false;
-            for ($i = 0; $i < strlen($amount_str); $i++) {
-                $c = $amount_str[$i];
-                if ($c >= '1' && $c <= '9') {
-                    $is_positive = true;
-                    break;
-                }
+            if (strlen($amount_str) === 0 || strlen($amount_str) > 22) {
+                return null;
             }
-            if (!$is_positive) {
+            // Reject all-zero numerics (must be strictly positive).
+            if (self::compare_nonnegative_decimal_strings($amount_str, '0') <= 0) {
                 return null;
             }
             return $amount_str;
@@ -2586,17 +2566,17 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Pure-PHP positive-decimal bounds (no BCMath, no float).
-                // The current plugin UI uses max="10.000" for both KNET and CC charges.
-                // UPayments' first-party documentation describes the fields as float
-                // with length 2,2 and shows examples up to 25; we retain 10.000 as
-                // a defensive structural bound consistent with the existing admin UI.
-                if (!self::positive_decimal_string_in_range($knet_charge_raw, '0', '10.000')) {
+                // Pure-PHP positive-decimal validation (no BCMath, no float, no upper bound).
+                // The plugin UI's max="10.000" is a UI hint only; the runtime accepts
+                // any canonical positive plain-decimal per UPayments examples (25, 18, 15,
+                // 10, 0.900, 0.750, etc.). Server-side rejection here would conflict with
+                // provider documentation and the existing admin UI maximum.
+                if (self::compare_nonnegative_decimal_strings($knet_charge_raw, '0') <= 0) {
                     $this->log('MultiMerchant: invalid knetCharge value.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (!self::positive_decimal_string_in_range($cc_charge_raw, '0', '10.000')) {
+                if (self::compare_nonnegative_decimal_strings($cc_charge_raw, '0') <= 0) {
                     $this->log('MultiMerchant: invalid ccCharge value.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
