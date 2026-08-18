@@ -853,7 +853,7 @@ upay_assert_eq(upay_call_static('WC_Upayments', 'parse_interval', [[1]]), -1, 'P
 
 upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['cc']), 'cc', "PHP-PPS-1 'cc'", 'runtime');
 upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['knet']), 'knet', "PHP-PPS-2 'knet'", 'runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['  cc  ']), 'cc', "PHP-PPS-3 '  cc  ' trimmed", 'runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['  cc  ']), null, "PHP-PPS-3 '  cc  ' rejected (no-trim, exact-match)", 'runtime');
 upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['']), null, "PHP-PPS-4 '' => null", 'runtime');
 upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['   ']), null, "PHP-PPS-5 '   ' => null", 'runtime');
 upay_assert_eq(upay_call_static('WC_Upayments', 'parse_payment_source_strict', ['cc apple']), null, "PHP-PPS-6 'cc apple' => null", 'runtime');
@@ -923,7 +923,12 @@ $payload = [
     ],
 ];
 $raw = json_encode($payload);
-$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', '12.50', '1.50', '1.50']);
+$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '12.50',
+    '__UPAY_MM_AMOUNT_SENTINEL__' => '12.50',
+    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => '1.50',
+    '__UPAY_MM_CC_CHARGE_SENTINEL__' => '1.50',
+]]);
 upay_assert($out !== null, 'PHP-INJ-1 sentinel replacement with MM succeeds', 'runtime');
 upay_assert_eq(strpos($out, '__UPAY_ORDER_AMOUNT_SENTINEL__'), false, 'PHP-INJ-2 order sentinel removed', 'runtime');
 upay_assert_eq(strpos($out, '__UPAY_MM_AMOUNT_SENTINEL__'), false, 'PHP-INJ-3 MM amount sentinel removed', 'runtime');
@@ -943,14 +948,18 @@ $payload = [
     'extraMerchantData' => null,
 ];
 $raw = json_encode($payload);
-$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', null, null, null]);
+$out = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '12.50',
+]]);
 upay_assert($out !== null, 'PHP-INJ-9 no-MM sentinel case succeeds', 'runtime');
 upay_assert_eq(strpos($out, '__UPAY_MM_AMOUNT_SENTINEL__'), false, 'PHP-INJ-10 no MM marker in result', 'runtime');
 
 // Missing order sentinel => reject
 $payload = ['order' => ['id' => 'x', 'amount' => 5]];
 $raw = json_encode($payload);
-upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null, null, null]), null, 'PHP-INJ-11 missing order sentinel rejected', 'runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '5',
+]]), null, 'PHP-INJ-11 missing order sentinel rejected', 'runtime');
 
 // Double sentinel => reject
 $payload = [
@@ -958,18 +967,27 @@ $payload = [
     'order_extra' => ['amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__'],
 ];
 $raw = json_encode($payload);
-upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '5', null, null, null]), null, 'PHP-INJ-12 double order sentinel rejected', 'runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '5',
+]]), null, 'PHP-INJ-12 double order sentinel rejected', 'runtime');
 
 // Quoted-looking token => reject
 $payload = ['order' => ['id' => 'x', 'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__']];
 $raw = json_encode($payload);
-$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50"', null, null, null]);
+$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '12.50"',
+]]);
 upay_assert_eq($result, null, 'PHP-INJ-13 invalid token rejected', 'runtime');
 
 // MM-only sentinel provided but no MM present in payload => reject
 $payload = ['order' => ['id' => 'x', 'amount' => '__UPAY_ORDER_AMOUNT_SENTINEL__']];
 $raw = json_encode($payload);
-$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, '12.50', '12.50', '1.50', '1.50']);
+$result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_json', [$raw, [
+    '__UPAY_ORDER_AMOUNT_SENTINEL__' => '12.50',
+    '__UPAY_MM_AMOUNT_SENTINEL__' => '12.50',
+    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => '1.50',
+    '__UPAY_MM_CC_CHARGE_SENTINEL__' => '1.50',
+]]);
 upay_assert_eq($result, null, 'PHP-INJ-14 MM token provided but no MM sentinel in payload rejected', 'runtime');
 
 // ---------------------------------------------------------------------------
@@ -1492,7 +1510,7 @@ upay_assert(strpos($upay_source, "'__UPAY_MM_AMOUNT_SENTINEL__'") !== false, 'PH
 upay_assert_eq(strpos($upay_source, '$amount_number'), false, 'PHP-SRC-7 no $amount_number', 'static');
 upay_assert_eq(strpos($upay_source, "(float) \$amount_str <= 0"), false, 'PHP-SRC-8 no float positivity', 'static');
 upay_assert(strpos($upay_source, 'parse_subscription_plan_strict') !== false, 'PHP-SRC-9 strict plan parser defined', 'static');
-upay_assert(strpos($upay_source, "if (\$raw === null) { \$cardToken = null") !== false, 'PHP-SRC-10 Blocks card_token null => safe clear', 'static');
+upay_assert(strpos($upay_source, "if (\$raw === null)") !== false && strpos($upay_source, "cardToken = null") !== false, 'PHP-SRC-10 Blocks card_token null => safe clear', 'static');
 upay_assert_eq(strpos($upay_source, "\$extraMerchantData[0] = ["), false, 'PHP-SRC-11 no post-token MultiMerchant reconstruction', 'static');
 
 // ---------------------------------------------------------------------------

@@ -126,16 +126,18 @@ class CustomerTokenIdentity {
     }
 
     /**
-     * Get existing scope fingerprint without creating a secret.
-     * Read existing identity context atomically.
+     * Read the existing canonical identity context atomically.
      *
-     * Performs exactly one read of the secret option. Returns a snapshot
-     * containing the validated scope and generation from that exact record,
-     * so torn reads cannot produce a hybrid scope(A)+generation(B) combination.
+     * Performs exactly one read of the secret option. Derives the scope from
+     * the validated secret record using the supplied API key + test mode.
+     * Returns the validated scope and generation from that single record so
+     * torn reads cannot produce a hybrid scope(A)+generation(B) combination.
      *
+     * @param string $api_key     Non-empty scalar API key (mode-specific).
+     * @param bool   $is_test_mode Whether to derive a test-mode scope.
      * @return array{state:string, scope:?string, generation_id:?string}
      */
-    public static function read_existing_identity_context() {
+    public static function read_existing_identity_context($api_key, $is_test_mode) {
         $secret_result = self::read_existing_secret_record();
         if ($secret_result['state'] !== self::SECRET_VALID) {
             return array(
@@ -144,9 +146,22 @@ class CustomerTokenIdentity {
                 'generation_id' => null,
             );
         }
+
+        // Derive scope from this exact record (api_key + mode + secret). The
+        // validated secret record contains the secret — the scope is computed
+        // here, not stored.
+        $scope = self::derive_scope_fingerprint($api_key, $is_test_mode, $secret_result['record']);
+        if ($scope === null) {
+            return array(
+                'state' => self::SECRET_VALID,
+                'scope' => null,
+                'generation_id' => isset($secret_result['record']['generation_id']) ? (string) $secret_result['record']['generation_id'] : null,
+            );
+        }
+
         return array(
             'state' => self::SECRET_VALID,
-            'scope' => isset($secret_result['record']['scope']) ? (string) $secret_result['record']['scope'] : null,
+            'scope' => $scope,
             'generation_id' => isset($secret_result['record']['generation_id']) ? (string) $secret_result['record']['generation_id'] : null,
         );
     }
@@ -160,7 +175,7 @@ class CustomerTokenIdentity {
      * @return string|null Scope fingerprint or null.
      */
     public static function get_existing_scope_fingerprint($api_key, $is_test_mode) {
-        $ctx = self::read_existing_identity_context();
+        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
         if ($ctx['state'] !== self::SECRET_VALID || $ctx['scope'] === null) {
             return null;
         }
@@ -171,17 +186,31 @@ class CustomerTokenIdentity {
      * Get existing generation ID from the canonical identity context
      * (one read of the secret option). Side-effect free: never creates a secret.
      *
+     * @param string $api_key     Required for full context read.
+     * @param bool   $is_test_mode Required for full context read.
      * @return string|null Generation ID or null.
      */
-    public static function get_existing_generation_id() {
-        $ctx = self::read_existing_identity_context();
+    public static function get_existing_generation_id($api_key = '', $is_test_mode = false) {
+        // Backward-compatible wrapper: always derive full context. The api_key/mode
+        // here are only used for scope derivation; legacy callers that pass empty
+        // values will simply get a null scope and still get the right generation_id
+        // since the record has it. However the correct long-term path is to pass
+        // the real credentials.
+        if ($api_key === '' || !is_scalar($api_key)) {
+            $secret_result = self::read_existing_secret_record();
+            if ($secret_result['state'] !== self::SECRET_VALID) {
+                return null;
+            }
+            return isset($secret_result['record']['generation_id']) ? (string) $secret_result['record']['generation_id'] : null;
+        }
+        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
         if ($ctx['state'] !== self::SECRET_VALID || $ctx['generation_id'] === null) {
             return null;
         }
         return $ctx['generation_id'];
     }
 
-    public static function get_or_create_secret_record() {
+    private static function get_or_create_secret_record() {
         global $wpdb;
 
         // Use unique sentinel to distinguish missing from malformed.
@@ -300,6 +329,52 @@ class CustomerTokenIdentity {
         return preg_match('/^[0-9a-f]+$/', $value) === 1;
     }
 
+    /**
+     * Strict non-negative integer parser.
+     *
+     * Rejects: floats ("1.0"), scientific notation ("1e2"), signs ("+1", "-1"),
+     * leading whitespace (" 1"), hex/octal/binary literals ("0x10"), null,
+     * empty string, booleans, arrays, objects, and any non-integer numeric
+     * value. Accepts only a pure ASCII decimal string composed of digits 0-9
+     * with no leading sign and no surrounding whitespace, OR an integer-typed
+     * value. The decoded value MUST be >= 0 to qualify; the cast integer is
+     * returned alongside a boolean via the by-reference convention so callers
+     * can keep their existing control flow unchanged.
+     *
+     * @param mixed  $value      Candidate value to parse.
+     * @param int   &$parsed_out Out-parameter: the parsed non-negative integer
+     *                           when the method returns true; undefined otherwise.
+     * @return bool              True iff the input is a strict non-negative int.
+     */
+    private static function parse_strict_nonneg_int($value, &$parsed_out) {
+        if (is_int($value)) {
+            if ($value < 0) {
+                return false;
+            }
+            $parsed_out = $value;
+            return true;
+        }
+        if (!is_string($value)) {
+            return false;
+        }
+        // Reject any non-ASCII or any character outside [0-9].
+        if ($value === '' || preg_match('/^[0-9]+$/', $value) !== 1) {
+            return false;
+        }
+        // PHP's int is 64-bit signed on supported platforms; cap to that range
+        // so we never silently wrap. Compare as strings first to dodge float
+        // coercion of huge string-to-int conversions.
+        $int_max_str = (string) PHP_INT_MAX;
+        if (strlen($value) > strlen($int_max_str)) {
+            return false;
+        }
+        if (strlen($value) === strlen($int_max_str) && strcmp($value, $int_max_str) > 0) {
+            return false;
+        }
+        $parsed_out = (int) $value;
+        return $parsed_out >= 0;
+    }
+
     // ────────────────────────────────────────────────────────
     // SCOPE FINGERPRINT
     // ────────────────────────────────────────────────────────
@@ -311,7 +386,7 @@ class CustomerTokenIdentity {
         return preg_match(self::SCOPE_PATTERN, $scope) === 1;
     }
 
-    public static function get_scope_fingerprint($api_key, $is_test_mode) {
+    private static function get_scope_fingerprint($api_key, $is_test_mode) {
         if (empty($api_key) || !is_scalar($api_key)) {
             return null;
         }
@@ -338,7 +413,7 @@ class CustomerTokenIdentity {
         return substr($hex, 0, self::SCOPE_HEX_LENGTH);
     }
 
-    public static function get_generation_id() {
+    private static function get_generation_id() {
         $secret_record = self::get_or_create_secret_record();
         if ($secret_record === null) {
             return null;
@@ -432,7 +507,7 @@ class CustomerTokenIdentity {
     // READ PROVENANCE (authoritative, exactly-one-record)
     // ────────────────────────────────────────────────────────
 
-    public static function read_provenance($user_id, $scope_fingerprint) {
+    public static function read_provenance($user_id, $scope_fingerprint, $current_generation = null) {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
             return array('state' => self::STATE_ABSENT, 'record' => null);
         }
@@ -466,9 +541,14 @@ class CustomerTokenIdentity {
             return array('state' => self::STATE_INVALID, 'record' => $record);
         }
 
-        $validation = self::validate_provenance_record($record, $scope_fingerprint, true);
+        // Pure structural validator; caller supplies the generation (or null).
+        $validation = self::validate_provenance_record($record, $scope_fingerprint, $current_generation);
         if ($validation === 'valid') {
             return array('state' => self::STATE_VALID, 'record' => $record);
+        }
+
+        if ($validation === 'generation_mismatch') {
+            return array('state' => self::STATE_INVALID, 'record' => $record, 'reason' => 'generation_mismatch');
         }
 
         return array('state' => self::STATE_INVALID, 'record' => $record);
@@ -477,12 +557,18 @@ class CustomerTokenIdentity {
     /**
      * Validate a provenance record structure.
      *
-     * @param array  $record                     The provenance record.
-     * @param string $requested_scope            The scope from the meta key.
-     * @param bool   $require_current_generation Whether to require current generation match.
+     * Pure structural validator. The caller MUST pass the current generation
+     * (or null) explicitly so this function does not perform independent
+     * secret reads. The previous implementation called get_existing_generation_id()
+     * inside the validator, which created a hidden second read of the secret
+     * option and could yield a hybrid scope(A)+generation(B) snapshot.
+     *
+     * @param array       $record            The provenance record.
+     * @param string      $requested_scope   The scope from the meta key.
+     * @param string|null $current_generation Explicit current generation, or null to skip.
      * @return string 'valid', 'invalid', or 'generation_mismatch'
      */
-    private static function validate_provenance_record($record, $requested_scope, $require_current_generation = true) {
+    private static function validate_provenance_record($record, $requested_scope, $current_generation = null) {
         if (!isset($record['version']) || !is_int($record['version']) || $record['version'] !== self::SCHEMA_VERSION) {
             return 'invalid';
         }
@@ -535,17 +621,12 @@ class CustomerTokenIdentity {
             return 'invalid';
         }
 
-        // Generation binding (optional for prior-provenance inspection).
-        if ($require_current_generation) {
-            // Use read-only generation helper — never create a secret.
-            $current_generation = self::get_existing_generation_id();
-            if ($current_generation === null || $record['secret_generation_id'] !== $current_generation) {
+        // Generation binding — caller-supplied. No secret read here.
+        if ($current_generation !== null) {
+            if (!is_string($current_generation) || !self::is_valid_hex($current_generation, self::GENERATION_ID_HEX_LENGTH)) {
                 return 'invalid';
             }
-        } else {
-            // Structural OK but check generation match explicitly.
-            $current_generation = self::get_existing_generation_id();
-            if ($current_generation !== null && $record['secret_generation_id'] !== $current_generation) {
+            if ($record['secret_generation_id'] !== $current_generation) {
                 return 'generation_mismatch';
             }
         }
@@ -563,6 +644,8 @@ class CustomerTokenIdentity {
 
     public static function create_provenance(
         $user_id,
+        $api_key,
+        $is_test_mode,
         $scope_fingerprint,
         $expected_generation_id,
         $kind,
@@ -570,6 +653,12 @@ class CustomerTokenIdentity {
         $source
     ) {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
+            return false;
+        }
+        if (empty($api_key) || !is_scalar($api_key)) {
+            return false;
+        }
+        if (!is_bool($is_test_mode)) {
             return false;
         }
         if (!is_string($expected_generation_id)
@@ -595,9 +684,12 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        // Re-read the canonical identity context to prove the persisted
-        // scope+generation equals the exact context that authorized Create Token.
-        $ctx = self::read_existing_identity_context();
+        // Re-read the canonical identity context atomically. The scope is
+        // derived from the secret record using (api_key, is_test_mode). The
+        // generation comes from the same record. We then require exact match
+        // against the caller's expected scope+generation to prove the caller's
+        // request was authorized under exactly the same canonical context.
+        $ctx = self::read_existing_identity_context((string) $api_key, $is_test_mode);
         if ($ctx['state'] !== self::SECRET_VALID
             || $ctx['scope'] === null
             || $ctx['generation_id'] === null
@@ -674,7 +766,7 @@ class CustomerTokenIdentity {
         }
 
         // Section U: Run full structural validator with current-generation binding.
-        if (self::validate_provenance_record($verify_record, $scope_fingerprint, true) !== 'valid') {
+        if (self::validate_provenance_record($verify_record, $scope_fingerprint, $generation_id) !== 'valid') {
             return false;
         }
 
@@ -861,15 +953,17 @@ class CustomerTokenIdentity {
     // HISTORY INSPECTOR (paginated, trustworthy)
     // ────────────────────────────────────────────────────────
 
-    public static function inspect_customer_history($user_id, $current_scope) {
+    public static function inspect_customer_history($user_id, $current_scope, $current_generation = null) {
         if ($user_id <= 0 || !self::is_valid_scope($current_scope)) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_input');
         }
 
-        // Use read-only generation helper — never create a secret.
-        $current_generation = self::get_existing_generation_id();
+        // Caller-supplied generation; no hidden read.
         if ($current_generation === null) {
-            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'no_generation');
+            $current_generation = self::get_existing_generation_id();
+            if ($current_generation === null) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'no_generation');
+            }
         }
 
         $scanned_unique_count = 0;
@@ -911,16 +1005,13 @@ class CustomerTokenIdentity {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_orders_array');
             }
 
-            if (!isset($orders->total) || !is_numeric($orders->total) || (int) $orders->total < 0) {
+            if (!self::parse_strict_nonneg_int(isset($orders->total) ? $orders->total : null, $current_total)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_total');
             }
 
-            if (!isset($orders->max_num_pages) || !is_numeric($orders->max_num_pages) || (int) $orders->max_num_pages < 0) {
+            if (!self::parse_strict_nonneg_int(isset($orders->max_num_pages) ? $orders->max_num_pages : null, $current_max_pages)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_max_pages');
             }
-
-            $current_total = (int) $orders->total;
-            $current_max_pages = (int) $orders->max_num_pages;
 
             if ($expected_total === null) {
                 $expected_total = $current_total;
@@ -1177,8 +1268,9 @@ class CustomerTokenIdentity {
         if ($user_id <= 0) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'not_logged_in');
         }
-        // A helper intended for initialization semantics must not be reused
-        // against an established identity root.
+        // Single read of the secret record. The bootstrap helper is intended
+        // only for initialization semantics and must not be reused against an
+        // established identity root.
         $secret_result = self::read_existing_secret_record();
         if ($secret_result['state'] === self::SECRET_VALID) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'not_bootstrap_candidate');
@@ -1186,11 +1278,7 @@ class CustomerTokenIdentity {
         if ($secret_result['state'] === self::SECRET_INVALID) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_secret');
         }
-
-        $secret_result = self::read_existing_secret_record();
-        if ($secret_result['state'] === self::SECRET_INVALID) {
-            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_secret');
-        }
+        // SECRET_ABSENT: ready for census (caller must hold the bootstrap lock).
 
         // No secret yet: do a complete pagination census and confirm the
         // user has zero identity/card security evidence. Uses real WooCommerce
@@ -1222,15 +1310,12 @@ class CustomerTokenIdentity {
             if (!is_object($orders) || !isset($orders->orders) || !is_array($orders->orders)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_orders_array');
             }
-            if (!isset($orders->total) || !is_numeric($orders->total) || (int) $orders->total < 0) {
+            if (!self::parse_strict_nonneg_int(isset($orders->total) ? $orders->total : null, $current_total)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_total');
             }
-            if (!isset($orders->max_num_pages) || !is_numeric($orders->max_num_pages) || (int) $orders->max_num_pages < 0) {
+            if (!self::parse_strict_nonneg_int(isset($orders->max_num_pages) ? $orders->max_num_pages : null, $current_max_pages)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_max_pages');
             }
-
-            $current_total = (int) $orders->total;
-            $current_max_pages = (int) $orders->max_num_pages;
 
             if ($expected_total === null) {
                 $expected_total = $current_total;
@@ -1326,15 +1411,17 @@ class CustomerTokenIdentity {
     // PRIOR PROVENANCE INSPECTION (full validation)
     // ────────────────────────────────────────────────────────
 
-    public static function inspect_current_user_prior_provenance($user_id) {
+    public static function inspect_current_user_prior_provenance($user_id, $current_generation = null) {
         if ($user_id <= 0) {
             return array('state' => 'none', 'reason' => 'not_logged_in');
         }
 
-        // Use read-only generation helper — never create a secret.
-        $current_generation = self::get_existing_generation_id();
+        // Caller-supplied generation; no hidden read.
         if ($current_generation === null) {
-            return array('state' => 'read_failure', 'reason' => 'no_generation');
+            $current_generation = self::get_existing_generation_id();
+            if ($current_generation === null) {
+                return array('state' => 'read_failure', 'reason' => 'no_generation');
+            }
         }
 
         // Force-refresh user-meta cache before authoritative read.
@@ -1401,8 +1488,10 @@ class CustomerTokenIdentity {
                 continue;
             }
 
-            // Structural validation without requiring current generation (Section F).
-            $validation = self::validate_provenance_record($record, $scope_from_key, false);
+            // Structural validation with explicit current generation (Section F).
+            // Pass the read-only current generation explicitly; the validator
+            // now requires the caller to supply it instead of doing a hidden read.
+            $validation = self::validate_provenance_record($record, $scope_from_key, $current_generation);
             if ($validation === 'invalid') {
                 $has_invalid = true;
                 continue;
@@ -1519,52 +1608,75 @@ class CustomerTokenIdentity {
             return $result;
         }
         if ($secret_result['state'] === self::SECRET_ABSENT) {
-            // No secret yet. Run a complete secret-independent bootstrap census.
-            // Only a fully-scanned account with ZERO identity/card security
-            // evidence may create the secret. Anything else blocks without mutation.
-            $preflight_blocking = self::inspect_bootstrap_history($user_id);
-            if ($preflight_blocking['classification'] !== self::HISTORY_NONE) {
-                $result['reason'] = 'legacy_migration_required';
+            // Bootstrap path: serialize the entire ABSENT → VALID transition.
+            // The bootstrap lock is blog-scoped because a secret has no
+            // caller-supplied identity key before it exists.
+            $bootstrap_lock = self::get_bootstrap_lock_name();
+            if ($bootstrap_lock === null) {
+                $result['reason'] = 'bootstrap_lock_invalid';
                 return $result;
             }
-            // Re-read secret state to detect a race (another worker may have
-            // created the secret between the first read and now).
-            $secret_result = self::read_existing_secret_record();
-            if ($secret_result['state'] === self::SECRET_INVALID) {
-                $result['reason'] = 'malformed_secret';
+            if (!self::acquire_lock($bootstrap_lock)) {
+                $result['reason'] = 'bootstrap_lock_contention';
                 return $result;
             }
-            if ($secret_result['state'] === self::SECRET_ABSENT) {
-                // Create the secret through the existing controlled establishment.
-                $created = self::get_or_create_secret_record();
-                if ($created === null) {
-                    $result['reason'] = 'secret_create_failed';
-                    return $result;
-                }
+            try {
+                // Reread secret state after acquiring the lock (another worker
+                // may have raced and produced a valid secret first).
                 $secret_result = self::read_existing_secret_record();
-                if ($secret_result['state'] !== self::SECRET_VALID) {
-                    $result['reason'] = 'secret_create_failed';
+                if ($secret_result['state'] === self::SECRET_INVALID) {
+                    $result['reason'] = 'malformed_secret';
                     return $result;
                 }
+                if ($secret_result['state'] === self::SECRET_ABSENT) {
+                    // Census the user's history (zero identity/card security
+                    // evidence required). Only HISTORY_NONE initializes a secret.
+                    $preflight_blocking = self::inspect_bootstrap_history($user_id);
+                    if ($preflight_blocking['classification'] !== self::HISTORY_NONE) {
+                        $result['reason'] = 'legacy_migration_required';
+                        return $result;
+                    }
+                    // Reread once more before write — another worker may have
+                    // created the secret between the census and now.
+                    $secret_result = self::read_existing_secret_record();
+                    if ($secret_result['state'] === self::SECRET_INVALID) {
+                        $result['reason'] = 'malformed_secret';
+                        return $result;
+                    }
+                    if ($secret_result['state'] === self::SECRET_ABSENT) {
+                        $created = self::get_or_create_secret_record();
+                        if ($created === null) {
+                            $result['reason'] = 'secret_create_failed';
+                            return $result;
+                        }
+                        $secret_result = self::read_existing_secret_record();
+                        if ($secret_result['state'] !== self::SECRET_VALID) {
+                            $result['reason'] = 'secret_create_failed';
+                            return $result;
+                        }
+                    }
+                }
+            } finally {
+                self::release_lock($bootstrap_lock);
             }
         }
 
-        // SECRET_VALID path: derive scope and generation strictly read-only.
-        $scope = self::get_existing_scope_fingerprint($api_key, $is_test_mode);
-        if ($scope === null) {
+        // === Atomic context snapshot: ONE read of the secret record. ===
+        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
+        if ($ctx['state'] !== self::SECRET_VALID
+            || $ctx['scope'] === null
+            || $ctx['generation_id'] === null
+        ) {
             $result['reason'] = 'scope_failure';
             return $result;
         }
-        $generation_id = self::get_existing_generation_id();
-        if ($generation_id === null) {
-            $result['reason'] = 'generation_failure';
-            return $result;
-        }
+        $scope = $ctx['scope'];
+        $generation_id = $ctx['generation_id'];
 
         $result['scope'] = $scope;
         $result['secret_generation_id'] = $generation_id;
 
-        $provenance = self::read_provenance($user_id, $scope);
+        $provenance = self::read_provenance($user_id, $scope, $generation_id);
 
         if ($provenance['state'] === self::STATE_VALID) {
             $result['success'] = true;
@@ -1579,7 +1691,7 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        $prior_check = self::inspect_current_user_prior_provenance($user_id);
+        $prior_check = self::inspect_current_user_prior_provenance($user_id, $generation_id);
         if ($prior_check['state'] === 'secret_generation_mismatch') {
             $result['reason'] = 'secret_generation_mismatch';
             return $result;
@@ -1593,7 +1705,7 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        $history = self::inspect_customer_history($user_id, $scope);
+        $history = self::inspect_customer_history($user_id, $scope, $generation_id);
 
         $blocking_states = array(
             self::HISTORY_INDETERMINATE,
@@ -1624,7 +1736,25 @@ class CustomerTokenIdentity {
         }
 
         try {
-            $provenance = self::read_provenance($user_id, $scope);
+            // Re-validate context after lock acquisition: an identity root
+            // rotation that landed between the snapshot and the lock must
+            // fail closed rather than silently persisting under the old root.
+            $post_lock_ctx = self::read_existing_identity_context($api_key, $is_test_mode);
+            if ($post_lock_ctx['state'] !== self::SECRET_VALID
+                || $post_lock_ctx['scope'] === null
+                || $post_lock_ctx['generation_id'] === null
+            ) {
+                $result['reason'] = 'context_invalidated_after_lock';
+                return $result;
+            }
+            if (!hash_equals($post_lock_ctx['scope'], $scope)
+                || !hash_equals($post_lock_ctx['generation_id'], $generation_id)
+            ) {
+                $result['reason'] = 'context_changed_after_lock';
+                return $result;
+            }
+
+            $provenance = self::read_provenance($user_id, $scope, $generation_id);
 
             if ($provenance['state'] === self::STATE_VALID) {
                 $result['success'] = true;
@@ -1639,7 +1769,7 @@ class CustomerTokenIdentity {
                 return $result;
             }
 
-            $prior_check = self::inspect_current_user_prior_provenance($user_id);
+            $prior_check = self::inspect_current_user_prior_provenance($user_id, $generation_id);
             if ($prior_check['state'] === 'secret_generation_mismatch') {
                 $result['reason'] = 'secret_generation_mismatch';
                 return $result;
@@ -1653,7 +1783,7 @@ class CustomerTokenIdentity {
                 return $result;
             }
 
-            $history = self::inspect_customer_history($user_id, $scope);
+            $history = self::inspect_customer_history($user_id, $scope, $generation_id);
 
             if (in_array($history['classification'], $blocking_states, true)) {
                 $result['reason'] = 'legacy_migration_required';
@@ -1672,9 +1802,31 @@ class CustomerTokenIdentity {
             $canonical_attempt = self::establish_canonical_token($create_token_caller);
 
             if ($canonical_attempt['success']) {
+                // Final revalidation immediately before persisting. The
+                // identity root may have rotated during the network call
+                // and we must persist under the exact same context that
+                // authorized the API call.
+                $final_ctx = self::read_existing_identity_context($api_key, $is_test_mode);
+                if ($final_ctx['state'] !== self::SECRET_VALID
+                    || $final_ctx['scope'] === null
+                    || $final_ctx['generation_id'] === null
+                ) {
+                    $result['reason'] = 'context_invalidated_before_persist';
+                    return $result;
+                }
+                if (!hash_equals($final_ctx['scope'], $scope)
+                    || !hash_equals($final_ctx['generation_id'], $generation_id)
+                ) {
+                    $result['reason'] = 'context_changed_before_persist';
+                    return $result;
+                }
+
                 $persisted = self::create_provenance(
                     $user_id,
+                    $api_key,
+                    $is_test_mode,
                     $scope,
+                    $generation_id,
                     self::KIND_CANONICAL,
                     $canonical_attempt['token'],
                     self::SOURCE_CREATE_201
@@ -1742,13 +1894,20 @@ class CustomerTokenIdentity {
             return null;
         }
 
-        // Use read-only scope helper — never create a secret.
-        $scope = self::get_existing_scope_fingerprint($api_key, $is_test_mode);
-        if ($scope === null) {
+        // Single atomic context read — never call scope and generation helpers
+        // independently; they each read the secret option and could interleave
+        // with a rotation.
+        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
+        if ($ctx['state'] !== self::SECRET_VALID
+            || $ctx['scope'] === null
+            || $ctx['generation_id'] === null
+        ) {
             return null;
         }
+        $scope = $ctx['scope'];
+        $generation_id = $ctx['generation_id'];
 
-        $provenance = self::read_provenance($user_id, $scope);
+        $provenance = self::read_provenance($user_id, $scope, $generation_id);
 
         if ($provenance['state'] !== self::STATE_VALID) {
             return null;
@@ -1756,12 +1915,6 @@ class CustomerTokenIdentity {
 
         $token = $provenance['record']['token'];
         if (empty($token) || !is_scalar($token)) {
-            return null;
-        }
-
-        // Use read-only generation helper — never create a secret.
-        $generation_id = self::get_existing_generation_id();
-        if ($generation_id === null) {
             return null;
         }
 

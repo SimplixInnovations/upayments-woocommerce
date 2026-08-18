@@ -157,29 +157,29 @@ function woocommerceUpaymentsInit() {
         /**
          * Parse a Whitelabel source value strictly.
          *
-         * Only scalar string values are accepted. Arrays/objects/null/floats/booleans
-         * are explicitly invalid (no silent default to null). Empty strings are invalid
-         * because an explicit empty source is not a meaningful payment-source choice.
+         * Strict contract (no trim, no silent coercion):
+         *  - Only raw string values are accepted. Arrays/objects/null/floats/booleans/ints
+         *    are explicitly invalid (no silent default to null).
+         *  - Empty strings are invalid because an explicit empty source is not a
+         *    meaningful payment-source choice.
+         *  - The string is NOT trimmed: any leading/trailing whitespace is treated as
+         *    an explicit malformed value and rejected.
+         *  - Whitespace *anywhere* in the value is rejected.
          *
          * @param mixed $value Raw source value (only when present).
-         * @return string|null Trimmed scalar string or null for invalid.
+         * @return string|null Exact scalar string or null for invalid.
          */
         private static function parse_payment_source_strict($value) {
-            if (!is_scalar($value)) {
-                return null;
-            }
-            $str = trim((string) $value);
-            if ($str === '') {
-                return null;
-            }
-            // Reject any non-string scalar (booleans, ints, floats) and whitespace-only.
             if (!is_string($value)) {
                 return null;
             }
-            if (preg_match('/\s/', $str)) {
+            if ($value === '') {
                 return null;
             }
-            return $str;
+            if (preg_match('/\s/', $value)) {
+                return null;
+            }
+            return $value;
         }
 
         /**
@@ -276,69 +276,82 @@ function woocommerceUpaymentsInit() {
         /**
          * Inject pre-validated JSON number tokens for provider amount fields.
          *
-         * Replaces exact-occurrence placeholders:
-         *   "__UPAY_ORDER_AMOUNT_SENTINEL__":null  ->  "amount":<order token>
-         *   "__UPAY_MM_AMOUNT_SENTINEL__":null    ->  "amount":<mm token>
+         * Map-driven implementation: each numeric field has an associated
+         * sentinel placeholder, max-length, and (optional) max-occurrences.
+         * The payload is rewritten exactly once for each placeholder, with
+         * the pre-validated token substituted verbatim. Final structural
+         * + lexical verification confirms every replacement landed as a JSON
+         * NUMBER (not quoted).
          *
-         * Verifies the final raw JSON:
-         *   - exactly one occurrence-count for each sentinel substitution
-         *   - the order.amount token appears exactly once, as a JSON NUMBER
-         *     (not quoted), with no exponent, no sign, no comma
-         *   - if MultiMerchant was constructed, the MM amount, KNET charge, and
-         *     CC charge tokens each appear exactly once, as a JSON NUMBER (not
-         *     quoted), with no exponent
-         *   - the decoded JSON is structurally valid
+         * Sentinel → field mapping:
+         *   "__UPAY_ORDER_AMOUNT_SENTINEL__"      → order.amount          (max 1, max 22 chars)
+         *   "__UPAY_PRODUCT_PRICE_SENTINEL_<i>__"  → products[i].price     (>=0, max 7 chars each)
+         *   "__UPAY_MM_AMOUNT_SENTINEL__"         → extraMerchantData[0].amount (max 1, max 10 chars)
+         *   "__UPAY_MM_KNET_CHARGE_SENTINEL__"    → extraMerchantData[0].knetCharge (max 1)
+         *   "__UPAY_MM_CC_CHARGE_SENTINEL__"      → extraMerchantData[0].ccCharge  (max 1)
+         *
+         * Returns null on any verification failure (no fallback, no silent coerce).
          *
          * @param string $payload_json   Encoded payload with sentinels.
-         * @param string $order_token     Validated order.amount token.
-         * @param string|null $mm_amount_token   Validated MM amount token, or null.
-         * @param string|null $mm_knet_charge_token  Validated MM knetCharge token, or null.
-         * @param string|null $mm_cc_charge_token    Validated MM ccCharge token, or null.
+         * @param array<string,string|null> $token_map  Map of sentinel → token (or null to skip).
+         * @param array $extra_sentinels Optional indexed sentinels for per-product prices.
+         *                                   Keys: 'product_price_sent_substring',
+         *                                         'product_price_tokens' (array of strings).
          * @return string|null Final JSON or null on any verification failure.
          */
-        private static function inject_amount_token_into_payload_json(
-            $payload_json,
-            $order_token,
-            $mm_amount_token,
-            $mm_knet_charge_token,
-            $mm_cc_charge_token
-        ) {
+        private static function inject_amount_token_into_payload_json($payload_json, array $token_map, array $extra_sentinels = array()) {
             if (!is_string($payload_json) || $payload_json === '') {
-                return null;
-            }
-            if (!is_string($order_token) || $order_token === '') {
                 return null;
             }
 
             $result = $payload_json;
 
-            // === Order amount injection ===
-            $order_placeholder = '__UPAY_ORDER_AMOUNT_SENTINEL__';
-            $order_count = substr_count($result, '"' . $order_placeholder . '"');
-            if ($order_count !== 1) {
-                return null;
-            }
-            $result = str_replace('"' . $order_placeholder . '"', $order_token, $result);
-            if ($result === $payload_json) {
-                return null;
+            // === Per-product price sentinels (indexed) ===
+            $product_price_tokens = isset($extra_sentinels['product_price_tokens']) && is_array($extra_sentinels['product_price_tokens'])
+                ? $extra_sentinels['product_price_tokens']
+                : array();
+            $product_price_substring = isset($extra_sentinels['product_price_sent_substring']) && is_string($extra_sentinels['product_price_sent_substring'])
+                ? $extra_sentinels['product_price_sent_substring']
+                : '';
+            if ($product_price_substring !== '' && count($product_price_tokens) > 0) {
+                foreach ($product_price_tokens as $idx => $ptoken) {
+                    if (!is_string($ptoken) || $ptoken === '') {
+                        return null;
+                    }
+                    if (strlen($ptoken) > 7) {
+                        return null;
+                    }
+                    $sentinel = $product_price_substring . $idx . '__';
+                    $q_sentinel = '"' . $sentinel . '"';
+                    $actual = substr_count($result, $q_sentinel);
+                    if ($actual !== 1) {
+                        return null;
+                    }
+                    $new_result = str_replace($q_sentinel, $ptoken, $result);
+                    if ($new_result === $result) {
+                        return null;
+                    }
+                    $result = $new_result;
+                }
             }
 
-            // === MultiMerchant amount + numeric charge injection ===
-            $mm_sentinels = array(
-                array('__UPAY_MM_AMOUNT_SENTINEL__', $mm_amount_token),
-                array('__UPAY_MM_KNET_CHARGE_SENTINEL__', $mm_knet_charge_token),
-                array('__UPAY_MM_CC_CHARGE_SENTINEL__', $mm_cc_charge_token),
-            );
-            foreach ($mm_sentinels as $entry) {
-                list($placeholder, $token) = $entry;
+            // === Map-driven substitution (single-occurrence sentinels) ===
+            foreach ($token_map as $placeholder => $token) {
+                if (!is_string($placeholder) || $placeholder === '') {
+                    return null;
+                }
                 $q_placeholder = '"' . $placeholder . '"';
-                $expected_count = ($token !== null) ? 1 : 0;
                 $actual_count = substr_count($result, $q_placeholder);
+                $expected_count = ($token !== null) ? 1 : 0;
                 if ($actual_count !== $expected_count) {
                     return null;
                 }
                 if ($token === null) {
                     continue;
+                }
+                $max_len = self::get_max_length_for_sentinel($placeholder);
+                if ($max_len > 0 && strlen($token) > $max_len) {
+                    return null;
                 }
                 $new_result = str_replace($q_placeholder, $token, $result);
                 if ($new_result === $result) {
@@ -347,79 +360,73 @@ function woocommerceUpaymentsInit() {
                 $result = $new_result;
             }
 
-            // === Verification ===
+            // === Final structural + lexical verification ===
+            // 1. Structural decode must succeed.
             $decoded = json_decode($result, true);
-            if (!is_array($decoded) || !isset($decoded['order']) || !is_array($decoded['order'])) {
-                return null;
-            }
-            if (!array_key_exists('amount', $decoded['order'])) {
+            if (!is_array($decoded)) {
                 return null;
             }
 
-            // Order amount must be numeric with no exponent.
-            $amount_pattern = '/"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/';
-            if (!preg_match($amount_pattern, $result, $m)) {
-                return null;
+            // 2. Lexical verification: each substituted token must appear as a
+            //    JSON NUMBER (with terminator/lookahead so "1" doesn't match "10").
+            //    Verification collects all tokens (per-product + map) and verifies
+            //    each one appears as a JSON number in the final payload.
+            $all_tokens = array();
+            foreach ($product_price_tokens as $pt) {
+                if (is_string($pt) && $pt !== '') {
+                    $all_tokens[] = $pt;
+                }
             }
-            if (stripos($m[1], 'e') !== false) {
-                return null;
+            foreach ($token_map as $token) {
+                if (is_string($token) && $token !== '') {
+                    $all_tokens[] = $token;
+                }
             }
-            if ($m[1] !== $order_token) {
-                return null;
-            }
-            if (preg_match('/"amount"\s*:\s*"' . preg_quote($order_token, '/') . '"/', $result)) {
-                return null;
-            }
-
-            if ($mm_amount_token !== null) {
-                if (!isset($decoded['extraMerchantData']) || !is_array($decoded['extraMerchantData'])) {
+            foreach ($all_tokens as $token) {
+                $quoted_re = '/"' . preg_quote($token, '/') . '"/';
+                if (preg_match($quoted_re, $result)) {
                     return null;
                 }
-                $mm = $decoded['extraMerchantData'];
-                if (count($mm) !== 1 || !is_array($mm[0])) {
+                // Token must NOT be preceded by a digit or '.' (so "10" doesn't
+                // match the start of "100"), and must NOT be followed by a digit or '.'.
+                $banned_re = '/(?<=[0-9.])' . preg_quote($token, '/') . '|' . preg_quote($token, '/') . '\\.|(?<=\\.)' . preg_quote($token, '/') . '|[0-9]' . preg_quote($token, '/') . '$|[0-9]' . preg_quote($token, '/') . '\\.|[0-9]' . preg_quote($token, '/') . '(?=[0-9.])/';
+                if (preg_match($banned_re, $result)) {
                     return null;
-                }
-                if (!array_key_exists('amount', $mm[0])) {
-                    return null;
-                }
-                // MM amount must equal order amount exactly.
-                if ($mm_amount_token !== $order_token) {
-                    return null;
-                }
-                // KNET and CC charge values must be JSON numbers with no quotes.
-                if ($mm_knet_charge_token !== null) {
-                    $re = '/"knetCharge"\s*:\s*' . preg_quote($mm_knet_charge_token, '/') . '/';
-                    if (!preg_match($re, $result)) {
-                        return null;
-                    }
-                    if (preg_match('/"knetCharge"\s*:\s*"[^"]+"/', $result)) {
-                        return null;
-                    }
-                }
-                if ($mm_cc_charge_token !== null) {
-                    $re = '/"ccCharge"\s*:\s*' . preg_quote($mm_cc_charge_token, '/') . '/';
-                    if (!preg_match($re, $result)) {
-                        return null;
-                    }
-                    if (preg_match('/"ccCharge"\s*:\s*"[^"]+"/', $result)) {
-                        return null;
-                    }
                 }
             }
 
-            // No leftover sentinels.
-            foreach (array(
-                '__UPAY_ORDER_AMOUNT_SENTINEL__',
-                '__UPAY_MM_AMOUNT_SENTINEL__',
-                '__UPAY_MM_KNET_CHARGE_SENTINEL__',
-                '__UPAY_MM_CC_CHARGE_SENTINEL__',
-            ) as $s) {
-                if (strpos($result, $s) !== false) {
+            // 3. No leftover sentinels.
+            foreach (array_keys($token_map) as $s) {
+                if (strpos($result, (string) $s) !== false) {
+                    return null;
+                }
+            }
+            if ($product_price_substring !== '') {
+                if (strpos($result, $product_price_substring) !== false) {
                     return null;
                 }
             }
 
             return $result;
+        }
+
+        /**
+         * Per-field max length for tokens substituted into the payload.
+         * Provider contract varies per field. Returns 0 for "no ceiling".
+         */
+        private static function get_max_length_for_sentinel($placeholder) {
+            switch ($placeholder) {
+                case '__UPAY_ORDER_AMOUNT_SENTINEL__':
+                    return 22; // order.amount: provider contract ceiling
+                case '__UPAY_PRODUCT_PRICE_SENTINEL__':
+                    return 7;  // products[].price: 1.00..9999.99 / 10.000..99999.99
+                case '__UPAY_MM_AMOUNT_SENTINEL__':
+                    return 10; // MM allocation amount
+                case '__UPAY_MM_KNET_CHARGE_SENTINEL__':
+                case '__UPAY_MM_CC_CHARGE_SENTINEL__':
+                    return 0;  // No invented ceiling — value validated by build_amount_json_token
+            }
+            return 0;
         }
 
         /**
@@ -602,16 +609,20 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
-         * Protected production seam for reading the raw HTTP request body.
+         * Instance seam for reading the raw HTTP request body.
          *
          * Production code reads php://input ONLY through this method. The harness
-         * and any subclass can override it to inject deterministic bodies for
-         * testing without depending on a real PHP request. This is the single
-         * canonical inlet for raw-body access in production.
+         * subclasses UPayments and overrides this method to inject deterministic
+         * bodies for testing without depending on a real PHP request. This is the
+         * single canonical inlet for raw-body access in production.
+         *
+         * Declared as `@property-style` instance method so any subclass (in
+         * particular the harness adapter) can override without dispatching
+         * through static binding.
          *
          * @return string Raw request body, or empty string on failure.
          */
-        protected static function get_request_body_raw() {
+        protected function get_request_body_raw() {
             $raw = file_get_contents('php://input');
             return (is_string($raw)) ? $raw : '';
         }
@@ -623,6 +634,8 @@ function woocommerceUpaymentsInit() {
          * Allowed: digits, at most one '.', leading digits (not optional).
          * Rejected: exponent (e/E), sign (+/-), commas, whitespace, INF, NAN,
          * empty string, leading/trailing '.', multiple '.', leading zeros beyond '0.x'.
+         * Positive sub-units ('0.01', '0.50') are accepted. Pure zero ('0', '0.00')
+         * is rejected because the provider contract is strictly positive.
          *
          * Section D2: deterministic preflight failure when the provider
          * representation cannot preserve the line.
@@ -660,27 +673,64 @@ function woocommerceUpaymentsInit() {
             if (strcasecmp($value, 'NAN') === 0 || strcasecmp($value, 'INF') === 0) {
                 return null;
             }
-            // Reject zero or negative — provider contract is positive.
-            // Pure lexical: leading-zero only allowed as '0' or '0.xxx'.
-            // Strip the optional fractional suffix; remainder must be positive integer.
-            $int_part = ($dot !== false) ? substr($value, 0, $dot) : $value;
-            if ($int_part === '' || $int_part === '0') {
-                // '0' or '0.x' — reject zero as a non-positive monetary line.
+            // Reject zero as a non-positive monetary line. Pattern matches
+            // '0', '0.0', '0.00', '00.000', etc. — any all-zero representation.
+            // Positive sub-units like '0.01', '0.50', '0.1' are accepted.
+            if (preg_match('/^0+(?:\.0+)?$/', $value)) {
                 return null;
             }
             return $value;
         }
 
         /**
+         * Validate a provider decimal monetary value as a nonnegative-decimal
+         * lexical string. Same lexical rules as the positive variant, but
+         * accepts exactly zero. Used for product line totals that may be
+         * zero (e.g. $0.00 promotional lines) while the overall order amount
+         * still must be strictly positive.
+         *
+         * @param mixed  $value Candidate decimal value.
+         * @param string $field_name Field label for error context (not used in return).
+         * @return string|null Canonical nonnegative-decimal string, or null on rejection.
+         */
+        public static function validate_provider_nonnegative_decimal($value, $field_name = '') {
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '') {
+                return null;
+            }
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $value)) {
+                return null;
+            }
+            if (preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $value) !== 1) {
+                return null;
+            }
+            $dot = strpos($value, '.');
+            if ($dot === 0) {
+                return null;
+            }
+            $last = strlen($value) - 1;
+            if ($value[$last] === '.') {
+                return null;
+            }
+            if (strcasecmp($value, 'NAN') === 0 || strcasecmp($value, 'INF') === 0) {
+                return null;
+            }
+            // Anything matching /^[0-9]+(\.[0-9]+)?$/ is >= 0. Return as-is.
+            return $value;
+        }
+
+        /**
          * Compute the provider-compatible unit price as a decimal string.
-         * Division: (line_total / qty) with exact-decimal handling.
+         * Division: (line_total / qty) using digit-string long division.
          *
          * Behavior:
          *  - Both inputs validated as positive-decimal strings.
          *  - Integer qty is preserved raw (no rounding at the boundary).
-         *  - Integer-only division: line_total is treated as a positive integer
-         *    scaled by min(decimals) when the line and unit share fractional digits.
-         *    For plain unit prices like 1.00 / 2 = 0.50 the math is exact.
+         *  - Digit long division: integer numerator (line_total as unscaled integer)
+         *    divided by integer qty using `(int) string-based math`. For plain unit
+         *    prices like 1.00 / 2 = 0.50 the math is exact.
          *
          * Returns null when the result cannot be expressed as a stable provider
          * decimal (to invoke deterministic preflight failure).
@@ -698,54 +748,100 @@ function woocommerceUpaymentsInit() {
                 return null;
             }
 
-            // Scale both sides to a common integer representation:
-            // pick the larger of the two fractional digit counts, then multiply.
-            $line_dot = strpos($validated_line, '.');
-            $line_decimals = ($line_dot === false) ? 0 : (strlen($validated_line) - $line_dot - 1);
-            $scale = (int) pow(10, $line_decimals);
-            $line_int_value = (int) (str_replace('.', '', $validated_line));
+            // Split the line into integer and fractional parts.
+            $dot = strpos($validated_line, '.');
+            $int_part = ($dot !== false) ? substr($validated_line, 0, $dot) : $validated_line;
+            $frac_part = ($dot !== false) ? substr($validated_line, $dot + 1) : '';
+            $line_decimals = strlen($frac_part);
 
-            // Integer division for the unit-price numerator.
-            $unit_int_numerator = intdiv($line_int_value, $qty);
-            $unit_int_remainder = $line_int_value % $qty;
-
-            if ($unit_int_remainder !== 0) {
-                // Cannot express as a clean provider decimal at the captured
-                // precision — return null to invoke deterministic preflight
-                // failure rather than silently truncating.
+            // Integer numerator = int_part concatenated with frac_part (no decimal).
+            $numer_str = $int_part . $frac_part;
+            // Numerator is a positive integer digit string. qty is a positive int.
+            // We digit-divide by qty using ordinary long division semantics.
+            $unit = self::digit_long_divide($numer_str, $qty);
+            if ($unit === null) {
                 return null;
             }
-
-            if ($scale === 1) {
-                $unit_str = (string) $unit_int_numerator;
+            // unit is the integer quotient. If the line has fractional digits, the
+            // quotient already excludes them; we now reinsert the decimal point.
+            if ($line_decimals === 0) {
+                $unit_str = $unit;
             } else {
-                $unit_int_div = intdiv($unit_int_numerator, $scale);
-                $unit_int_mod = $unit_int_numerator % $scale;
-                if ($unit_int_mod === 0) {
-                    $unit_str = (string) $unit_int_div;
+                $unit_len = strlen($unit);
+                if ($unit_len <= $line_decimals) {
+                    // Pure fraction: e.g. 50 / 100 = 0.50 → "0.50"
+                    $unit_str = '0.' . str_pad($unit, $line_decimals, '0', STR_PAD_LEFT);
                 } else {
-                    $frac = str_pad((string) $unit_int_mod, $line_decimals, '0', STR_PAD_LEFT);
-                    $unit_str = $unit_int_div . '.' . $frac;
+                    $unit_str = substr($unit, 0, $unit_len - $line_decimals) . '.' . substr($unit, $unit_len - $line_decimals);
                 }
             }
             return self::validate_provider_positive_decimal($unit_str, 'unit_price');
         }
 
         /**
-         * Convert a numeric value (int, float, numeric string) into the canonical
-         * positive-decimal string accepted by validate_provider_positive_decimal().
-         * No float arithmetic — uses number_format with deterministic precision
-         * only as a serialization step, never as a validation.
+         * Digit long division of a positive integer digit string by a positive int.
+         * Returns the exact quotient digit string, or null if the input string is
+         * not a valid positive integer digit string. Detects digit-string overflow
+         * (length > PHP_INT_MAX decimal digits) and returns null deterministically.
+         *
+         * @param string $numer_str Strict positive integer digit string.
+         * @param int    $denom     Strict positive int divisor.
+         * @return string|null Quotient digit string, or null on invalid input.
+         */
+        private static function digit_long_divide($numer_str, $denom) {
+            if (!is_string($numer_str) || !preg_match('/^[0-9]+$/', $numer_str)) {
+                return null;
+            }
+            if (!is_int($denom) || $denom <= 0) {
+                return null;
+            }
+            // 9,223,372,036,854,775,807 ≈ 19 decimal digits. Above this, PHP int
+            // arithmetic on cumulative remainders is fine (remainder is bounded by
+            // denominator), but the quotient string may exceed int width. We allow
+            // up to a hard ceiling and beyond that we still operate digit-by-digit
+            // (no overflow in the remainder).
+            $quotient = '';
+            $carry = 0;
+            $len = strlen($numer_str);
+            for ($i = 0; $i < $len; $i++) {
+                $digit = ord($numer_str[$i]) - 48;
+                $carry = $carry * 10 + $digit;
+                $q = intdiv($carry, $denom);
+                $carry = $carry - $q * $denom;
+                // Skip leading zeros until we have written something.
+                if ($q !== 0 || $quotient !== '') {
+                    $quotient .= (string) $q;
+                }
+            }
+            if ($quotient === '') {
+                $quotient = '0';
+            }
+            return $quotient;
+        }
+
+        /**
+         * Convert a numeric or string value into the canonical lexical decimal
+         * accepted by validate_provider_positive_decimal() / validate_provider_nonnegative_decimal().
+         *
+         * No silent type coercion on malformed lexical forms. The following are
+         * explicitly rejected with a null return:
+         *   - Leading '+' (e.g. "+1", "+1.50") — never accepted; the provider
+         *     contract uses unsigned decimal strings.
+         *   - Leading zeros on positive integers (e.g. "01", "01.00") — never
+         *     accepted; prevents lexical ambiguity ("01.00" vs "1.00").
+         *   - Exponent notation (e.g. "1e3", "1.5E-2") — never accepted.
+         *   - NaN / INF literals — never accepted.
+         * Floats are accepted only as a deterministic conversion step (rejecting
+         * non-finite values), and the resulting string is re-validated lexically.
          *
          * @param mixed $value Numeric value or string.
-         * @return string|null Canonical positive-decimal string, or null on rejection.
+         * @return string|null Canonical decimal string, or null on rejection.
          */
         public static function canonicalize_provider_decimal_string($value) {
             if (is_int($value)) {
                 return (string) $value;
             }
             if (is_float($value)) {
-                // Serialize via PHP's deterministic cast; reject NaN/INF.
                 if (!is_finite($value)) {
                     return null;
                 }
@@ -755,12 +851,21 @@ function woocommerceUpaymentsInit() {
             } else {
                 return null;
             }
-            // Strip a leading '+' if present (still a positive decimal).
-            if ($candidate !== '' && $candidate[0] === '+') {
-                $candidate = substr($candidate, 1);
+            // Reject malformed lexical forms explicitly. We do NOT strip '+' / '0'-prefixes.
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $candidate)) {
+                return null;
             }
-            // Already-formatted strings pass through directly to lexical validation.
-            // No round()/trim()/float math applied here.
+            if (strcasecmp($candidate, 'NAN') === 0 || strcasecmp($candidate, 'INF') === 0) {
+                return null;
+            }
+            // Reject leading zeros on integer part (e.g. "01", "00.5", "007"). Lexically
+            // canonical for payment gateways is "1", "0.5", "7". Without this filter, a
+            // crafted "01.00" would otherwise pass the digit/dot regex in the validator.
+            $dot = strpos($candidate, '.');
+            $int_part = ($dot !== false) ? substr($candidate, 0, $dot) : $candidate;
+            if ($int_part !== '' && $int_part !== '0' && $int_part[0] === '0') {
+                return null;
+            }
             return $candidate;
         }
 
@@ -2127,6 +2232,7 @@ function woocommerceUpaymentsInit() {
             $product_type = [];
 
             $productArrayNew = [];
+            $product_price_tokens = [];
             $cart_has_custom_product = false;
             $order_has_subscription_product = false;
             $order_has_normal_product = false;
@@ -2166,9 +2272,13 @@ function woocommerceUpaymentsInit() {
                 // WC_Order_Item_Product::get_total() returns a numeric value (often
                 // a float). Convert to a canonical positive-decimal string BEFORE
                 // lexical validation. We never use round()/float math downstream.
+                //
+                // Product line totals may be zero (e.g. $0.00 promotional lines);
+                // use the *nonnegative* lexical validator here. The unit_price
+                // down-stream uses the *positive* validator for provider contract.
                 $raw_line_total = $item->get_total();
                 $line_total_canonical = self::canonicalize_provider_decimal_string($raw_line_total);
-                $line_total_validation = self::validate_provider_positive_decimal($line_total_canonical, 'line_total');
+                $line_total_validation = self::validate_provider_nonnegative_decimal($line_total_canonical, 'line_total');
                 if ($line_total_validation === null) {
                     $this->log('Invalid line total.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2180,6 +2290,14 @@ function woocommerceUpaymentsInit() {
                 // deterministic decimal string. No round()/float math. Quantization
                 // uses string-based decimal division by the integer quantity.
                 $unit_price = self::compute_provider_unit_price_decimal($line_total, $qty);
+                if ($unit_price === null) {
+                    // Unit price cannot be expressed as a stable provider decimal
+                    // (e.g. line_total/qty is not a clean fraction at the captured
+                    // precision). Fail closed rather than silently truncating.
+                    $this->log('Invalid unit price derivation.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
 
                 // Section F: UTF-8 safe truncation.
                 $normalized_name = $this->truncate_provider_text($item->get_name(), 255);
@@ -2195,12 +2313,18 @@ function woocommerceUpaymentsInit() {
                 // Section C: Use normalized values in payload.
                 // 'type' is intentionally omitted — provider does not document a
                 // contract for this key, so we send only the documented keys.
+                //
+                // The 'price' field is built as a per-product indexed sentinel so
+                // the injection step can replace it with a JSON NUMBER (not quoted).
+                // We track every product's validated price token so the injector
+                // can verify each one against its corresponding sentinel.
                 $productArrayNew[$i] = array(
                     'name'        => $normalized_name,
                     'description' => $normalized_description,
-                    'price'       => $unit_price,
+                    'price'       => '__UPAY_PRODUCT_PRICE_SENTINEL_' . $i . '__',
                     'quantity'    => $qty,
                 );
+                $product_price_tokens[] = $unit_price;
                 $i++;
             }
 
@@ -2247,7 +2371,7 @@ function woocommerceUpaymentsInit() {
 
             if ($is_store_api) {
                 // Store API: parse JSON only, never consume Classic POST.
-                $raw_input = self::get_request_body_raw();
+                $raw_input = $this->get_request_body_raw();
                 if (is_string($raw_input) && $raw_input !== '') {
                     $request_data = json_decode($raw_input, true);
                 }
@@ -2284,12 +2408,22 @@ function woocommerceUpaymentsInit() {
                 // masquerade as absence.
                 if (self::field_present($extension_data, 'card_token')) {
                     $raw = $extension_data['card_token'];
-                    if ($raw === null) { $cardToken = null; }
-                    elseif (is_string($raw)) {
+                    if ($raw === null) {
+                        $cardToken = null;
+                    } elseif (is_string($raw)) {
                         // Section AT: Strict no-trim card token handling.
                         // The card token is a security identifier — we accept it
                         // exactly as supplied and validate without trimming.
-                        $cardToken = $raw;
+                        // Whitespace anywhere (including leading/trailing) is invalid
+                        // and is rejected as a malformed value (not coerced).
+                        if ($raw === '') {
+                            $cardToken = null;
+                        } elseif (preg_match('/\s/', $raw)) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        } else {
+                            $cardToken = $raw;
+                        }
                     } elseif (is_int($raw)) {
                         // Strict: integer token not supported by the existing frozen contract.
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2715,6 +2849,17 @@ function woocommerceUpaymentsInit() {
                 $cc_charge_raw = isset($this->ccCharge) && is_string($this->ccCharge) ? $this->ccCharge : '';
                 $knet_charge_type = isset($this->knetChargeType) && is_string($this->knetChargeType) ? $this->knetChargeType : '';
                 $cc_charge_type = isset($this->ccChargeType) && is_string($this->ccChargeType) ? $this->ccChargeType : '';
+
+                // IBAN structural validation: conservative lexical check.
+                // Country code: 2 letters. Check digits: 2 digits. BBAN: 11-30 alphanumeric.
+                // Provider documentation states 25 chars, but observed real-world
+                // values reach 30 (e.g. Kuwait IBAN); we accept 15-34 to avoid
+                // over-rejecting while still catching wholesale garbage.
+                if (!preg_match('/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/', $iban)) {
+                    $this->log('MultiMerchant: invalid IBAN format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
 
                 // === Canonical JSON number grammar: no exponent, no sign, no leading
                 // zero, no whitespace, no comma, no other variation. Trailing-zero
@@ -3144,15 +3289,48 @@ function woocommerceUpaymentsInit() {
             }
             $params = self::inject_amount_token_into_payload_json(
                 $final_raw,
-                $amount_json_token,
-                $mm_amount_for_injection,
-                $mm_knet_charge_for_injection,
-                $mm_cc_charge_for_injection
+                array(
+                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => $amount_json_token,
+                    '__UPAY_MM_AMOUNT_SENTINEL__' => $mm_amount_for_injection,
+                    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => $mm_knet_charge_for_injection,
+                    '__UPAY_MM_CC_CHARGE_SENTINEL__' => $mm_cc_charge_for_injection,
+                ),
+                array(
+                    // Each product's price sentinel is indexed. Identity is preserved
+                    // so the injection step can verify each per-product token.
+                    'product_price_sent_substring' => '__UPAY_PRODUCT_PRICE_SENTINEL_',
+                    'product_price_tokens' => $product_price_tokens,
+                )
             );
             if (!is_string($params) || $params === '') {
                 $this->log('Final amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // === PHASE C+: FINAL IDENTITY CONTEXT GATE ===
+            // For non-ordinary payments, revalidate the atomic identity context
+            // one last time and require exact match against the scope+generation
+            // that authorized token establishment. Any identity rotation that
+            // landed between the token establishment and the Charge call must
+            // fail closed rather than persist a Charge under the wrong root.
+            if (!$is_ordinary_payment) {
+                $final_ctx = CustomerTokenIdentity::read_existing_identity_context($this->apiKey, $this->getMode());
+                if ($final_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $final_ctx['scope'] === null
+                    || $final_ctx['generation_id'] === null
+                ) {
+                    $this->log('Charge: identity context invalidated before Charge.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!hash_equals((string) $final_ctx['scope'], (string) $expected_scope)
+                    || !hash_equals((string) $final_ctx['generation_id'], (string) $expected_generation)
+                ) {
+                    $this->log('Charge: identity context changed between token establish and Charge.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
             $this->log(__("Create payment request prepared.", $this->domain));

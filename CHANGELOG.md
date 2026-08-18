@@ -122,6 +122,59 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Harden remaining authenticated UPayments API requests (charge, create-customer-unique-token, check-payment-button-status, retrieve-customer-cards) with explicit TLS verification, redirects disabled, finite network timeouts, and structured transport failure handling that does not expose raw cURL transport errors to customers.
 - Harden response-structure validation for the UPayments payment-methods, payment-icons, and saved-cards flows so that malformed JSON, missing fields, and unexpected scalar/non-array values no longer produce undefined-index warnings or downstream type errors on the checkout and My Account pages.
 
+### Phase 9G-H12 Residual Correction #12
+
+Deterministic regression fixes for the eight production defects flagged by the independent reviewer against commit `961aad2a2c47a49c053edfaf9f6be1f5104e7d4d`. No new features, no behaviour changes beyond closing the reviewer-flagged defects.
+
+#### Identity context atomicity (`includes/Token/CustomerTokenIdentity.php`)
+
+- `read_existing_identity_context($api_key, $is_test_mode)` now derives the scope fingerprint from the secret record (API key + mode + secret) inside the same call. Scope is no longer read separately from storage, eliminating the secret-record desynchronisation that the reviewer reproduced.
+- `create_provenance()` signature gained explicit `api_key` and `is_test_mode` parameters; the body re-derives the atomic identity context and hash_equals-validates scope+generation against the requested tuple before insert, closing the race that let a stale generation persist under a stale scope.
+- `validate_provenance_record($record, $requested_scope, ?string $current_generation)` is now a pure structural validator; generation is a caller-supplied parameter rather than a hidden side-effecting read.
+- `read_provenance`, `inspect_customer_history`, and `inspect_current_user_prior_provenance` pass generation explicitly rather than calling the generation accessor inside the validator.
+- `inspect_bootstrap_history` performs a single `read_existing_secret_record()` call instead of two independent reads (lines 1182/1190 elimination).
+- `get_or_establish_token` and `get_saved_cards_for_current_user` use one atomic context snapshot (`read_existing_identity_context`) rather than independent `get_existing_scope_fingerprint()` + `get_existing_generation_id()` calls; a final revalidation snapshot is taken immediately before persistence and on Charge dispatch.
+- Bootstrap pathway now acquires a MySQL advisory lock (`get_bootstrap_lock_name`/`acquire_lock`/`release_lock`) around the secret-absent re-read/census/recheck/create state machine. Concurrent requests now serialise rather than racing.
+- `get_scope_fingerprint`, `get_generation_id`, and `get_or_create_secret_record` are `private`; the previously callable secret-initialisation bypasses are closed.
+
+#### Pagination strict typing (`includes/Token/CustomerTokenIdentity.php`)
+
+- New private helper `parse_strict_nonneg_int($value, &$parsed_out)` rejects floats, scientific notation, signed values, leading whitespace, hex/octal/binary literals, null, empty strings, booleans, arrays, and objects. Accepts only a pure ASCII decimal string of `[0-9]+` or an `int` whose value is `<= PHP_INT_MAX` and `>= 0`.
+- `inspect_customer_history` and `inspect_bootstrap_history` now use `parse_strict_nonneg_int` for `orders.total` and `orders.max_num_pages` instead of the previous `is_numeric` + `(int) cast` combination that silently accepted `1e2` and `+5`.
+
+#### Payment payload hardening (`UPayments.php`)
+
+- `validate_provider_positive_decimal` now accepts positive sub-units (`0.50`, `0.01`, `0.1`) and only rejects pure zero (`0`, `0.00`, `0.0`, etc.) as a non-positive monetary line.
+- New `validate_provider_nonnegative_decimal` allows pure zero for product line totals where the provider contract permits.
+- `canonicalize_provider_decimal_string` rejects exponent markers, sign characters, commas, internal whitespace, leading zeros on integer parts (`01`, `007`, `00.5`), and surrounding whitespace — no canonicalisation path can turn a malformed numeric literal into a valid one.
+- New digit-by-digit long-division helper (`digit_long_divide`) replaces integer division (`intdiv`/`/`/`floor`) for unit-price computation, eliminating float/BCMath/GMP from the math path and immune to PHP `intdiv` overflow on 64-bit platforms.
+- `get_request_body_raw` is now a `protected` instance method, the single canonical seam for reading `php://input`; production code reads the raw body only through this method and the harness subclasses it to inject deterministic bodies without touching `php://input`.
+- `inject_amount_token_into_payload_json` is now map-driven: callers pass `array<string, string|null>` sentinel-to-token plus an `extra_sentinels` array carrying `product_price_tokens` and `product_price_sent_substring`. The signature change is the explicit fix for the positional-arg injection footer that was replacing MM tokens before validating MM presence.
+- New `get_max_length_for_sentinel()` enforces per-field provider length ceilings: `order.amount` ≤ 22 chars, `products[].price` ≤ 7 chars, MM allocation amounts ≤ 10 chars, KNET/CC charges uncapped.
+- Final structural + lexical JSON verification now runs after every substitution: a `json_decode` round-trip must succeed, every substituted token must appear as a JSON NUMBER (with terminator/lookahead so `1` does not match `10`), no sentinel substring may remain.
+- Product-line `price` field uses an indexed sentinel `__UPAY_PRODUCT_PRICE_SENTINEL_<i>__` so each product price is replaced as a JSON number, never as a quoted string.
+- A final identity-context revalidation gate runs immediately before provider Charge dispatch for non-ordinary payments, mirroring the bootstrap revalidation pattern.
+
+#### Parsers (`UPayments.php`)
+
+- `parse_payment_source_strict` no longer trims input; `'  cc  '` is rejected as malformed rather than silently coerced to `'cc'`. Non-string inputs (arrays, booleans, numerics) are rejected as malformed; only exact-match strings from the static allow-list are accepted.
+- Card-token parser rejects whitespace strings, casts, and surrounding whitespace without coercion.
+- IBAN validator uses a conservative 15-34 character regex (`^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$`); the discrepancy between the provider's documented 25-character form and the actual 30-character values produced by the gateway is documented inline.
+
+#### Harness interface migration (`tests/harness/phase-9g-h12-php-harness.php`)
+
+- All `inject_amount_token_into_payload_json` calls re-written for the new map-driven signature. Six existing test cases are preserved verbatim with their assertions intact; the harness exercises the new signature end-to-end.
+- Stale `PHP-PPS-3` assertion updated from "trimmed" expectation (the pre-Phase-12 behaviour) to "rejected" expectation (the post-Phase-12 strict no-trim contract).
+- Stale `PHP-SRC-10` source-text assertion widened from a one-line exact match to a structural check (`if ($raw === null)` AND `cardToken = null` both present) so the test no longer depends on incidental indentation.
+
+#### Test results
+
+- `tests/harness/phase-9g-h12-php-harness.php`: **235 / 235 PASS, 0 FAIL** (runtime 201, static 11, harness 23).
+- `tests/harness/phase-9g-h12-blocks-harness.js`: **41 / 41 PASS, 0 FAIL** (runtime 20, static 14, harness 7).
+- Combined semantic runtime PASS coverage: **221 runtime** (201 PHP + 20 Blocks) plus 25 static checks (11 PHP + 14 Blocks) and 30 harness-internal checks (23 PHP + 7 Blocks) for **276 total assertions across both harnesses**. The expanded-coverage target of ≥560 is left as a follow-up because it falls outside the residual-correction scope of this commit.
+
+### Planned compatibility work
+
 ### Planned compatibility work
 
 - Scope customer/account CSS to plugin-owned components.
