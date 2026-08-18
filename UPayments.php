@@ -200,6 +200,76 @@ function woocommerceUpaymentsInit() {
          * @param string $amount_str Validated plain decimal input.
          * @return string|null JSON-safe number token or null.
          */
+        /**
+         * Pure-PHP positive-decimal string comparison.
+         *
+         * Both $value and $upper are validated canonical plain-decimal strings
+         * (no exponent, no sign, no leading zero except for the integer part "0",
+         * no whitespace). Returns true iff the value is strictly greater than
+         * $lower and strictly less than $upper.
+         *
+         * Does not require BCMath, GMP, or any optional extension. Does not
+         * cast to int or float.
+         *
+         * @param string $value Canonical positive decimal string.
+         * @param string $lower Canonical lower bound (e.g. '0').
+         * @param string $upper Canonical upper bound (e.g. '9999999.9999').
+         * @return bool
+         */
+        private static function positive_decimal_string_in_range($value, $lower, $upper) {
+            if (!is_string($value) || !is_string($lower) || !is_string($upper)) {
+                return false;
+            }
+            $strip = function ($s) {
+                $dot = strpos($s, '.');
+                if ($dot === false) {
+                    $int = $s; $frac = '';
+                } else {
+                    $int = substr($s, 0, $dot);
+                    $frac = substr($s, $dot + 1);
+                }
+                // Strip leading zeros (but keep at least one digit for the integer part)
+                $int = ltrim($int, '0');
+                if ($int === '') $int = '0';
+                // Strip trailing zeros from fractional part
+                $frac = rtrim($frac, '0');
+                return array($int, $frac);
+            };
+            list($vi, $vf) = $strip($value);
+            list($li, $lf) = $strip($lower);
+            list($ui, $uf) = $strip($upper);
+            // Compare integer parts by length then lexical
+            $vi_len = strlen($vi);
+            $li_len = strlen($li);
+            $ui_len = strlen($ui);
+            // value > lower iff: int part is longer, OR same length and lexically > lower
+            $gt_lower = ($vi_len > $li_len) || ($vi_len === $li_len && strcmp($vi, $li) > 0);
+            if (!$gt_lower) {
+                // Equal integer parts: compare fractional right-padded
+                $max_frac = max(strlen($vf), strlen($lf));
+                $vf_p = str_pad($vf, $max_frac, '0');
+                $lf_p = str_pad($lf, $max_frac, '0');
+                if (strcmp($vf_p, $lf_p) <= 0 && ($vi_len === $li_len && strcmp($vi, $li) >= 0)) {
+                    // value <= lower
+                    $gt_lower = ($vi_len > $li_len) || ($vi_len === $li_len && strcmp($vi, $li) > 0);
+                    if ($vi_len === $li_len && strcmp($vi, $li) === 0) {
+                        $gt_lower = strcmp($vf_p, $lf_p) > 0;
+                    } else {
+                        $gt_lower = false;
+                    }
+                }
+            }
+            // value < upper iff: int part is shorter, OR same length and lexically < upper
+            $lt_upper = ($vi_len < $ui_len) || ($vi_len === $ui_len && strcmp($vi, $ui) < 0);
+            if (!$lt_upper && $vi_len === $ui_len && strcmp($vi, $ui) === 0) {
+                $max_frac2 = max(strlen($vf), strlen($uf));
+                $vf_p2 = str_pad($vf, $max_frac2, '0');
+                $uf_p2 = str_pad($uf, $max_frac2, '0');
+                $lt_upper = strcmp($vf_p2, $uf_p2) < 0;
+            }
+            return $gt_lower && $lt_upper;
+        }
+
         private static function build_amount_json_token($amount_str) {
             if (!is_string($amount_str)) {
                 return null;
@@ -2478,48 +2548,26 @@ function woocommerceUpaymentsInit() {
             // Retrieve, ZERO Charge, ZERO provenance/identity writes.
             $extraMerchantData = null;
             if ($this->multiMerchant === 'yes') {
-                $iban = isset($this->ibanNumber) && is_string($this->ibanNumber) ? trim($this->ibanNumber) : '';
-                $knet_charge_raw = isset($this->knetCharge) && is_string($this->knetCharge) ? trim($this->knetCharge) : '';
-                $cc_charge_raw = isset($this->ccCharge) && is_string($this->ccCharge) ? trim($this->ccCharge) : '';
-                // Strict plain-decimal parsing: reject exponent notation, signs,
-                // whitespace, commas, and any non-canonical form.
-                if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $knet_charge_raw)) {
+                // === Read raw values; do NOT trim/sanitize. ===
+                $iban = isset($this->ibanNumber) && is_string($this->ibanNumber) ? $this->ibanNumber : '';
+                $knet_charge_raw = isset($this->knetCharge) && is_string($this->knetCharge) ? $this->knetCharge : '';
+                $cc_charge_raw = isset($this->ccCharge) && is_string($this->ccCharge) ? $this->ccCharge : '';
+                $knet_charge_type = isset($this->knetChargeType) && is_string($this->knetChargeType) ? $this->knetChargeType : '';
+                $cc_charge_type = isset($this->ccChargeType) && is_string($this->ccChargeType) ? $this->ccChargeType : '';
+
+                // === Canonical JSON number grammar: no exponent, no sign, no leading
+                // zero, no whitespace, no comma, no other variation. ===
+                if (!preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/', $knet_charge_raw)) {
                     $this->log('MultiMerchant: invalid knetCharge format.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $cc_charge_raw)) {
+                if (!preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/', $cc_charge_raw)) {
                     $this->log('MultiMerchant: invalid ccCharge format.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                $knet_charge = $knet_charge_raw; // string, no float conversion
-                $cc_charge = $cc_charge_raw;
-                $knet_charge_type = isset($this->knetChargeType) && is_scalar($this->knetChargeType) ? trim((string) $this->knetChargeType) : '';
-                $cc_charge_type = isset($this->ccChargeType) && is_scalar($this->ccChargeType) ? trim((string) $this->ccChargeType) : '';
-
-                // Strict IBAN validation.
-                if ($iban === '' || !preg_match('/^[A-Z0-9]{8,34}$/', $iban)) {
-                    $this->log('MultiMerchant: invalid IBAN.', 'warning');
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                // Strict numeric bounds for charges (string comparison, no float).
-                if ($knet_charge === '' || bccomp($knet_charge, '0', 8) !== 1 || bccomp($knet_charge, '9999999.9999', 8) === 1) {
-                    $this->log('MultiMerchant: invalid knetCharge.', 'warning');
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                if ($cc_charge === '' || bccomp($cc_charge, '0', 8) !== 1 || bccomp($cc_charge, '9999999.9999', 8) === 1) {
-                    $this->log('MultiMerchant: invalid ccCharge.', 'warning');
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                // Charge-type semantics: canonical values are 'fixed' or 'percentage'.
-                // Anything else (including legacy 'flat', capitalization, whitespace, or
-                // any non-canonical form) is rejected. Historical values stored as 'flat'
-                // are reported as a migration/compatibility fact below; we do NOT silently
-                // send 'flat' to the provider.
+                // Reject non-canonical charge-type forms exactly.
                 $valid_charge_types = array('fixed', 'percentage');
                 if (!in_array($knet_charge_type, $valid_charge_types, true)) {
                     $this->log('MultiMerchant: invalid knetChargeType.', 'warning');
@@ -2531,6 +2579,20 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
+                // Pure-PHP positive-decimal bounds (no BCMath, no float).
+                if (!self::positive_decimal_string_in_range($knet_charge_raw, '0', '9999999.9999')) {
+                    $this->log('MultiMerchant: invalid knetCharge value.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!self::positive_decimal_string_in_range($cc_charge_raw, '0', '9999999.9999')) {
+                    $this->log('MultiMerchant: invalid ccCharge value.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $knet_charge = $knet_charge_raw;
+                $cc_charge = $cc_charge_raw;
+
                 // All checks passed: build the deterministic provider-bound structure.
                 // The amount field uses a sentinel that is later replaced by the validated
                 // JSON number token. No float conversion happens here.

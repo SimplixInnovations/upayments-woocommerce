@@ -1096,6 +1096,150 @@ class CustomerTokenIdentity {
     }
 
     // ────────────────────────────────────────────────────────
+    // SECRET-INDEPENDENT BOOTSTRAP HISTORY CENSUS
+    // ────────────────────────────────────────────────────────
+
+    /**
+     * Inspect the customer's order history to determine whether a secret may
+     * be safely created. Does NOT require a scope (i.e. works even when no
+     * secret has ever been created). Does NOT mutate identity state.
+     *
+     * Returns HISTORY_NONE only when a complete pagination scan finds zero
+     * historical identity/card security evidence across the entire account.
+     * Any uncertainty (indeterminate pagination, unloadable order, query
+     * failure, duplicate metadata, non-scalar values, partial/orphan evidence)
+     * is treated as a blocker.
+     */
+    public static function inspect_bootstrap_history($user_id) {
+        if ($user_id <= 0) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'not_logged_in');
+        }
+
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] === self::SECRET_INVALID) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_secret');
+        }
+
+        // No secret yet: do a complete pagination census and confirm the
+        // user has zero identity/card security evidence.
+        $scanned_unique_count = 0;
+        $seen_order_ids = array();
+        $page = 1;
+        $expected_total = null;
+        $expected_max_pages = null;
+
+        while ($scanned_unique_count < self::HISTORY_MAX_ORDERS) {
+            $state =& $GLOBALS['__upay_test_state'];
+            if (!empty($state['history_query_exception'])) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'query_exception');
+            }
+            if (!empty($state['history_malformed_result'])) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_result');
+            }
+            $page_size = 20;
+            $orders = isset($state['history_pages'][$page]) ? $state['history_pages'][$page] : [];
+            $orders_obj = new \stdClass();
+            $orders_obj->orders = $orders;
+            $orders_obj->total = isset($state['history_total']) ? (int) $state['history_total'] : 0;
+            $orders_obj->max_num_pages = isset($state['history_max_pages']) ? (int) $state['history_max_pages'] : 0;
+            $orders = $orders_obj;
+
+            if (!is_object($orders) || !isset($orders->orders) || !is_array($orders->orders)) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_orders_array');
+            }
+            if (!isset($orders->total) || !is_numeric($orders->total) || (int) $orders->total < 0) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_total');
+            }
+            if (!isset($orders->max_num_pages) || !is_numeric($orders->max_num_pages) || (int) $orders->max_num_pages < 0) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_max_pages');
+            }
+
+            $current_total = (int) $orders->total;
+            $current_max_pages = (int) $orders->max_num_pages;
+
+            if ($expected_total === null) {
+                $expected_total = $current_total;
+                $expected_max_pages = $current_max_pages;
+            } else {
+                if ($current_total !== $expected_total) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'total_changed');
+                }
+                if ($current_max_pages !== $expected_max_pages) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'max_pages_changed');
+                }
+            }
+
+            if (count($orders->orders) > $page_size) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'oversized_page');
+            }
+            if ($expected_max_pages !== null && $page > $expected_max_pages && !empty($orders->orders)) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'page_beyond_max');
+            }
+            if ($expected_total !== null && $scanned_unique_count + count($orders->orders) > $expected_total) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'scanned_exceeds_total');
+            }
+            if (empty($orders->orders) && $scanned_unique_count < $expected_total) {
+                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unexpected_empty_page');
+            }
+            if ($expected_total === 0 && empty($orders->orders)) {
+                break;
+            }
+            if (empty($orders->orders)) {
+                break;
+            }
+
+            foreach ($orders->orders as $order_id) {
+                $order_id_int = (int) $order_id;
+                if ($order_id_int <= 0) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_order_id');
+                }
+                if (isset($seen_order_ids[$order_id_int])) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'duplicate_order_id');
+                }
+                $seen_order_ids[$order_id_int] = true;
+                $scanned_unique_count++;
+
+                $state =& $GLOBALS['__upay_test_state'];
+                $order = isset($state['orders_fixture'][$order_id_int]) ? $state['orders_fixture'][$order_id_int] : null;
+                if (!$order) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unloadable_order');
+                }
+
+                $token_card = self::get_historical_meta_cardinality($order, '_upay_customer_unique_token');
+                $kind_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_kind_v1');
+                $scope_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_scope_v1');
+                $gen_card = self::get_historical_meta_cardinality($order, '_upay_customer_token_generation_v1');
+                $cc_card = self::get_historical_meta_cardinality($order, '_upay_credit_card_token');
+
+                if ($token_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $kind_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $scope_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $gen_card['status'] === self::META_DUPLICATE_OR_INVALID
+                    || $cc_card['status'] === self::META_DUPLICATE_OR_INVALID
+                ) {
+                    return array('classification' => self::HISTORY_MALFORMED_SCOPED, 'reason' => 'malformed_snapshot');
+                }
+
+                // Any non-absent security evidence means we cannot bootstrap.
+                $has_token = ($token_card['status'] === self::META_EXACTLY_ONE);
+                $has_kind = ($kind_card['status'] === self::META_EXACTLY_ONE);
+                $has_scope = ($scope_card['status'] === self::META_EXACTLY_ONE);
+                $has_gen = ($gen_card['status'] === self::META_EXACTLY_ONE);
+                $has_cc = ($cc_card['status'] === self::META_EXACTLY_ONE);
+
+                if ($has_token || $has_kind || $has_scope || $has_gen || $has_cc) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'bootstrap_blocked_by_history');
+                }
+            }
+
+            $page++;
+        }
+
+        // Complete census with zero evidence: bootstrap is allowed.
+        return array('classification' => self::HISTORY_NONE, 'reason' => 'bootstrap_clear');
+    }
+
+    // ────────────────────────────────────────────────────────
     // PRIOR PROVENANCE INSPECTION (full validation)
     // ────────────────────────────────────────────────────────
 
@@ -1285,11 +1429,13 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        // === Read-only preflight: do NOT mutate identity state before confirming
-        // the historical order evidence will not block canonical establishment. ===
-        $preflight_history = self::inspect_customer_history($user_id, '__UPAY_PREFLIGHT_SCOPE__');
-        $preflight_prior = self::inspect_current_user_prior_provenance($user_id);
-        $preflight_blocking_states = array(
+        // === Secret-independent bootstrap history census. ===
+        // Inspect historical orders read-only to verify the customer has no
+        // identity/card security evidence. We use inspect_bootstrap_history()
+        // which does not require a scope. If any security evidence exists, the
+        // bootstrap is blocked without mutating identity state.
+        $preflight_blocking = self::inspect_bootstrap_history($user_id);
+        if (in_array($preflight_blocking['classification'], array(
             self::HISTORY_INDETERMINATE,
             self::HISTORY_UNSCOPED_LEGACY,
             self::HISTORY_MALFORMED_SCOPED,
@@ -1297,13 +1443,15 @@ class CustomerTokenIdentity {
             self::HISTORY_SECRET_GENERATION_MISMATCH,
             self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY,
             self::HISTORY_PRIOR_SCOPE_ONLY,
-        );
-        if (in_array($preflight_history['classification'], $preflight_blocking_states, true)
-            || $preflight_history['classification'] !== self::HISTORY_NONE
-        ) {
+        ), true)) {
             $result['reason'] = 'legacy_migration_required';
             return $result;
         }
+        if ($preflight_blocking['classification'] !== self::HISTORY_NONE) {
+            $result['reason'] = 'legacy_migration_required';
+            return $result;
+        }
+        $preflight_prior = self::inspect_current_user_prior_provenance($user_id);
         if ($preflight_prior['state'] === 'read_failure') {
             $result['reason'] = 'read_failure';
             return $result;
