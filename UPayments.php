@@ -201,24 +201,23 @@ function woocommerceUpaymentsInit() {
          * @return string|null JSON-safe number token or null.
          */
         /**
-         * Pure-PHP positive-decimal string comparison.
+         * Pure-PHP comparison of canonical nonnegative-decimal strings.
          *
-         * Both $value and $upper are validated canonical plain-decimal strings
-         * (no exponent, no sign, no leading zero except for the integer part "0",
-         * no whitespace). Returns true iff the value is strictly greater than
-         * $lower and strictly less than $upper.
+         * Both $a and $b are validated canonical plain-decimal strings
+         * (canonical form per build_amount_json_token: no exponent, no sign,
+         * no leading-zero integer part except for "0", no whitespace, no comma).
          *
          * Does not require BCMath, GMP, or any optional extension. Does not
-         * cast to int or float.
+         * cast to int or float for provider-bound monetary comparison.
          *
-         * @param string $value Canonical positive decimal string.
-         * @param string $lower Canonical lower bound (e.g. '0').
-         * @param string $upper Canonical upper bound (e.g. '9999999.9999').
-         * @return bool
+         * Returns:
+         *   -1 if $a < $b
+         *    0 if $a == $b
+         *   +1 if $a > $b
          */
-        private static function positive_decimal_string_in_range($value, $lower, $upper) {
-            if (!is_string($value) || !is_string($lower) || !is_string($upper)) {
-                return false;
+        private static function compare_nonnegative_decimal_strings($a, $b) {
+            if (!is_string($a) || !is_string($b)) {
+                return 0;
             }
             $strip = function ($s) {
                 $dot = strpos($s, '.');
@@ -228,46 +227,41 @@ function woocommerceUpaymentsInit() {
                     $int = substr($s, 0, $dot);
                     $frac = substr($s, $dot + 1);
                 }
-                // Strip leading zeros (but keep at least one digit for the integer part)
                 $int = ltrim($int, '0');
                 if ($int === '') $int = '0';
-                // Strip trailing zeros from fractional part
                 $frac = rtrim($frac, '0');
                 return array($int, $frac);
             };
-            list($vi, $vf) = $strip($value);
-            list($li, $lf) = $strip($lower);
-            list($ui, $uf) = $strip($upper);
-            // Compare integer parts by length then lexical
-            $vi_len = strlen($vi);
-            $li_len = strlen($li);
-            $ui_len = strlen($ui);
-            // value > lower iff: int part is longer, OR same length and lexically > lower
-            $gt_lower = ($vi_len > $li_len) || ($vi_len === $li_len && strcmp($vi, $li) > 0);
-            if (!$gt_lower) {
-                // Equal integer parts: compare fractional right-padded
-                $max_frac = max(strlen($vf), strlen($lf));
-                $vf_p = str_pad($vf, $max_frac, '0');
-                $lf_p = str_pad($lf, $max_frac, '0');
-                if (strcmp($vf_p, $lf_p) <= 0 && ($vi_len === $li_len && strcmp($vi, $li) >= 0)) {
-                    // value <= lower
-                    $gt_lower = ($vi_len > $li_len) || ($vi_len === $li_len && strcmp($vi, $li) > 0);
-                    if ($vi_len === $li_len && strcmp($vi, $li) === 0) {
-                        $gt_lower = strcmp($vf_p, $lf_p) > 0;
-                    } else {
-                        $gt_lower = false;
-                    }
-                }
+            list($ai, $af) = $strip($a);
+            list($bi, $bf) = $strip($b);
+            $ai_len = strlen($ai);
+            $bi_len = strlen($bi);
+            if ($ai_len !== $bi_len) {
+                return $ai_len > $bi_len ? 1 : -1;
             }
-            // value < upper iff: int part is shorter, OR same length and lexically < upper
-            $lt_upper = ($vi_len < $ui_len) || ($vi_len === $ui_len && strcmp($vi, $ui) < 0);
-            if (!$lt_upper && $vi_len === $ui_len && strcmp($vi, $ui) === 0) {
-                $max_frac2 = max(strlen($vf), strlen($uf));
-                $vf_p2 = str_pad($vf, $max_frac2, '0');
-                $uf_p2 = str_pad($uf, $max_frac2, '0');
-                $lt_upper = strcmp($vf_p2, $uf_p2) < 0;
+            if (strcmp($ai, $bi) !== 0) {
+                return strcmp($ai, $bi) > 0 ? 1 : -1;
             }
-            return $gt_lower && $lt_upper;
+            $max_frac = max(strlen($af), strlen($bf));
+            $af_p = str_pad($af, $max_frac, '0');
+            $bf_p = str_pad($bf, $max_frac, '0');
+            $cmp = strcmp($af_p, $bf_p);
+            if ($cmp === 0) return 0;
+            return $cmp > 0 ? 1 : -1;
+        }
+
+        /**
+         * Pure-PHP positive-decimal string comparison.
+         *
+         * Returns true iff $value is strictly greater than $lower and strictly
+         * less than $upper, using exact-decimal string semantics. No BCMath, no float.
+         */
+        private static function positive_decimal_string_in_range($value, $lower, $upper) {
+            if (!is_string($value) || !is_string($lower) || !is_string($upper)) {
+                return false;
+            }
+            return (self::compare_nonnegative_decimal_strings($value, $lower) > 0
+                && self::compare_nonnegative_decimal_strings($value, $upper) < 0);
         }
 
         private static function build_amount_json_token($amount_str) {
@@ -310,17 +304,25 @@ function woocommerceUpaymentsInit() {
          *   - exactly one occurrence-count for each sentinel substitution
          *   - the order.amount token appears exactly once, as a JSON NUMBER
          *     (not quoted), with no exponent, no sign, no comma
-         *   - if MultiMerchant was constructed, the MM amount token appears
-         *     exactly once, as a JSON NUMBER (not quoted), with no exponent
+         *   - if MultiMerchant was constructed, the MM amount, KNET charge, and
+         *     CC charge tokens each appear exactly once, as a JSON NUMBER (not
+         *     quoted), with no exponent
          *   - the decoded JSON is structurally valid
          *
          * @param string $payload_json   Encoded payload with sentinels.
          * @param string $order_token     Validated order.amount token.
-         * @param string|null $mm_token   Validated MM amount token, or null when
-         *                                 MultiMerchant was not constructed.
+         * @param string|null $mm_amount_token   Validated MM amount token, or null.
+         * @param string|null $mm_knet_charge_token  Validated MM knetCharge token, or null.
+         * @param string|null $mm_cc_charge_token    Validated MM ccCharge token, or null.
          * @return string|null Final JSON or null on any verification failure.
          */
-        private static function inject_amount_token_into_payload_json($payload_json, $order_token, $mm_token) {
+        private static function inject_amount_token_into_payload_json(
+            $payload_json,
+            $order_token,
+            $mm_amount_token,
+            $mm_knet_charge_token,
+            $mm_cc_charge_token
+        ) {
             if (!is_string($payload_json) || $payload_json === '') {
                 return null;
             }
@@ -328,41 +330,41 @@ function woocommerceUpaymentsInit() {
                 return null;
             }
 
+            $result = $payload_json;
+
             // === Order amount injection ===
-            // The order.amount field carries the value '__UPAY_ORDER_AMOUNT_SENTINEL__'
-            // (as a JSON string). We replace the literal string with the validated
-            // amount as a JSON NUMBER (no quotes).
             $order_placeholder = '__UPAY_ORDER_AMOUNT_SENTINEL__';
-            $order_count = substr_count($payload_json, '"' . $order_placeholder . '"');
+            $order_count = substr_count($result, '"' . $order_placeholder . '"');
             if ($order_count !== 1) {
                 return null;
             }
-            // Replace the quoted sentinel with the quoted token, e.g.
-            // "amount":"__UPAY_ORDER_AMOUNT_SENTINEL__" -> "amount":12.50
-            $result = str_replace(
-                '"' . $order_placeholder . '"',
-                $order_token,
-                $payload_json
-            );
+            $result = str_replace('"' . $order_placeholder . '"', $order_token, $result);
             if ($result === $payload_json) {
                 return null;
             }
 
-            // === MultiMerchant amount injection ===
-            if ($mm_token !== null) {
-                $mm_placeholder = '__UPAY_MM_AMOUNT_SENTINEL__';
-                $mm_count = substr_count($result, '"' . $mm_placeholder . '"');
-                if ($mm_count !== 1) {
+            // === MultiMerchant amount + numeric charge injection ===
+            $mm_sentinels = array(
+                array('__UPAY_MM_AMOUNT_SENTINEL__', $mm_amount_token),
+                array('__UPAY_MM_KNET_CHARGE_SENTINEL__', $mm_knet_charge_token),
+                array('__UPAY_MM_CC_CHARGE_SENTINEL__', $mm_cc_charge_token),
+            );
+            foreach ($mm_sentinels as $entry) {
+                list($placeholder, $token) = $entry;
+                $q_placeholder = '"' . $placeholder . '"';
+                $expected_count = ($token !== null) ? 1 : 0;
+                $actual_count = substr_count($result, $q_placeholder);
+                if ($actual_count !== $expected_count) {
                     return null;
                 }
-                $result = str_replace('"' . $mm_placeholder . '"', $mm_token, $result);
-                if ($result === $payload_json) {
+                if ($token === null) {
+                    continue;
+                }
+                $new_result = str_replace($q_placeholder, $token, $result);
+                if ($new_result === $result) {
                     return null;
                 }
-            } else {
-                if (strpos($result, '__UPAY_MM_AMOUNT_SENTINEL__') !== false) {
-                    return null;
-                }
+                $result = $new_result;
             }
 
             // === Verification ===
@@ -385,55 +387,56 @@ function woocommerceUpaymentsInit() {
             if ($m[1] !== $order_token) {
                 return null;
             }
-            // Reject quoted "amount" tokens (must be a JSON NUMBER).
             if (preg_match('/"amount"\s*:\s*"' . preg_quote($order_token, '/') . '"/', $result)) {
                 return null;
             }
 
-            // MM amount verification (only when MM token supplied).
-            if ($mm_token !== null) {
+            if ($mm_amount_token !== null) {
                 if (!isset($decoded['extraMerchantData']) || !is_array($decoded['extraMerchantData'])) {
                     return null;
                 }
                 $mm = $decoded['extraMerchantData'];
-                if (count($mm) !== 1) {
-                    return null;
-                }
-                if (!isset($mm[0]) || !is_array($mm[0])) {
+                if (count($mm) !== 1 || !is_array($mm[0])) {
                     return null;
                 }
                 if (!array_key_exists('amount', $mm[0])) {
                     return null;
                 }
-                // Reject quoted MM amount in JSON.
-                if (preg_match('/"amount"\s*:\s*"[^"]+"\s*,\s*"knetCharge"/', $result)) {
+                // MM amount must equal order amount exactly.
+                if ($mm_amount_token !== $order_token) {
                     return null;
                 }
-                $mm_amount_pattern = '/"extraMerchantData"\s*:\s*\[\s*\{[^}]*"amount"\s*:\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/s';
-                if (!preg_match($mm_amount_pattern, $result, $mm_m)) {
-                    return null;
+                // KNET and CC charge values must be JSON numbers with no quotes.
+                if ($mm_knet_charge_token !== null) {
+                    $re = '/"knetCharge"\s*:\s*' . preg_quote($mm_knet_charge_token, '/') . '/';
+                    if (!preg_match($re, $result)) {
+                        return null;
+                    }
+                    if (preg_match('/"knetCharge"\s*:\s*"[^"]+"/', $result)) {
+                        return null;
+                    }
                 }
-                if (stripos($mm_m[1], 'e') !== false) {
-                    return null;
-                }
-                if ($mm_m[1] !== $mm_token) {
-                    return null;
-                }
-                // MM amount must equal order amount exactly (per provider contract).
-                // Both tokens are already validated plain-decimal strings; no float
-                // conversion is performed. Compare the canonical provider-bound
-                // decimal representations character-for-character.
-                if ($mm_token !== $order_token) {
-                    return null;
+                if ($mm_cc_charge_token !== null) {
+                    $re = '/"ccCharge"\s*:\s*' . preg_quote($mm_cc_charge_token, '/') . '/';
+                    if (!preg_match($re, $result)) {
+                        return null;
+                    }
+                    if (preg_match('/"ccCharge"\s*:\s*"[^"]+"/', $result)) {
+                        return null;
+                    }
                 }
             }
 
-            // Final structural sanity: no leftover sentinels.
-            if (strpos($result, '__UPAY_ORDER_AMOUNT_SENTINEL__') !== false) {
-                return null;
-            }
-            if (strpos($result, '__UPAY_MM_AMOUNT_SENTINEL__') !== false) {
-                return null;
+            // No leftover sentinels.
+            foreach (array(
+                '__UPAY_ORDER_AMOUNT_SENTINEL__',
+                '__UPAY_MM_AMOUNT_SENTINEL__',
+                '__UPAY_MM_KNET_CHARGE_SENTINEL__',
+                '__UPAY_MM_CC_CHARGE_SENTINEL__',
+            ) as $s) {
+                if (strpos($result, $s) !== false) {
+                    return null;
+                }
             }
 
             return $result;
@@ -2556,13 +2559,17 @@ function woocommerceUpaymentsInit() {
                 $cc_charge_type = isset($this->ccChargeType) && is_string($this->ccChargeType) ? $this->ccChargeType : '';
 
                 // === Canonical JSON number grammar: no exponent, no sign, no leading
-                // zero, no whitespace, no comma, no other variation. ===
-                if (!preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/', $knet_charge_raw)) {
+                // zero, no whitespace, no comma, no other variation. Trailing-zero
+                // fractions such as 0.900 or 0.750 are accepted (matches first-party
+                // UPayments examples and the plugin's existing admin UI which uses
+                // step="0.010" and max="10.000"). Leading-zero invalid forms (01,
+                // 01.50, .5) and exponent/scientific notation (1e2) are rejected. ===
+                if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $knet_charge_raw)) {
                     $this->log('MultiMerchant: invalid knetCharge format.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (!preg_match('/^(0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$/', $cc_charge_raw)) {
+                if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $cc_charge_raw)) {
                     $this->log('MultiMerchant: invalid ccCharge format.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2580,12 +2587,16 @@ function woocommerceUpaymentsInit() {
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
                 // Pure-PHP positive-decimal bounds (no BCMath, no float).
-                if (!self::positive_decimal_string_in_range($knet_charge_raw, '0', '9999999.9999')) {
+                // The current plugin UI uses max="10.000" for both KNET and CC charges.
+                // UPayments' first-party documentation describes the fields as float
+                // with length 2,2 and shows examples up to 25; we retain 10.000 as
+                // a defensive structural bound consistent with the existing admin UI.
+                if (!self::positive_decimal_string_in_range($knet_charge_raw, '0', '10.000')) {
                     $this->log('MultiMerchant: invalid knetCharge value.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                if (!self::positive_decimal_string_in_range($cc_charge_raw, '0', '9999999.9999')) {
+                if (!self::positive_decimal_string_in_range($cc_charge_raw, '0', '10.000')) {
                     $this->log('MultiMerchant: invalid ccCharge value.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2604,13 +2615,28 @@ function woocommerceUpaymentsInit() {
                 $extraMerchantData = array(
                     array(
                         'amount'         => '__UPAY_MM_AMOUNT_SENTINEL__',
-                        'knetCharge'     => $knet_charge,
+                        'knetCharge'     => '__UPAY_MM_KNET_CHARGE_SENTINEL__',
                         'knetChargeType' => $knet_charge_type,
-                        'ccCharge'       => $cc_charge,
+                        'ccCharge'       => '__UPAY_MM_CC_CHARGE_SENTINEL__',
                         'ccChargeType'   => $cc_charge_type,
                         'ibanNumber'     => $iban,
                     ),
                 );
+                $mm_amount_token = $amount_json_token;
+                $mm_knet_charge_token = self::build_amount_json_token($knet_charge);
+                $mm_cc_charge_token = self::build_amount_json_token($cc_charge);
+                if ($mm_knet_charge_token === null || $mm_cc_charge_token === null) {
+                    $this->log('MultiMerchant: invalid charge JSON encoding.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $mm_amount_for_injection = $mm_amount_token;
+                $mm_knet_charge_for_injection = $mm_knet_charge_token;
+                $mm_cc_charge_for_injection = $mm_cc_charge_token;
+            } else {
+                $mm_amount_for_injection = null;
+                $mm_knet_charge_for_injection = null;
+                $mm_cc_charge_for_injection = null;
             }
 
             // Build deterministic base payload (token fields are null placeholders).
@@ -2685,7 +2711,13 @@ function woocommerceUpaymentsInit() {
             }
             // The MM amount sentinel is only present when MultiMerchant is enabled and valid.
             $mm_amount_for_injection = ($extraMerchantData !== null) ? $amount_json_token : null;
-            $preflight_json = self::inject_amount_token_into_payload_json($preflight_raw, $amount_json_token, $mm_amount_for_injection);
+            $preflight_json = self::inject_amount_token_into_payload_json(
+                $preflight_raw,
+                $amount_json_token,
+                $mm_amount_for_injection,
+                $mm_knet_charge_for_injection,
+                $mm_cc_charge_for_injection
+            );
             if (!is_string($preflight_json) || $preflight_json === '') {
                 $this->log('Deterministic amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
@@ -2953,7 +2985,13 @@ function woocommerceUpaymentsInit() {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
-            $params = self::inject_amount_token_into_payload_json($final_raw, $amount_json_token, $mm_amount_for_injection);
+            $params = self::inject_amount_token_into_payload_json(
+                $final_raw,
+                $amount_json_token,
+                $mm_amount_for_injection,
+                $mm_knet_charge_for_injection,
+                $mm_cc_charge_for_injection
+            );
             if (!is_string($params) || $params === '') {
                 $this->log('Final amount injection failed.', 'warning');
                 wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');

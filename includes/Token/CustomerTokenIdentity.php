@@ -1121,28 +1121,31 @@ class CustomerTokenIdentity {
         }
 
         // No secret yet: do a complete pagination census and confirm the
-        // user has zero identity/card security evidence.
+        // user has zero identity/card security evidence. Uses real WooCommerce
+        // APIs (wc_get_orders, wc_get_order, force_refresh_order_meta).
         $scanned_unique_count = 0;
         $seen_order_ids = array();
         $page = 1;
         $expected_total = null;
         $expected_max_pages = null;
+        $page_size = self::HISTORY_PAGE_SIZE;
 
         while ($scanned_unique_count < self::HISTORY_MAX_ORDERS) {
-            $state =& $GLOBALS['__upay_test_state'];
-            if (!empty($state['history_query_exception'])) {
+            try {
+                $orders = wc_get_orders(array(
+                    'type' => 'shop_order',
+                    'customer_id' => $user_id,
+                    'payment_method' => 'upayments',
+                    'limit' => $page_size,
+                    'paged' => $page,
+                    'orderby' => 'ID',
+                    'order' => 'DESC',
+                    'return' => 'ids',
+                    'paginate' => true,
+                ));
+            } catch (\Throwable $e) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'query_exception');
             }
-            if (!empty($state['history_malformed_result'])) {
-                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_result');
-            }
-            $page_size = 20;
-            $orders = isset($state['history_pages'][$page]) ? $state['history_pages'][$page] : [];
-            $orders_obj = new \stdClass();
-            $orders_obj->orders = $orders;
-            $orders_obj->total = isset($state['history_total']) ? (int) $state['history_total'] : 0;
-            $orders_obj->max_num_pages = isset($state['history_max_pages']) ? (int) $state['history_max_pages'] : 0;
-            $orders = $orders_obj;
 
             if (!is_object($orders) || !isset($orders->orders) || !is_array($orders->orders)) {
                 return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'malformed_orders_array');
@@ -1199,10 +1202,12 @@ class CustomerTokenIdentity {
                 $seen_order_ids[$order_id_int] = true;
                 $scanned_unique_count++;
 
-                $state =& $GLOBALS['__upay_test_state'];
-                $order = isset($state['orders_fixture'][$order_id_int]) ? $state['orders_fixture'][$order_id_int] : null;
+                $order = wc_get_order($order_id_int);
                 if (!$order) {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'unloadable_order');
+                }
+                if (!self::force_refresh_order_meta($order)) {
+                    return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'refresh_failure');
                 }
 
                 $token_card = self::get_historical_meta_cardinality($order, '_upay_customer_unique_token');
@@ -1220,7 +1225,6 @@ class CustomerTokenIdentity {
                     return array('classification' => self::HISTORY_MALFORMED_SCOPED, 'reason' => 'malformed_snapshot');
                 }
 
-                // Any non-absent security evidence means we cannot bootstrap.
                 $has_token = ($token_card['status'] === self::META_EXACTLY_ONE);
                 $has_kind = ($kind_card['status'] === self::META_EXACTLY_ONE);
                 $has_scope = ($scope_card['status'] === self::META_EXACTLY_ONE);
@@ -1235,7 +1239,14 @@ class CustomerTokenIdentity {
             $page++;
         }
 
-        // Complete census with zero evidence: bootstrap is allowed.
+        // Bootstrap completion: scan must be complete (not just the cap).
+        $is_complete = ($expected_total !== null)
+            && ($expected_total <= self::HISTORY_MAX_ORDERS)
+            && ($scanned_unique_count >= $expected_total);
+        if (!$is_complete) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'incomplete_scan');
+        }
+
         return array('classification' => self::HISTORY_NONE, 'reason' => 'bootstrap_clear');
     }
 
@@ -1429,41 +1440,53 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        // === Secret-independent bootstrap history census. ===
-        // Inspect historical orders read-only to verify the customer has no
-        // identity/card security evidence. We use inspect_bootstrap_history()
-        // which does not require a scope. If any security evidence exists, the
-        // bootstrap is blocked without mutating identity state.
-        $preflight_blocking = self::inspect_bootstrap_history($user_id);
-        if (in_array($preflight_blocking['classification'], array(
-            self::HISTORY_INDETERMINATE,
-            self::HISTORY_UNSCOPED_LEGACY,
-            self::HISTORY_MALFORMED_SCOPED,
-            self::HISTORY_CURRENT_SCOPE_ORPHAN,
-            self::HISTORY_SECRET_GENERATION_MISMATCH,
-            self::HISTORY_CARD_WITHOUT_CUSTOMER_IDENTITY,
-            self::HISTORY_PRIOR_SCOPE_ONLY,
-        ), true)) {
-            $result['reason'] = 'legacy_migration_required';
+        // === Secret state machine. ===
+        $secret_result = self::read_existing_secret_record();
+        if ($secret_result['state'] === self::SECRET_INVALID) {
+            $result['reason'] = 'malformed_secret';
             return $result;
         }
-        if ($preflight_blocking['classification'] !== self::HISTORY_NONE) {
-            $result['reason'] = 'legacy_migration_required';
-            return $result;
-        }
-        $preflight_prior = self::inspect_current_user_prior_provenance($user_id);
-        if ($preflight_prior['state'] === 'read_failure') {
-            $result['reason'] = 'read_failure';
-            return $result;
+        if ($secret_result['state'] === self::SECRET_ABSENT) {
+            // No secret yet. Run a complete secret-independent bootstrap census.
+            // Only a fully-scanned account with ZERO identity/card security
+            // evidence may create the secret. Anything else blocks without mutation.
+            $preflight_blocking = self::inspect_bootstrap_history($user_id);
+            if ($preflight_blocking['classification'] !== self::HISTORY_NONE) {
+                $result['reason'] = 'legacy_migration_required';
+                return $result;
+            }
+            // Re-read secret state to detect a race (another worker may have
+            // created the secret between the first read and now).
+            $secret_result = self::read_existing_secret_record();
+            if ($secret_result['state'] === self::SECRET_INVALID) {
+                $result['reason'] = 'malformed_secret';
+                return $result;
+            }
+            if ($secret_result['state'] === self::SECRET_ABSENT) {
+                // Create the secret through the existing controlled establishment.
+                $created = self::get_or_create_secret_record();
+                if ($created === null) {
+                    $result['reason'] = 'secret_create_failed';
+                    return $result;
+                }
+                $secret_result = self::read_existing_secret_record();
+                if ($secret_result['state'] !== self::SECRET_VALID) {
+                    $result['reason'] = 'secret_create_failed';
+                    return $result;
+                }
+            }
         }
 
-        $scope = self::get_scope_fingerprint($api_key, $is_test_mode);
+        // SECRET_VALID path: derive scope and generation read-only.
+        $scope = self::get_existing_scope_fingerprint($api_key, $is_test_mode);
+        if ($scope === null) {
+            $scope = self::get_scope_fingerprint($api_key, $is_test_mode);
+        }
         if ($scope === null) {
             $result['reason'] = 'scope_failure';
             return $result;
         }
-
-        $generation_id = self::get_generation_id();
+        $generation_id = self::get_existing_generation_id();
         if ($generation_id === null) {
             $result['reason'] = 'generation_failure';
             return $result;
