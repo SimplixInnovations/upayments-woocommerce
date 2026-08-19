@@ -701,11 +701,11 @@ class CustomerTokenIdentity {
         );
     }
 
-    public static function last_rollback_state() {
+    private static function last_rollback_state() {
         return self::$last_rollback_state;
     }
 
-    public static function reset_rollback_state_for_tests() {
+    private static function reset_rollback_state_for_tests() {
         self::$last_rollback_state = null;
     }
 
