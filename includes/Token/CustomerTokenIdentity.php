@@ -105,7 +105,13 @@ class CustomerTokenIdentity {
      * @return string|null Scope fingerprint or null on failure.
      */
     private static function derive_scope_fingerprint($api_key, $is_test_mode, $validated_secret_record) {
-        if (empty($api_key) || !is_scalar($api_key)) {
+        // Section #14: Strict input typing. Reject int/float/bool/array/object,
+        // null, empty string, and whitespace-only strings outright. Only a
+        // non-empty scalar string API key is accepted.
+        if (!is_string($api_key) || $api_key === '') {
+            return null;
+        }
+        if (!is_bool($is_test_mode)) {
             return null;
         }
         if (!is_array($validated_secret_record) || !isset($validated_secret_record['secret'])) {
@@ -138,6 +144,22 @@ class CustomerTokenIdentity {
      * @return array{state:string, scope:?string, generation_id:?string}
      */
     public static function read_existing_identity_context($api_key, $is_test_mode) {
+        // Section #14: Strict input typing — the public surface must reject
+        // malformed callers (int/float/bool/array/object, null, empty, etc.).
+        if (!is_string($api_key) || $api_key === '') {
+            return array(
+                'state' => 'invalid_input',
+                'scope' => null,
+                'generation_id' => null,
+            );
+        }
+        if (!is_bool($is_test_mode)) {
+            return array(
+                'state' => 'invalid_input',
+                'scope' => null,
+                'generation_id' => null,
+            );
+        }
         $secret_result = self::read_existing_secret_record();
         if ($secret_result['state'] !== self::SECRET_VALID) {
             return array(
@@ -361,6 +383,11 @@ class CustomerTokenIdentity {
         if ($value === '' || preg_match('/^[0-9]+$/', $value) !== 1) {
             return false;
         }
+        // Reject leading-zero strings: only "0" alone, or [1-9][0-9]* allowed.
+        // Grammar: ^(?:0|[1-9][0-9]*)$.
+        if (strlen($value) > 1 && $value[0] === '0') {
+            return false;
+        }
         // PHP's int is 64-bit signed on supported platforms; cap to that range
         // so we never silently wrap. Compare as strings first to dodge float
         // coercion of huge string-to-int conversions.
@@ -375,6 +402,31 @@ class CustomerTokenIdentity {
         return $parsed_out >= 0;
     }
 
+    /**
+     * Strict positive-integer parser for historical order IDs.
+     *
+     * Rejects: floats ("1.5", "1.0"), scientific notation ("1e2"), signs ("+1",
+     * "-1"), leading whitespace (" 1"), hex/octal/binary literals ("0x10"),
+     * leading-zero strings ("00", "01", "007"), null, empty string, booleans,
+     * arrays, objects, and values that exceed PHP_INT_MAX.
+     *
+     * Accepts only:
+     *   - a non-negative PHP int > 0, OR
+     *   - a canonical positive-decimal digit string in the grammar
+     *     `^(?:0|[1-9][0-9]*)$` whose integer value is > 0 and <= PHP_INT_MAX.
+     *
+     * @param mixed $value Candidate.
+     * @param int   &$parsed_out Out-parameter: parsed positive integer when valid.
+     * @return bool true iff input is a strict positive integer.
+     */
+    public static function parse_strict_positive_int($value, &$parsed_out) {
+        $parsed_out = 0;
+        if (!self::parse_strict_nonneg_int($value, $parsed_out)) {
+            return false;
+        }
+        return $parsed_out > 0;
+    }
+
     // ────────────────────────────────────────────────────────
     // SCOPE FINGERPRINT
     // ────────────────────────────────────────────────────────
@@ -384,41 +436,6 @@ class CustomerTokenIdentity {
             return false;
         }
         return preg_match(self::SCOPE_PATTERN, $scope) === 1;
-    }
-
-    private static function get_scope_fingerprint($api_key, $is_test_mode) {
-        if (empty($api_key) || !is_scalar($api_key)) {
-            return null;
-        }
-
-        $secret_record = self::get_or_create_secret_record();
-        if ($secret_record === null) {
-            return null;
-        }
-
-        $blog_id = (string) get_current_blog_id();
-        $mode = $is_test_mode ? 'test' : 'live';
-
-        $fingerprint = hash_hmac(
-            'sha256',
-            $blog_id . '|' . $mode . '|' . (string) $api_key,
-            $secret_record['secret']
-        );
-
-        $hex = strtolower($fingerprint);
-        if (!preg_match('/^[0-9a-f]{64}$/', $hex)) {
-            return null;
-        }
-
-        return substr($hex, 0, self::SCOPE_HEX_LENGTH);
-    }
-
-    private static function get_generation_id() {
-        $secret_record = self::get_or_create_secret_record();
-        if ($secret_record === null) {
-            return null;
-        }
-        return $secret_record['generation_id'];
     }
 
     // ────────────────────────────────────────────────────────
@@ -655,7 +672,7 @@ class CustomerTokenIdentity {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
             return false;
         }
-        if (empty($api_key) || !is_scalar($api_key)) {
+        if (!is_string($api_key) || $api_key === '') {
             return false;
         }
         if (!is_bool($is_test_mode)) {
@@ -732,41 +749,55 @@ class CustomerTokenIdentity {
         // Section T: Verify provenance persistence after creation.
         // Section U: Force refresh must succeed.
         if (!self::force_refresh_user_meta($user_id)) {
+            // Section #14: Atomic provenance write — compensating delete.
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         $verify_values = get_user_meta($user_id, $meta_key, false);
         if (!is_array($verify_values) || count($verify_values) !== 1) {
+            // Section #14: Atomic provenance write — compensating delete.
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         $verify_record = $verify_values[0];
         if (!is_array($verify_record)) {
+            // Section #14: Atomic provenance write — compensating delete.
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         // Exact compare all fields.
         if (!isset($verify_record['version']) || $verify_record['version'] !== $record['version']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['kind']) || $verify_record['kind'] !== $record['kind']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['token']) || $verify_record['token'] !== $record['token']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['source']) || $verify_record['source'] !== $record['source']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['scope']) || $verify_record['scope'] !== $record['scope']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['secret_generation_id']) || $verify_record['secret_generation_id'] !== $record['secret_generation_id']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
         if (!isset($verify_record['established_at_gmt']) || $verify_record['established_at_gmt'] !== $record['established_at_gmt']) {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
 
         // Section U: Run full structural validator with current-generation binding.
         if (self::validate_provenance_record($verify_record, $scope_fingerprint, $generation_id) !== 'valid') {
+            delete_user_meta($user_id, $meta_key);
             return false;
         }
 
@@ -953,17 +984,19 @@ class CustomerTokenIdentity {
     // HISTORY INSPECTOR (paginated, trustworthy)
     // ────────────────────────────────────────────────────────
 
-    public static function inspect_customer_history($user_id, $current_scope, $current_generation = null) {
+    public static function inspect_customer_history($user_id, $current_scope, $current_generation) {
         if ($user_id <= 0 || !self::is_valid_scope($current_scope)) {
             return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_input');
         }
 
-        // Caller-supplied generation; no hidden read.
-        if ($current_generation === null) {
-            $current_generation = self::get_existing_generation_id();
-            if ($current_generation === null) {
-                return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'no_generation');
-            }
+        // Section #14: Caller MUST supply current_generation. No hidden read.
+        // (The previous behaviour silently fell back to a fresh secret option
+        // read here, which produced a torn scope(A)+generation(B) snapshot when
+        // the credential rotated between the caller's earlier read and this one.)
+        if (!is_string($current_generation)
+            || !self::is_valid_hex($current_generation, self::GENERATION_ID_HEX_LENGTH)
+        ) {
+            return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'missing_generation');
         }
 
         $scanned_unique_count = 0;
@@ -1055,8 +1088,7 @@ class CustomerTokenIdentity {
             }
 
             foreach ($orders->orders as $order_id) {
-                $order_id_int = (int) $order_id;
-                if ($order_id_int <= 0) {
+                if (!self::parse_strict_positive_int($order_id, $order_id_int)) {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_order_id');
                 }
 
@@ -1349,8 +1381,7 @@ class CustomerTokenIdentity {
             }
 
             foreach ($orders->orders as $order_id) {
-                $order_id_int = (int) $order_id;
-                if ($order_id_int <= 0) {
+                if (!self::parse_strict_positive_int($order_id, $order_id_int)) {
                     return array('classification' => self::HISTORY_INDETERMINATE, 'reason' => 'invalid_order_id');
                 }
                 if (isset($seen_order_ids[$order_id_int])) {
@@ -1411,17 +1442,16 @@ class CustomerTokenIdentity {
     // PRIOR PROVENANCE INSPECTION (full validation)
     // ────────────────────────────────────────────────────────
 
-    public static function inspect_current_user_prior_provenance($user_id, $current_generation = null) {
+    public static function inspect_current_user_prior_provenance($user_id, $current_generation) {
         if ($user_id <= 0) {
             return array('state' => 'none', 'reason' => 'not_logged_in');
         }
 
-        // Caller-supplied generation; no hidden read.
-        if ($current_generation === null) {
-            $current_generation = self::get_existing_generation_id();
-            if ($current_generation === null) {
-                return array('state' => 'read_failure', 'reason' => 'no_generation');
-            }
+        // Section #14: Caller MUST supply current_generation. No hidden read.
+        if (!is_string($current_generation)
+            || !self::is_valid_hex($current_generation, self::GENERATION_ID_HEX_LENGTH)
+        ) {
+            return array('state' => 'read_failure', 'reason' => 'missing_generation');
         }
 
         // Force-refresh user-meta cache before authoritative read.

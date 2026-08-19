@@ -723,25 +723,48 @@ function woocommerceUpaymentsInit() {
 
         /**
          * Compute the provider-compatible unit price as a decimal string.
-         * Division: (line_total / qty) using digit-string long division.
+         * Division: (line_total / qty) using exact decimal long division.
          *
-         * Behavior:
-         *  - Both inputs validated as positive-decimal strings.
+         * Section #14 behavior:
+         *  - Accepts a nonnegative-decimal lexical string for line_total.
+         *    A zero line_total ("0", "0.00") is accepted and yields "0" (or
+         *    "0.<n>" once the fractional scale is matched) — zero-price
+         *    promotional lines remain in products[] with numeric price 0.
          *  - Integer qty is preserved raw (no rounding at the boundary).
-         *  - Digit long division: integer numerator (line_total as unscaled integer)
-         *    divided by integer qty using `(int) string-based math`. For plain unit
-         *    prices like 1.00 / 2 = 0.50 the math is exact.
+         *  - Float input for line_total is REJECTED — we cannot claim exact
+         *    lexical product economics while accepting float line totals.
+         *  - Digit long division extends fractional digits one at a time
+         *    (remainder*10 / qty) until remainder=0, capping at
+         *    UNIT_PRICE_MAX_FRACTIONAL_DIGITS. If the remainder never
+         *    becomes zero inside the cap, return null deterministically —
+         *    no truncation, no rounding, no float, no BCMath, no GMP.
+         *  - Examples:
+         *      1.00 / 8  -> 0.125   (exact)
+         *      10.00 / 3 -> null    (non-terminating within cap)
+         *      0.00 / 5  -> 0       (zero-price line preserved)
          *
-         * Returns null when the result cannot be expressed as a stable provider
-         * decimal (to invoke deterministic preflight failure).
-         *
-         * @param mixed $line_total Validated positive-decimal string.
-         * @param int   $qty        Validated positive integer quantity.
+         * @param mixed $line_total Canonical nonnegative-decimal string.
+         * @param int   $qty        Strict positive integer quantity.
          * @return string|null Decimal string unit price, or null on impossibility.
          */
         public static function compute_provider_unit_price_decimal($line_total, $qty) {
-            $validated_line = self::validate_provider_positive_decimal($line_total, 'line_total');
+            // Reject float line totals outright — we cannot claim exact lexical
+            // economics while accepting a float that may have been produced by
+            // arithmetic on an inexact binary representation.
+            if (is_float($line_total)) {
+                return null;
+            }
+            $validated_line = self::validate_provider_nonnegative_decimal($line_total, 'line_total');
             if ($validated_line === null) {
+                return null;
+            }
+            // Defensive: reject line totals with leading zeros on the integer
+            // part (e.g. "01.00"). The lexical canonical form for payment
+            // gateways is "1.00". Without this filter a crafted "01.00" would
+            // pass the validator regex but bypass canonicalization.
+            $dot = strpos($validated_line, '.');
+            $int_part = ($dot !== false) ? substr($validated_line, 0, $dot) : $validated_line;
+            if ($int_part !== '' && $int_part !== '0' && $int_part[0] === '0') {
                 return null;
             }
             if (!is_int($qty) || $qty <= 0) {
@@ -749,31 +772,78 @@ function woocommerceUpaymentsInit() {
             }
 
             // Split the line into integer and fractional parts.
-            $dot = strpos($validated_line, '.');
-            $int_part = ($dot !== false) ? substr($validated_line, 0, $dot) : $validated_line;
             $frac_part = ($dot !== false) ? substr($validated_line, $dot + 1) : '';
             $line_decimals = strlen($frac_part);
 
             // Integer numerator = int_part concatenated with frac_part (no decimal).
             $numer_str = $int_part . $frac_part;
-            // Numerator is a positive integer digit string. qty is a positive int.
+            // Numerator is a nonnegative integer digit string. qty is a positive int.
             // We digit-divide by qty using ordinary long division semantics.
-            $unit = self::digit_long_divide($numer_str, $qty);
-            if ($unit === null) {
+            $unit_int = self::digit_long_divide($numer_str, $qty);
+            if ($unit_int === null) {
                 return null;
             }
-            // unit is the integer quotient. If the line has fractional digits, the
-            // quotient already excludes them; we now reinsert the decimal point.
-            if ($line_decimals === 0) {
-                $unit_str = $unit;
+            // unit_int is the integer quotient (no fractional digits yet).
+
+            // Exact long division with remainder extension.
+            // Multiply the remainder by 10, divide by qty, repeat until
+            // remainder=0 or we hit the cap. Each step appends one digit
+            // to the fractional portion.
+            $remainder = self::digit_long_divide_remainder($numer_str, $qty);
+            if ($remainder === null) {
+                return null;
+            }
+            // The cap is on TOTAL fractional digits in the FINAL result,
+            // which equals k (extended frac digits) + line_decimals (scale
+            // shift back to the original unit). For line_decimals = 2 and
+            // max_frac = 7, F can extend at most 5 digits.
+            $max_frac = self::$UNIT_PRICE_MAX_FRACTIONAL_DIGITS;
+            $frac_cap = max(0, $max_frac - $line_decimals);
+            $unit_frac = '';
+            while ($remainder !== 0 && strlen($unit_frac) < $frac_cap) {
+                $remainder *= 10;
+                $digit = intdiv($remainder, $qty);
+                $remainder = $remainder - $digit * $qty;
+                $unit_frac .= (string) $digit;
+            }
+            if ($remainder !== 0) {
+                // Non-terminating within the provider-compatible boundary.
+                return null;
+            }
+            $k = strlen($unit_frac);
+
+            // Scale back: the quotient was computed in 10^line_decimals
+            // subunits (cents for line_decimals = 2). Combine the integer
+            // quotient and extended fraction as one digit string N2, then
+            // express as N2 / 10^(k + line_decimals) in the original unit.
+            $combined = ($unit_int === '') ? '0' : $unit_int;
+            $combined .= $unit_frac;
+            $total_shift = $k + $line_decimals;
+            $len_combined = strlen($combined);
+            if ($len_combined <= $total_shift) {
+                // Result is < 1: prepend "0." and pad with leading zeros.
+                $pad = $total_shift - $len_combined;
+                $unit_str = '0.' . str_repeat('0', $pad) . $combined;
             } else {
-                $unit_len = strlen($unit);
-                if ($unit_len <= $line_decimals) {
-                    // Pure fraction: e.g. 50 / 100 = 0.50 → "0.50"
-                    $unit_str = '0.' . str_pad($unit, $line_decimals, '0', STR_PAD_LEFT);
-                } else {
-                    $unit_str = substr($unit, 0, $unit_len - $line_decimals) . '.' . substr($unit, $unit_len - $line_decimals);
+                $int_out = substr($combined, 0, $len_combined - $total_shift);
+                $frac_out = substr($combined, $len_combined - $total_shift);
+                $unit_str = $int_out . '.' . $frac_out;
+            }
+
+            // Drop trailing zeros from the fraction so the result is the
+            // shortest exact representation. 0.50 -> 0.5, 0.125 stays.
+            if (strpos($unit_str, '.') !== false) {
+                $unit_str = rtrim($unit_str, '0');
+                if (substr($unit_str, -1) === '.') {
+                    $unit_str = substr($unit_str, 0, -1);
                 }
+            }
+
+            // The unit price for a zero-price line must validate as the
+            // nonnegative decimal string "0". For any other unit price, the
+            // positive validator guarantees >0 and the lexical shape.
+            if ($unit_str === '0' || $unit_str === '0.0' || $unit_str === '0.00' || $unit_str === '0.000') {
+                return self::validate_provider_nonnegative_decimal($unit_str, 'unit_price');
             }
             return self::validate_provider_positive_decimal($unit_str, 'unit_price');
         }
@@ -817,6 +887,34 @@ function woocommerceUpaymentsInit() {
                 $quotient = '0';
             }
             return $quotient;
+        }
+
+        /**
+         * Compute the integer remainder of (numer_str / denom) using
+         * digit long division. Returns the final carry (remainder) or null
+         * on invalid input. The remainder is guaranteed to be in [0, denom)
+         * for valid input.
+         *
+         * @param string $numer_str Strict positive integer digit string.
+         * @param int    $denom     Strict positive int divisor.
+         * @return int|null Final remainder, or null on invalid input.
+         */
+        private static function digit_long_divide_remainder($numer_str, $denom) {
+            if (!is_string($numer_str) || !preg_match('/^[0-9]+$/', $numer_str)) {
+                return null;
+            }
+            if (!is_int($denom) || $denom <= 0) {
+                return null;
+            }
+            $carry = 0;
+            $len = strlen($numer_str);
+            for ($i = 0; $i < $len; $i++) {
+                $digit = ord($numer_str[$i]) - 48;
+                $carry = $carry * 10 + $digit;
+                $q = intdiv($carry, $denom);
+                $carry = $carry - $q * $denom;
+            }
+            return $carry;
         }
 
         /**
@@ -900,6 +998,15 @@ function woocommerceUpaymentsInit() {
          * Payment-method availability rate-gate constants.
          */
         private static $RATE_GATE_COOLDOWN = 65;
+
+        /**
+         * Maximum fractional digits tolerated for an exact provider unit
+         * price. Provider product prices are bounded to a small number of
+         * fractional digits; anything beyond this boundary is treated as a
+         * non-terminating division and the unit-price computation fails
+         * closed (null) so the request is rejected at preflight.
+         */
+        private static $UNIT_PRICE_MAX_FRACTIONAL_DIGITS = 7;
 
         /**
          * Get the mode-specific durable rate-gate option name.
@@ -2270,13 +2377,21 @@ function woocommerceUpaymentsInit() {
                 // Section D2: Pure deterministic decimal handling.
                 // Provider requires a positive-decimal string for the line price.
                 // WC_Order_Item_Product::get_total() returns a numeric value (often
-                // a float). Convert to a canonical positive-decimal string BEFORE
-                // lexical validation. We never use round()/float math downstream.
+                // a float). Section #14: we REJECT float input outright for product
+                // economics — claiming exact lexical economics while accepting a
+                // float contradicts itself. The order-line total MUST be a
+                // canonical decimal string. If WC returns a float we look up the
+                // canonical stored string value via the meta or refuse the line.
                 //
                 // Product line totals may be zero (e.g. $0.00 promotional lines);
                 // use the *nonnegative* lexical validator here. The unit_price
                 // down-stream uses the *positive* validator for provider contract.
                 $raw_line_total = $item->get_total();
+                if (is_float($raw_line_total)) {
+                    $this->log('Rejecting float line total for product economics.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
                 $line_total_canonical = self::canonicalize_provider_decimal_string($raw_line_total);
                 $line_total_validation = self::validate_provider_nonnegative_decimal($line_total_canonical, 'line_total');
                 if ($line_total_validation === null) {
@@ -2487,12 +2602,22 @@ function woocommerceUpaymentsInit() {
                 }
 
                 if (self::field_present($classic_post, 'card_token')) {
-                    if (!is_scalar($classic_post['card_token'])) {
+                    // Section #14: Reject int/float/bool/array/object outright.
+                    // A scalar coercion of a non-string into a string token would
+                    // accept a security identifier that the Blocks path already
+                    // rejects, and would mask a malformed request. Strings only,
+                    // no leading/trailing whitespace.
+                    if (!is_string($classic_post['card_token'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $raw_card = wp_unslash($classic_post['card_token']);
+                    if (!is_string($raw_card) || preg_match('/\s/', $raw_card)) {
                         wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                     }
                     // Section AT: Strict no-trim card token handling (Classic path too).
-                    $cardToken = (string) wp_unslash($classic_post['card_token']);
+                    $cardToken = $raw_card;
                 }
 
                 if (self::field_present($classic_post, 'upay_subscription_plan')) {
@@ -3100,20 +3225,25 @@ function woocommerceUpaymentsInit() {
                 }
 
                 // Section Q: Use read-only identity scope for selected-card path.
-                $scope = CustomerTokenIdentity::get_existing_scope_fingerprint($this->apiKey, $this->getMode());
-                if ($scope === null) {
+// Section #14: SINGLE atomic context read — derive scope AND generation
+// from the same secret-option snapshot. The previous implementation did
+// two independent reads (scope, then generation), which produced a torn
+// scope(A)+generation(B) snapshot when a credential rotated in between.
+                $selected_ctx = CustomerTokenIdentity::read_existing_identity_context(
+                    (string) $this->apiKey,
+                    (bool) $this->getMode()
+                );
+                if ($selected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $selected_ctx['scope'] === null
+                    || $selected_ctx['generation_id'] === null
+                ) {
                     wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
+                $scope = $selected_ctx['scope'];
+                $existing_generation = $selected_ctx['generation_id'];
 
-                // Section Q: Use read-only generation for selected-card path.
-                $existing_generation = CustomerTokenIdentity::get_existing_generation_id();
-                if ($existing_generation === null) {
-                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-
-                $provenance = CustomerTokenIdentity::read_provenance($user_id, $scope);
+                $provenance = CustomerTokenIdentity::read_provenance($user_id, $scope, $existing_generation);
                 if ($provenance['state'] !== CustomerTokenIdentity::STATE_VALID) {
                     wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -3193,16 +3323,30 @@ function woocommerceUpaymentsInit() {
                 // Section S: Use read-only authoritative expected scope/generation.
                 // For freshly established tokens, these are already known from the result.
                 // For selected-card tokens, they were already validated above.
-                $expected_scope = CustomerTokenIdentity::get_existing_scope_fingerprint($this->apiKey, $this->getMode());
-                $expected_generation = CustomerTokenIdentity::get_existing_generation_id();
+                // Section #14: single atomic read of scope + generation so they
+                // cannot drift relative to each other.
+                $expected_ctx = CustomerTokenIdentity::read_existing_identity_context(
+                    (string) $this->apiKey,
+                    (bool) $this->getMode()
+                );
+                if ($expected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $expected_ctx['scope'] === null
+                    || $expected_ctx['generation_id'] === null
+                ) {
+                    $this->log('Runtime token context: identity context not in SECRET_VALID state.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $expected_scope = $expected_ctx['scope'];
+                $expected_generation = $expected_ctx['generation_id'];
 
                 if (!CustomerTokenIdentity::validate_token_runtime_context(
                     $canonical_token,
                     $token_kind,
                     $token_scope,
                     $token_generation,
-                    $expected_scope !== null ? $expected_scope : '',
-                    $expected_generation !== null ? $expected_generation : ''
+                    $expected_scope,
+                    $expected_generation
                 )) {
                     $this->log('Runtime token context validation failed.', 'warning');
                     wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');

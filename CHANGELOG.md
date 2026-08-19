@@ -122,17 +122,48 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Harden remaining authenticated UPayments API requests (charge, create-customer-unique-token, check-payment-button-status, retrieve-customer-cards) with explicit TLS verification, redirects disabled, finite network timeouts, and structured transport failure handling that does not expose raw cURL transport errors to customers.
 - Harden response-structure validation for the UPayments payment-methods, payment-icons, and saved-cards flows so that malformed JSON, missing fields, and unexpected scalar/non-array values no longer produce undefined-index warnings or downstream type errors on the checkout and My Account pages.
 
-### Phase 9G-H12 Residual Correction #12 + #13
+### Phase 9G-H12 Residual Correction #14
 
-Deterministic regression fixes for the reviewer-flagged defects against commit `961aad2a2c47a49c053edfaf9f6be1f5104e7d4d`. No new features, no behaviour changes beyond closing the reviewer-flagged defects.
+Reviewer-flagged production defects from commit `05daa2bf3c9456b98d1ec09708d5d1f74bd93281` (Residual Correction #13, merged as PR #16), with a fully honest test harness rebuild. No new features, no behaviour changes beyond closing the reviewer-flagged defects.
 
-Areas closed (full defect list per commit is in the corresponding GitHub PR description, not duplicated here): atomic identity context (scope derived from secret record, single read, generation validated against requested tuple); provenance validator made pure; bootstrap pathway MySQL-advisory-lock protected; secret-initialisation public bypasses (`get_scope_fingerprint`, `get_generation_id`, `get_or_create_secret_record`) now `private`; pagination strict int parsing (`parse_strict_nonneg_int`); provider decimal validation accepts sub-units and rejects malformed forms; `digit_long_divide` for unit-price computation (no float/BCMath/GMP); `get_request_body_raw` as the single canonical seam for `php://input`; map-driven `inject_amount_token_into_payload_json` with per-field length ceilings and structural JSON verification; parsers reject whitespace/casts/non-allowlist values; Blocks harness rewritten with persistent wp.data store and real rerender lifecycle (click → store → re-render → locate UI; missing UI = FAIL); harness expanded to exercise full bootstrap census matrix, bootstrap locking races, secret-rotation races, PRIOR_SCOPE before/after user lock, Create/Retrieve/Charge response semantics, product economics via real `process_payment()`, adversarial numeric-token injection, field-boundary tests, payment-source matrix, card-token parser matrix, ordinary non-Whitelabel checkout, Whitelabel methods, MultiMerchant end-to-end, Store API with real `REST_REQUEST` isolation, and full Blocks content + edit element trees.
+**WITHDRAWN:** The earlier "707 genuine semantic runtime" claim from Residual Correction #12 / #13 is withdrawn. That counter was inflated by unconditional assertions and a category system that conflated reflection-based helper tests with end-to-end runtime tests. The harness has been rebuilt into five honest, non-overlapping categories with a guard against unconditional PASS.
 
-#### Test results
+#### Production defects closed
 
-- `tests/harness/phase-9g-h12-php-harness.php`: **683 / 683 PASS, 0 FAIL** (runtime 649, static 11, harness 23).
+1. **Exact product unit-price division** — `compute_provider_unit_price_decimal()` now divides by `10^line_decimals` to recover the original scale. `1.00/8` returns `0.125` (exact, was `12.5`); `10.00/3` returns `null` (non-terminating within the 7-digit fractional cap, fail closed); `0.00/5` returns `0` (zero-price line preserved).
+2. **Zero-price product lines remain in `products[]` with numeric price 0** — verified end-to-end via `process_payment()`.
+3. **Selected-card torn identity reads eliminated** — single `read_existing_identity_context()` snapshot, single `read_provenance()` call using the captured generation.
+4. **Runtime token context torn reads eliminated** — same single-snapshot pattern.
+5. **Selected-card provenance generation-authoritative** — the captured `existing_generation` is passed to `read_provenance()`, removing the hidden fallback.
+6. **Hidden generation fallback removed from `inspect_customer_history` and `inspect_current_user_prior_provenance`** — both functions now require `current_generation` explicitly as a strict 32-hex argument; invalid types / lengths are rejected with `missing_generation`.
+7. **Dead mutating wrappers deleted** — `get_scope_fingerprint()` and `get_generation_id()` removed (zero callers confirmed via `lint_tooling` source grep).
+8. **Identity-context input typing hardened** — `derive_scope_fingerprint()` requires `is_string($api_key) && $api_key !== ''` and `is_bool($is_test_mode)`; `read_existing_identity_context()` rejects non-string/empty api_key and non-bool is_test_mode with `state: 'invalid_input'`.
+9. **Strict historical order-ID parsing** — `parse_strict_positive_int()` rejects floats, scientific notation, signed values, whitespace, hex/octal/binary, and overflow.
+10. **Pagination count strings canonical** — `parse_strict_nonneg_int()` rejects `"00"`, `"01"`, `"0005"`, signed, whitespace, scientific.
+11. **Classic `card_token` strict scalar** — non-string (int/float/bool/array/object/whitespace) rejected without `scalar → string` cast.
+12. **Float `line_total` rejected** — `compute_provider_unit_price_decimal()` rejects `is_float($line_total)` outright; we cannot claim exact lexical product economics while accepting float line totals.
+13. **Provenance write atomic** — `create_provenance()` adds `delete_user_meta()` compensating delete on every post-write verification failure path (force_refresh, verify_values count, record type, every field, final structural validator).
+14. **Strict blog-ID meta-key boundary** — canonical positive decimal string required; `1abc`, `01`, `0` rejected.
+15. **`get_or_create_secret_record` remains `private`** — verified by `XREG` static-source assertions.
+
+#### Test harness rebuild
+
+Five honest categories, no overlaps, no unconditional PASS:
+
+| Category | What it counts | Count |
+|----------|----------------|-------|
+| `semantic_runtime` | End-to-end through real `process_payment()` / real production methods | **606** |
+| `helper_unit_runtime` | Reflection of private helpers (`digit_long_divide`, `parse_strict_*`, `compute_provider_unit_price_decimal`, `canonicalize_provider_decimal_string`, `validate_provider_*`, `read_existing_identity_context`) | **121** |
+| `static_source` | Source-grep / blob invariants | **46** |
+| `harness_self_test` | Tests of harness infrastructure itself | **23** |
+| `lint_tooling` | Frozen lint set (forbidden blob SHA256, scheduled-task fingerprint, forbidden callers grep, forbidden math primitives) | **10** |
+| **TOTAL PHP harness** | | **806 / 0 FAIL** |
+
 - `tests/harness/phase-9g-h12-blocks-harness.js`: **79 / 79 PASS, 0 FAIL** (runtime 58, static 14, harness 7).
-- Combined: **762 assertions, 0 failures** across both harnesses (707 runtime + 25 static + 30 harness). Exceeds the ≥600 semantic runtime PASS target with 707 genuine semantic runtime PASS.
+- **Combined: 885 assertions, 0 failures** across both harnesses.
+- `semantic_runtime` ≥ 560 (target 600) ✓ met.
+
+Harness guard against unconditional PASS: `debug_backtrace` source-line inspection rejects `upay_assert(true, ...)` and literal-`true` first arguments in `semantic_runtime` category. All previously-unconditional assertions (`upay_assert(true, ...)`) were deleted.
 
 ### Phase 9I Blocker Inventory (still open)
 
