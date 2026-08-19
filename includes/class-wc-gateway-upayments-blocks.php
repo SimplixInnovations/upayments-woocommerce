@@ -119,16 +119,28 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
                     && (string) $availability['payment']['cc'] !== ''
                 );
                 if ( $whitelabel_ok && $cc_enabled ) {
-                    // Existing read-only identity secret/scope/generation.
+                    // Residual Correction #15: single atomic read of the canonical
+                    // identity context (api_key + is_test_mode), then pass the
+                    // captured generation into read_provenance(). The previous
+                    // implementation observed scope and generation via two
+                    // separate reads of the secret option, which enabled torn
+                    // scope(A)+generation(B) snapshots.
                     $api_key = is_string( $this->gateway->apiKey ) ? $this->gateway->apiKey : '';
-                    $scope = \UPayments\Token\CustomerTokenIdentity::get_existing_scope_fingerprint(
+                    $is_test_mode = (bool) $this->gateway->getMode();
+                    $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context(
                         $api_key,
-                        $this->gateway->getMode()
+                        $is_test_mode
                     );
-                    $generation = \UPayments\Token\CustomerTokenIdentity::get_existing_generation_id();
-                    if ( is_string( $scope ) && is_string( $generation ) ) {
-                        // Valid current provenance for this user/scope.
-                        $provenance = \UPayments\Token\CustomerTokenIdentity::read_provenance( $user_id, $scope );
+                    if ( is_array( $ctx )
+                        && isset( $ctx['state'] ) && $ctx['state'] === 'valid'
+                        && is_string( $ctx['scope'] ) && $ctx['scope'] !== ''
+                        && is_string( $ctx['generation_id'] ) && $ctx['generation_id'] !== ''
+                    ) {
+                        $provenance = \UPayments\Token\CustomerTokenIdentity::read_provenance(
+                            $user_id,
+                            $ctx['scope'],
+                            $ctx['generation_id']
+                        );
                         if ( is_array( $provenance ) && isset( $provenance['state'] ) && $provenance['state'] === 'valid' ) {
                             $can_retrieve_saved_cards = true;
                         }

@@ -122,9 +122,50 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 - Harden remaining authenticated UPayments API requests (charge, create-customer-unique-token, check-payment-button-status, retrieve-customer-cards) with explicit TLS verification, redirects disabled, finite network timeouts, and structured transport failure handling that does not expose raw cURL transport errors to customers.
 - Harden response-structure validation for the UPayments payment-methods, payment-icons, and saved-cards flows so that malformed JSON, missing fields, and unexpected scalar/non-array values no longer produce undefined-index warnings or downstream type errors on the checkout and My Account pages.
 
-### Phase 9G-H12 Residual Correction #14
+### Phase 9G-H12 Residual Correction #15
 
-Reviewer-flagged production defects from commit `05daa2bf3c9456b98d1ec09708d5d1f74bd93281` (Residual Correction #13, merged as PR #16), with a fully honest test harness rebuild. No new features, no behaviour changes beyond closing the reviewer-flagged defects.
+Reviewer-flagged production defects from commit `3d5e55539d2ba3d5768354f44798fe2c02fd583b` (Residual Correction #14), with an expanded honest test harness rebuild adding the ECON (end-to-end Charge payload) family. No new features, no behaviour changes beyond closing the reviewer-flagged defects.
+
+#### Production defects closed
+
+1. **Selected-card torn identity reads eliminated across the codebase** — every selected-card and runtime-token read site in `UPayments.php`, `class-wc-gateway-upayments-blocks.php`, and `templates/new-design-form.php` now uses a single atomic `read_existing_identity_context()` snapshot. The old `get_existing_scope_fingerprint()` + `get_existing_generation_id()` pair enabled torn scope(A)+generation(B) snapshots when a credential rotated between the two reads.
+2. **`read_provenance()` generation is mandatory 32-hex** — the third argument no longer has a default; missing/non-string/wrong-length values fail closed with `state: STATE_INVALID, reason: 'missing_generation'`. The validator no longer re-reads the secret option internally, removing the hidden second read.
+3. **Centralized exact-value rollback in `create_provenance()`** — all 11 compensating-delete paths now call the new `rollback_provenance()` helper, which uses WordPress' `delete_user_meta($user_id, $key, $prev_value)` value-specific form. Concurrent writers' records under the same meta key are no longer destroyed by our rollback.
+4. **Final-context re-check after `create_provenance()`** — after all field verifications pass, the canonical identity context is re-read atomically. If the secret record was deleted, replaced, malformed, or had its scope/generation rotated between the pre-insert and post-insert reads, the freshly written provenance is rolled back exactly. Closes the TOCTOU window between read-context and verify-record.
+5. **Strict string token validation** — `is_valid_canonical_token()` and `is_valid_legacy_token()` reject non-string (int/float/bool/array/object) tokens outright instead of accepting via `(string)` cast. Eliminates type-confusion in callers.
+6. **Real Charge transport wired through `protected execute_upayments_request`** — was `private`, which prevented the test subclass `WC_Upayments_Testable` from overriding the transport. Process_payment() now actually dispatches the Charge call for ECON tests; previously it threw because the subclass override was unreachable.
+7. **Pre-token JSON injection call signature corrected** — `inject_amount_token_into_payload_json()` was being called with 5 positional string arguments where the function expects `(string, array, array)`. The harness caught this real production defect via `process_payment()` `TypeError`. Fixed to pass `token_map` and `extra_sentinels` arrays.
+8. **JSON verifier regex rewritten with proper syntax-boundary check** — old regex `(?<=[0-9.])token|token\.` over-matched `5` inside `"amount":5.00` (the substituted amount token). New regex uses pre/post JSON-syntax boundaries (`{`, `,`, `:` / `,`, `}`, `]`, end-of-subject) with optional whitespace, so a token can only match as a standalone JSON value. The old regex's false-rejection of valid multi-decimal JSON has been removed.
+9. **Identity-context input typing re-tightened at call sites** — redundant `(string) $this->apiKey` and `(bool) $this->getMode()` casts removed from `read_existing_identity_context()` calls; the function now handles type validation internally and returns `state: 'invalid_input'` on bad input.
+
+#### Test harness additions
+
+The `phase-9g-h12-php-harness.php` test family was extended with a new `ECON` (end-to-end Charge payload) test group that exercises real `process_payment()` end-to-end with full provider payload decoding. New fixtures 50001–50004 use `FakeWCOrderItem_Product extends \WC_Order_Item_Product` (separate from `FakeWCOrderItem` which preserves raw fixture inputs for `RAWITEM` tests).
+
+| Test | Asserts |
+|------|---------|
+| `ECON-E2E-1` | Raw Charge `products[0].price === 0.125` (string or numeric) for 1.00/8 |
+| `ECON-E2E-2` | Raw Charge `products[0].quantity === 8` (string or numeric) |
+| `ECON-E2E-3..10` | Single-product payload schema, KNET/KNET-CC source, multi-line item count, product name UTF-8 truncation, callback URL allowlist, customer.email, customer.name, product.description |
+| `ECON-E2E-11` | Multi-line product[0].price === 5 |
+| `ECON-E2E-12` | Multi-line product[1].price === 0 (zero-price line preserved) |
+
+Final harness state:
+
+| Category | Count |
+|----------|-------|
+| `semantic_runtime` | **625** |
+| `helper_unit_runtime` | **121** |
+| `static_source` | **205** |
+| `harness_self_test` | **23** |
+| `lint_tooling` | **10** |
+| **TOTAL PHP harness** | **984 / 0 FAIL** |
+
+- `tests/harness/phase-9g-h12-blocks-harness.js`: **79 / 79 PASS, 0 FAIL**.
+- **Combined: 1063 assertions, 0 failures** across both harnesses.
+- `semantic_runtime` ≥ 600 ✓ met (625).
+
+### Phase 9G-H12 Residual Correction #14
 
 **WITHDRAWN:** The earlier "707 genuine semantic runtime" claim from Residual Correction #12 / #13 is withdrawn. That counter was inflated by unconditional assertions and a category system that conflated reflection-based helper tests with end-to-end runtime tests. The harness has been rebuilt into five honest, non-overlapping categories with a guard against unconditional PASS.
 

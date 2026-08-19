@@ -119,14 +119,28 @@ defined( 'ABSPATH' ) || exit;
                     && (string) $payment_data['payment']['cc'] !== ''
                 );
                 if ($whitelabled === true && $cc_enabled_classic) {
+                    // Residual Correction #15: single atomic read of the canonical
+                    // identity context (api_key + is_test_mode), then pass the
+                    // captured generation into read_provenance(). The previous
+                    // implementation observed scope and generation via two
+                    // separate reads of the secret option, which enabled torn
+                    // scope(A)+generation(B) snapshots.
                     $api_key_classic = isset($gateway->apiKey) && is_string($gateway->apiKey) ? $gateway->apiKey : '';
-                    $scope_classic = \UPayments\Token\CustomerTokenIdentity::get_existing_scope_fingerprint(
+                    $is_test_mode_classic = (bool) $gateway->getMode();
+                    $ctx_classic = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context(
                         $api_key_classic,
-                        $gateway->getMode()
+                        $is_test_mode_classic
                     );
-                    $generation_classic = \UPayments\Token\CustomerTokenIdentity::get_existing_generation_id();
-                    if (is_string($scope_classic) && is_string($generation_classic)) {
-                        $provenance_classic = \UPayments\Token\CustomerTokenIdentity::read_provenance($user_id, $scope_classic);
+                    if (is_array($ctx_classic)
+                        && isset($ctx_classic['state']) && $ctx_classic['state'] === 'valid'
+                        && is_string($ctx_classic['scope']) && $ctx_classic['scope'] !== ''
+                        && is_string($ctx_classic['generation_id']) && $ctx_classic['generation_id'] !== ''
+                    ) {
+                        $provenance_classic = \UPayments\Token\CustomerTokenIdentity::read_provenance(
+                            $user_id,
+                            $ctx_classic['scope'],
+                            $ctx_classic['generation_id']
+                        );
                         if (is_array($provenance_classic) && isset($provenance_classic['state']) && $provenance_classic['state'] === 'valid') {
                             $can_retrieve_saved_cards_classic = true;
                         }

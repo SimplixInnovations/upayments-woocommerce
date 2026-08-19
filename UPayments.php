@@ -382,15 +382,19 @@ function woocommerceUpaymentsInit() {
                     $all_tokens[] = $token;
                 }
             }
+            // Verify each substituted token appears in the result JSON as a JSON value.
+            // Each token is a positive plain decimal (per build_amount_json_token /
+            // compute_provider_unit_price_decimal canonicalization). It must NOT be
+            // quoted (i.e., it must be a number, not a string) and it must be
+            // surrounded on both sides by JSON-syntax characters or whitespace, so
+            // that no sub-fragment of a longer number could match.
             foreach ($all_tokens as $token) {
-                $quoted_re = '/"' . preg_quote($token, '/') . '"/';
-                if (preg_match($quoted_re, $result)) {
-                    return null;
+                if (!is_string($token) || $token === '') {
+                    continue;
                 }
-                // Token must NOT be preceded by a digit or '.' (so "10" doesn't
-                // match the start of "100"), and must NOT be followed by a digit or '.'.
-                $banned_re = '/(?<=[0-9.])' . preg_quote($token, '/') . '|' . preg_quote($token, '/') . '\\.|(?<=\\.)' . preg_quote($token, '/') . '|[0-9]' . preg_quote($token, '/') . '$|[0-9]' . preg_quote($token, '/') . '\\.|[0-9]' . preg_quote($token, '/') . '(?=[0-9.])/';
-                if (preg_match($banned_re, $result)) {
+                $literal = preg_quote($token, '/');
+                $json_value_re = '/(?P<pre>[\\{\\,\\:])\\s*(?:' . $literal . ')\\s*(?P<post>[\\,\\}\\]]|\\z)/m';
+                if (!preg_match($json_value_re, $result)) {
                     return null;
                 }
             }
@@ -435,7 +439,7 @@ function woocommerceUpaymentsInit() {
          * @param string $plan Plan identifier.
          * @return bool
          */
-        private static function is_valid_subscription_plan(string $plan): bool {
+        public static function is_valid_subscription_plan(string $plan): bool {
             return in_array($plan, self::$ALLOWED_SUBSCRIPTION_PLANS, true);
         }
 
@@ -539,7 +543,7 @@ function woocommerceUpaymentsInit() {
          * @param string $uri Raw REQUEST_URI.
          * @return string|null Canonical route (e.g. "/wc/store/v1/checkout") or null.
          */
-        private static function normalize_store_api_route($uri) {
+        public static function normalize_store_api_route($uri) {
             if (!is_string($uri) || $uri === '') {
                 return '';
             }
@@ -606,6 +610,90 @@ function woocommerceUpaymentsInit() {
             }
             // Reject other Store API endpoints (cart, products, etc.) by exact match.
             return ($route === '/wc/store/v1/checkout');
+        }
+
+        /**
+         * Extract the validated redirect URL from a Charge provider response.
+         *
+         * Pure function — accepts the decoded body array and returns either the
+         * validated https URL (data.link preferred, data.transactionData.redirect_url
+         * fallback) or null when neither candidate passes the same allowlist that
+         * process_payment() applies. This is the SAME exact predicate as the
+         * production Charge dispatch handler (lines 3548-3565), surfaced as a
+         * public static so the harness can exercise it deterministically.
+         *
+         * @param array $provider_body Decoded JSON body from /charge.
+         * @return string|null Validated https URL or null.
+         */
+        public static function extract_charge_redirect_target($provider_body) {
+            if (!is_array($provider_body)) {
+                return null;
+            }
+            $data = isset($provider_body['data']) && is_array($provider_body['data'])
+                ? $provider_body['data']
+                : null;
+            if ($data === null) {
+                return null;
+            }
+            // Preferred path: data.link.
+            if (isset($data['link']) && is_scalar($data['link'])) {
+                $url = self::validate_charge_redirect_candidate((string) $data['link']);
+                if ($url !== null) {
+                    return $url;
+                }
+            }
+            // Fallback path: data.transactionData.redirect_url.
+            if (isset($data['transactionData']) && is_array($data['transactionData'])
+                && isset($data['transactionData']['redirect_url'])
+                && is_scalar($data['transactionData']['redirect_url'])
+            ) {
+                $url = self::validate_charge_redirect_candidate((string) $data['transactionData']['redirect_url']);
+                if ($url !== null) {
+                    return $url;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Validate a single redirect URL candidate using the SAME allowlist as
+         * process_payment(). Public static so the harness can call it directly.
+         *
+         * Rules (exact production semantics):
+         *   - http or https scheme only (reject javascript:, data:, file:, etc.)
+         *   - parse_url must yield scheme AND host (reject /relative, plain strings)
+         *   - reject if URL contains CR/LF (header injection guard)
+         *   - reject if URL exceeds 250 chars (length guard)
+         *
+         * @param string $url Candidate URL.
+         * @return string|null Validated URL or null.
+         */
+        public static function validate_charge_redirect_candidate($url) {
+            if (!is_string($url)) {
+                return null;
+            }
+            $trimmed = trim($url);
+            if ($trimmed === '') {
+                return null;
+            }
+            // Header-injection guard: CR/LF must never appear in the value.
+            if (strpos($trimmed, "\n") !== false || strpos($trimmed, "\r") !== false) {
+                return null;
+            }
+            // Length guard: production caps at 250 chars to keep the redirect
+            // header bounded.
+            if (strlen($trimmed) > 250) {
+                return null;
+            }
+            $parts = parse_url($trimmed);
+            if ($parts === false || !isset($parts['scheme']) || !isset($parts['host'])) {
+                return null;
+            }
+            $scheme = strtolower($parts['scheme']);
+            if ($scheme !== 'http' && $scheme !== 'https') {
+                return null;
+            }
+            return $trimmed;
         }
 
         /**
@@ -1684,7 +1772,7 @@ function woocommerceUpaymentsInit() {
          * @param string|null $body    JSON-encoded request body, or null for GET.
          * @return array{transport_ok: bool, body: string|null, http_status: int, curl_errno: int}
          */
-        private function execute_upayments_request($route, $method, $body = null)
+        protected function execute_upayments_request($route, $method, $body = null)
         {
             $outcome = array(
                 'transport_ok' => false,
@@ -3140,10 +3228,16 @@ function woocommerceUpaymentsInit() {
             $mm_amount_for_injection = ($extraMerchantData !== null) ? $amount_json_token : null;
             $preflight_json = self::inject_amount_token_into_payload_json(
                 $preflight_raw,
-                $amount_json_token,
-                $mm_amount_for_injection,
-                $mm_knet_charge_for_injection,
-                $mm_cc_charge_for_injection
+                array(
+                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => $amount_json_token,
+                    '__UPAY_MM_AMOUNT_SENTINEL__' => $mm_amount_for_injection,
+                    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => $mm_knet_charge_for_injection,
+                    '__UPAY_MM_CC_CHARGE_SENTINEL__' => $mm_cc_charge_for_injection,
+                ),
+                array(
+                    'product_price_sent_substring' => '__UPAY_PRODUCT_PRICE_SENTINEL_',
+                    'product_price_tokens' => $product_price_tokens,
+                )
             );
             if (!is_string($preflight_json) || $preflight_json === '') {
                 $this->log('Deterministic amount injection failed.', 'warning');
@@ -3230,8 +3324,8 @@ function woocommerceUpaymentsInit() {
 // two independent reads (scope, then generation), which produced a torn
 // scope(A)+generation(B) snapshot when a credential rotated in between.
                 $selected_ctx = CustomerTokenIdentity::read_existing_identity_context(
-                    (string) $this->apiKey,
-                    (bool) $this->getMode()
+                    $this->apiKey,
+                    $this->getMode()
                 );
                 if ($selected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
                     || $selected_ctx['scope'] === null
@@ -3326,8 +3420,8 @@ function woocommerceUpaymentsInit() {
                 // Section #14: single atomic read of scope + generation so they
                 // cannot drift relative to each other.
                 $expected_ctx = CustomerTokenIdentity::read_existing_identity_context(
-                    (string) $this->apiKey,
-                    (bool) $this->getMode()
+                    $this->apiKey,
+                    $this->getMode()
                 );
                 if ($expected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
                     || $expected_ctx['scope'] === null

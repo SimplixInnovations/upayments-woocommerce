@@ -189,48 +189,14 @@ class CustomerTokenIdentity {
     }
 
     /**
-     * Derive the current scope from the canonical identity context
-     * (one read of the secret option). Side-effect free: never creates a secret.
-     *
-     * @param string $api_key
-     * @param bool   $is_test_mode
-     * @return string|null Scope fingerprint or null.
+     * Note: the legacy two-call torn-read seam (a separate scope read + a
+     * separate generation read of the secret option) was deleted in Residual
+     * Correction #15. It enabled torn scope(A)+generation(B) snapshots because
+     * the secret could be rotated between the two reads. Use
+     * read_existing_identity_context() to obtain both values atomically in a
+     * single secret-option read, then pass the captured generation to
+     * read_provenance().
      */
-    public static function get_existing_scope_fingerprint($api_key, $is_test_mode) {
-        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
-        if ($ctx['state'] !== self::SECRET_VALID || $ctx['scope'] === null) {
-            return null;
-        }
-        return $ctx['scope'];
-    }
-
-    /**
-     * Get existing generation ID from the canonical identity context
-     * (one read of the secret option). Side-effect free: never creates a secret.
-     *
-     * @param string $api_key     Required for full context read.
-     * @param bool   $is_test_mode Required for full context read.
-     * @return string|null Generation ID or null.
-     */
-    public static function get_existing_generation_id($api_key = '', $is_test_mode = false) {
-        // Backward-compatible wrapper: always derive full context. The api_key/mode
-        // here are only used for scope derivation; legacy callers that pass empty
-        // values will simply get a null scope and still get the right generation_id
-        // since the record has it. However the correct long-term path is to pass
-        // the real credentials.
-        if ($api_key === '' || !is_scalar($api_key)) {
-            $secret_result = self::read_existing_secret_record();
-            if ($secret_result['state'] !== self::SECRET_VALID) {
-                return null;
-            }
-            return isset($secret_result['record']['generation_id']) ? (string) $secret_result['record']['generation_id'] : null;
-        }
-        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
-        if ($ctx['state'] !== self::SECRET_VALID || $ctx['generation_id'] === null) {
-            return null;
-        }
-        return $ctx['generation_id'];
-    }
 
     private static function get_or_create_secret_record() {
         global $wpdb;
@@ -497,17 +463,17 @@ class CustomerTokenIdentity {
     }
 
     public static function is_valid_canonical_token($token) {
-        if (!is_scalar($token)) {
+        if (!is_string($token) || $token === '') {
             return false;
         }
-        return preg_match(self::TOKEN_PATTERN, (string) $token) === 1;
+        return preg_match(self::TOKEN_PATTERN, $token) === 1;
     }
 
     public static function is_valid_legacy_token($token) {
-        if (!is_scalar($token)) {
+        if (!is_string($token) || $token === '') {
             return false;
         }
-        return preg_match(self::LEGACY_TOKEN_PATTERN, (string) $token) === 1;
+        return preg_match(self::LEGACY_TOKEN_PATTERN, $token) === 1;
     }
 
     public static function is_valid_token_for_kind($token, $kind) {
@@ -524,9 +490,16 @@ class CustomerTokenIdentity {
     // READ PROVENANCE (authoritative, exactly-one-record)
     // ────────────────────────────────────────────────────────
 
-    public static function read_provenance($user_id, $scope_fingerprint, $current_generation = null) {
+    public static function read_provenance($user_id, $scope_fingerprint, $current_generation) {
         if ($user_id <= 0 || !self::is_valid_scope($scope_fingerprint)) {
             return array('state' => self::STATE_ABSENT, 'record' => null);
+        }
+
+        // Residual Correction #15: generation is mandatory, must be strict 32-hex.
+        if (!is_string($current_generation)
+            || !self::is_valid_hex($current_generation, self::GENERATION_ID_HEX_LENGTH)
+        ) {
+            return array('state' => self::STATE_INVALID, 'record' => null, 'reason' => 'missing_generation');
         }
 
         // Force-refresh user-meta cache before authoritative read.
@@ -558,7 +531,7 @@ class CustomerTokenIdentity {
             return array('state' => self::STATE_INVALID, 'record' => $record);
         }
 
-        // Pure structural validator; caller supplies the generation (or null).
+        // Pure structural validator with explicit generation binding.
         $validation = self::validate_provenance_record($record, $scope_fingerprint, $current_generation);
         if ($validation === 'valid') {
             return array('state' => self::STATE_VALID, 'record' => $record);
@@ -576,9 +549,10 @@ class CustomerTokenIdentity {
      *
      * Pure structural validator. The caller MUST pass the current generation
      * (or null) explicitly so this function does not perform independent
-     * secret reads. The previous implementation called get_existing_generation_id()
-     * inside the validator, which created a hidden second read of the secret
-     * option and could yield a hybrid scope(A)+generation(B) snapshot.
+     * secret reads. The previous implementation re-read the secret option
+     * inside the validator via a separate generation lookup, which created a
+     * hidden second read and could yield a hybrid scope(A)+generation(B)
+     * snapshot.
      *
      * @param array       $record            The provenance record.
      * @param string      $requested_scope   The scope from the meta key.
@@ -659,6 +633,20 @@ class CustomerTokenIdentity {
     // CREATE PROVENANCE (immutable)
     // ────────────────────────────────────────────────────────
 
+    /**
+     * Residual Correction #15: Centralized exact-rollback routine. Deletes only
+     * the exact value this invocation inserted (WordPress semantics of
+     * delete_user_meta($user_id, $key, $prev_value)), never the whole meta key.
+     *
+     * @param int    $user_id
+     * @param string $meta_key
+     * @param array  $inserted_record The exact record previously inserted.
+     * @return bool
+     */
+    private static function rollback_provenance($user_id, $meta_key, $inserted_record) {
+        return delete_user_meta($user_id, $meta_key, $inserted_record);
+    }
+
     public static function create_provenance(
         $user_id,
         $api_key,
@@ -706,7 +694,7 @@ class CustomerTokenIdentity {
         // generation comes from the same record. We then require exact match
         // against the caller's expected scope+generation to prove the caller's
         // request was authorized under exactly the same canonical context.
-        $ctx = self::read_existing_identity_context((string) $api_key, $is_test_mode);
+        $ctx = self::read_existing_identity_context($api_key, $is_test_mode);
         if ($ctx['state'] !== self::SECRET_VALID
             || $ctx['scope'] === null
             || $ctx['generation_id'] === null
@@ -734,7 +722,7 @@ class CustomerTokenIdentity {
         $record = array(
             'version' => self::SCHEMA_VERSION,
             'kind' => $kind,
-            'token' => (string) $token,
+            'token' => $token,
             'source' => $source,
             'scope' => $scope_fingerprint,
             'secret_generation_id' => $generation_id,
@@ -749,55 +737,69 @@ class CustomerTokenIdentity {
         // Section T: Verify provenance persistence after creation.
         // Section U: Force refresh must succeed.
         if (!self::force_refresh_user_meta($user_id)) {
-            // Section #14: Atomic provenance write — compensating delete.
-            delete_user_meta($user_id, $meta_key);
+            // Residual Correction #15: exact rollback of the inserted value only.
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         $verify_values = get_user_meta($user_id, $meta_key, false);
         if (!is_array($verify_values) || count($verify_values) !== 1) {
-            // Section #14: Atomic provenance write — compensating delete.
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         $verify_record = $verify_values[0];
         if (!is_array($verify_record)) {
-            // Section #14: Atomic provenance write — compensating delete.
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         // Exact compare all fields.
         if (!isset($verify_record['version']) || $verify_record['version'] !== $record['version']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['kind']) || $verify_record['kind'] !== $record['kind']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['token']) || $verify_record['token'] !== $record['token']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['source']) || $verify_record['source'] !== $record['source']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['scope']) || $verify_record['scope'] !== $record['scope']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['secret_generation_id']) || $verify_record['secret_generation_id'] !== $record['secret_generation_id']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
         if (!isset($verify_record['established_at_gmt']) || $verify_record['established_at_gmt'] !== $record['established_at_gmt']) {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
 
         // Section U: Run full structural validator with current-generation binding.
         if (self::validate_provenance_record($verify_record, $scope_fingerprint, $generation_id) !== 'valid') {
-            delete_user_meta($user_id, $meta_key);
+            self::rollback_provenance($user_id, $meta_key, $record);
+            return false;
+        }
+
+        // Residual Correction #15: Final-context re-check. Re-read the canonical
+        // identity context atomically. If the secret record was deleted, replaced,
+        // malformed, or had its scope/generation rotated between the pre-insert
+        // read and the post-insert read, the provenance we just wrote is bound to
+        // a stale context and must be rolled back exactly.
+        $final_ctx = self::read_existing_identity_context($api_key, $is_test_mode);
+        if ($final_ctx['state'] !== self::SECRET_VALID
+            || $final_ctx['scope'] === null
+            || $final_ctx['generation_id'] === null
+            || !hash_equals((string) $final_ctx['scope'], (string) $scope_fingerprint)
+            || !hash_equals((string) $final_ctx['generation_id'], (string) $generation_id)
+        ) {
+            self::rollback_provenance($user_id, $meta_key, $record);
             return false;
         }
 
