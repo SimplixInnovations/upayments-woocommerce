@@ -573,11 +573,11 @@ class CustomerTokenIdentity {
             return 'invalid';
         }
 
-        if (!isset($record['token']) || !is_scalar($record['token'])) {
+        if (!isset($record['token']) || !is_string($record['token']) || $record['token'] === '') {
             return 'invalid';
         }
 
-        $token = (string) $record['token'];
+        $token = $record['token'];
 
         if ($record['kind'] === self::KIND_CANONICAL && !self::is_valid_canonical_token($token)) {
             return 'invalid';
@@ -634,17 +634,79 @@ class CustomerTokenIdentity {
     // ────────────────────────────────────────────────────────
 
     /**
-     * Residual Correction #15: Centralized exact-rollback routine. Deletes only
-     * the exact value this invocation inserted (WordPress semantics of
-     * delete_user_meta($user_id, $key, $prev_value)), never the whole meta key.
+     * Residual Correction #16: Full delete + verify + readback routine.
+     *
+     * 1. Exact-value delete_user_meta(uid,key,inserted_record) — only this exact
+     *    value is removed, never the whole meta key.
+     * 2. force_refresh_user_meta() — cache invalidation required so the next
+     *    read sees storage truth.
+     * 3. Re-read all values for the exact key and assert the inserted record is
+     *    NOT present.
+     * 4. Returns a structured result so callers can distinguish failure modes:
+     *      ok               — delete + refresh + readback all succeeded, record absent.
+     *      delete_failed    — delete_user_meta returned false (no rows matched).
+     *      refresh_failed   — force_refresh_user_meta returned false.
+     *      readback_failed  — readback returned non-array / unparsable data.
+     *      record_remains   — readback shows the inserted value still present.
+     *
+     * This is the ONLY allowed way to remove provenance after a failed write.
+     * Callers MUST inspect the structured result and propagate failure.
      *
      * @param int    $user_id
      * @param string $meta_key
      * @param array  $inserted_record The exact record previously inserted.
-     * @return bool
+     * @return array{ok: bool, reason: string}
      */
     private static function rollback_provenance($user_id, $meta_key, $inserted_record) {
-        return delete_user_meta($user_id, $meta_key, $inserted_record);
+        // 1. Exact-value delete. WP semantics: only this value is removed.
+        $deleted = delete_user_meta($user_id, $meta_key, $inserted_record);
+        if (!$deleted) {
+            return array('ok' => false, 'reason' => 'delete_failed');
+        }
+
+        // 2. Force-refresh the user meta cache.
+        if (!self::force_refresh_user_meta($user_id)) {
+            return array('ok' => false, 'reason' => 'refresh_failed');
+        }
+
+        // 3. Readback all values for this exact key.
+        $readback = get_user_meta($user_id, $meta_key, false);
+        if (!is_array($readback)) {
+            return array('ok' => false, 'reason' => 'readback_failed');
+        }
+
+        // 4. Assert the inserted record is no longer present.
+        foreach ($readback as $value) {
+            if (is_array($value) && $value === $inserted_record) {
+                return array('ok' => false, 'reason' => 'record_remains');
+            }
+        }
+
+        return array('ok' => true, 'reason' => 'verified_absent');
+    }
+
+    /**
+     * In-process rollback state observability. Stored in a static so tests and
+     * diagnostics can inspect the most recent rollback outcome without persisting
+     * to storage (which would itself be observable side-effects).
+     */
+    private static $last_rollback_state = null;
+
+    private static function record_rollback_state($user_id, $meta_key, $reason) {
+        self::$last_rollback_state = array(
+            'user_id' => $user_id,
+            'meta_key' => $meta_key,
+            'reason' => $reason,
+            'time' => time(),
+        );
+    }
+
+    public static function last_rollback_state() {
+        return self::$last_rollback_state;
+    }
+
+    public static function reset_rollback_state_for_tests() {
+        self::$last_rollback_state = null;
     }
 
     public static function create_provenance(
@@ -738,52 +800,129 @@ class CustomerTokenIdentity {
         // Section U: Force refresh must succeed.
         if (!self::force_refresh_user_meta($user_id)) {
             // Residual Correction #15: exact rollback of the inserted value only.
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         $verify_values = get_user_meta($user_id, $meta_key, false);
         if (!is_array($verify_values) || count($verify_values) !== 1) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         $verify_record = $verify_values[0];
         if (!is_array($verify_record)) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         // Exact compare all fields.
         if (!isset($verify_record['version']) || $verify_record['version'] !== $record['version']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['kind']) || $verify_record['kind'] !== $record['kind']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['token']) || $verify_record['token'] !== $record['token']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['source']) || $verify_record['source'] !== $record['source']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['scope']) || $verify_record['scope'] !== $record['scope']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['secret_generation_id']) || $verify_record['secret_generation_id'] !== $record['secret_generation_id']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
         if (!isset($verify_record['established_at_gmt']) || $verify_record['established_at_gmt'] !== $record['established_at_gmt']) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
 
         // Section U: Run full structural validator with current-generation binding.
         if (self::validate_provenance_record($verify_record, $scope_fingerprint, $generation_id) !== 'valid') {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
 
@@ -799,7 +938,14 @@ class CustomerTokenIdentity {
             || !hash_equals((string) $final_ctx['scope'], (string) $scope_fingerprint)
             || !hash_equals((string) $final_ctx['generation_id'], (string) $generation_id)
         ) {
-            self::rollback_provenance($user_id, $meta_key, $record);
+            $rollback = self::rollback_provenance($user_id, $meta_key, $record);
+            if (!$rollback['ok']) {
+                // Surface rollback failure but still return false so caller cannot
+                // proceed toward Charge. The deleted/refresh/readback state is now
+                // explicitly observable via the rollback reason (recorded via
+                // last_rollback_state() for diagnostics).
+                self::record_rollback_state($user_id, $meta_key, $rollback['reason']);
+            }
             return false;
         }
 
@@ -870,23 +1016,23 @@ class CustomerTokenIdentity {
             return $result;
         }
 
-        if (!isset($body['data']['customerUniqueToken']) || !is_scalar($body['data']['customerUniqueToken'])) {
+        if (!isset($body['data']['customerUniqueToken']) || !is_string($body['data']['customerUniqueToken']) || $body['data']['customerUniqueToken'] === '') {
             $result['reason'] = 'missing_token';
             return $result;
         }
 
-        if (!self::is_valid_canonical_token((string) $submitted_token)) {
+        if (!is_string($submitted_token) || $submitted_token === '' || !self::is_valid_canonical_token($submitted_token)) {
             $result['reason'] = 'invalid_candidate';
             return $result;
         }
 
-        if ((string) $body['data']['customerUniqueToken'] !== (string) $submitted_token) {
+        if ($body['data']['customerUniqueToken'] !== $submitted_token) {
             $result['reason'] = 'token_mismatch';
             return $result;
         }
 
         $result['success'] = true;
-        $result['token'] = (string) $submitted_token;
+        $result['token'] = $submitted_token;
         $result['reason'] = 'success';
         return $result;
     }
@@ -1946,7 +2092,7 @@ class CustomerTokenIdentity {
         }
 
         $token = $provenance['record']['token'];
-        if (empty($token) || !is_scalar($token)) {
+        if (!is_string($token) || $token === '') {
             return null;
         }
 
@@ -1962,7 +2108,7 @@ class CustomerTokenIdentity {
             return null;
         }
 
-        if (!preg_match('/^[0-9]{8,18}$/', (string) $token)) {
+        if (!preg_match('/^[0-9]{8,18}$/', $token)) {
             return null;
         }
 
@@ -1992,15 +2138,15 @@ class CustomerTokenIdentity {
     // ────────────────────────────────────────────────────────
 
     public static function verify_card_membership($card_token, $customer_token, callable $get_saved_cards_caller) {
-        if (empty($card_token) || !is_scalar($card_token)) {
+        if (!is_string($card_token) || $card_token === '') {
             return false;
         }
 
-        if (empty($customer_token) || !is_scalar($customer_token)) {
+        if (!is_string($customer_token) || $customer_token === '') {
             return false;
         }
 
-        if (!preg_match('/^[0-9]{8,18}$/', (string) $customer_token)) {
+        if (!preg_match('/^[0-9]{8,18}$/', $customer_token)) {
             return false;
         }
 
@@ -2022,18 +2168,18 @@ class CustomerTokenIdentity {
             return false;
         }
 
-        $submitted = (string) $card_token;
+        $submitted = $card_token;
 
         foreach ($result['data'] as $card_entry) {
             if (!is_array($card_entry)) {
                 continue;
             }
 
-            if (!isset($card_entry['token']) || !is_scalar($card_entry['token'])) {
+            if (!isset($card_entry['token']) || !is_string($card_entry['token']) || $card_entry['token'] === '') {
                 continue;
             }
 
-            if ((string) $card_entry['token'] === $submitted) {
+            if ($card_entry['token'] === $submitted) {
                 return true;
             }
         }

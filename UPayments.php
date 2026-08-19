@@ -439,7 +439,7 @@ function woocommerceUpaymentsInit() {
          * @param string $plan Plan identifier.
          * @return bool
          */
-        public static function is_valid_subscription_plan(string $plan): bool {
+        private static function is_valid_subscription_plan(string $plan): bool {
             return in_array($plan, self::$ALLOWED_SUBSCRIPTION_PLANS, true);
         }
 
@@ -515,11 +515,19 @@ function woocommerceUpaymentsInit() {
          * @return string|null Normalized URL or null if invalid.
          */
         private function normalize_upayments_redirect_url($value) {
-            if (!is_scalar($value)) {
+            if (!is_string($value)) {
                 return null;
             }
-            $url = trim((string) $value);
+            $url = trim($value);
             if ($url === '') {
+                return null;
+            }
+            // CR/LF guard — header injection defense.
+            if (strpos($url, "\n") !== false || strpos($url, "\r") !== false) {
+                return null;
+            }
+            // Length guard — production caps at 250 chars.
+            if (strlen($url) > 250) {
                 return null;
             }
             $parts = parse_url($url);
@@ -543,7 +551,7 @@ function woocommerceUpaymentsInit() {
          * @param string $uri Raw REQUEST_URI.
          * @return string|null Canonical route (e.g. "/wc/store/v1/checkout") or null.
          */
-        public static function normalize_store_api_route($uri) {
+        private static function normalize_store_api_route($uri) {
             if (!is_string($uri) || $uri === '') {
                 return '';
             }
@@ -613,90 +621,10 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
-         * Extract the validated redirect URL from a Charge provider response.
-         *
-         * Pure function — accepts the decoded body array and returns either the
-         * validated https URL (data.link preferred, data.transactionData.redirect_url
-         * fallback) or null when neither candidate passes the same allowlist that
-         * process_payment() applies. This is the SAME exact predicate as the
-         * production Charge dispatch handler (lines 3548-3565), surfaced as a
-         * public static so the harness can exercise it deterministically.
-         *
-         * @param array $provider_body Decoded JSON body from /charge.
-         * @return string|null Validated https URL or null.
-         */
-        public static function extract_charge_redirect_target($provider_body) {
-            if (!is_array($provider_body)) {
-                return null;
-            }
-            $data = isset($provider_body['data']) && is_array($provider_body['data'])
-                ? $provider_body['data']
-                : null;
-            if ($data === null) {
-                return null;
-            }
-            // Preferred path: data.link.
-            if (isset($data['link']) && is_scalar($data['link'])) {
-                $url = self::validate_charge_redirect_candidate((string) $data['link']);
-                if ($url !== null) {
-                    return $url;
-                }
-            }
-            // Fallback path: data.transactionData.redirect_url.
-            if (isset($data['transactionData']) && is_array($data['transactionData'])
-                && isset($data['transactionData']['redirect_url'])
-                && is_scalar($data['transactionData']['redirect_url'])
-            ) {
-                $url = self::validate_charge_redirect_candidate((string) $data['transactionData']['redirect_url']);
-                if ($url !== null) {
-                    return $url;
-                }
-            }
-            return null;
-        }
-
-        /**
-         * Validate a single redirect URL candidate using the SAME allowlist as
-         * process_payment(). Public static so the harness can call it directly.
-         *
-         * Rules (exact production semantics):
-         *   - http or https scheme only (reject javascript:, data:, file:, etc.)
-         *   - parse_url must yield scheme AND host (reject /relative, plain strings)
-         *   - reject if URL contains CR/LF (header injection guard)
-         *   - reject if URL exceeds 250 chars (length guard)
-         *
-         * @param string $url Candidate URL.
-         * @return string|null Validated URL or null.
-         */
-        public static function validate_charge_redirect_candidate($url) {
-            if (!is_string($url)) {
-                return null;
-            }
-            $trimmed = trim($url);
-            if ($trimmed === '') {
-                return null;
-            }
-            // Header-injection guard: CR/LF must never appear in the value.
-            if (strpos($trimmed, "\n") !== false || strpos($trimmed, "\r") !== false) {
-                return null;
-            }
-            // Length guard: production caps at 250 chars to keep the redirect
-            // header bounded.
-            if (strlen($trimmed) > 250) {
-                return null;
-            }
-            $parts = parse_url($trimmed);
-            if ($parts === false || !isset($parts['scheme']) || !isset($parts['host'])) {
-                return null;
-            }
-            $scheme = strtolower($parts['scheme']);
-            if ($scheme !== 'http' && $scheme !== 'https') {
-                return null;
-            }
-            return $trimmed;
-        }
-
-        /**
+         * Single canonical redirect-URL allowlist used by the actual Charge dispatch.
+         * Test seams must reach this via reflection — there is no public surface
+         * added solely for test convenience.
+         *//**
          * Instance seam for reading the raw HTTP request body.
          *
          * Production code reads php://input ONLY through this method. The harness
@@ -3642,7 +3570,7 @@ function woocommerceUpaymentsInit() {
                     // E. Determine redirect URL: prefer data.link, fallback to data.transactionData.redirect_url.
                     $redirect_url = null;
 
-                    if (isset($result['data']['link']) && is_scalar($result['data']['link'])) {
+                    if (isset($result['data']['link']) && is_string($result['data']['link'])) {
                         $redirect_url = $this->normalize_upayments_redirect_url($result['data']['link']);
                     }
 
@@ -3650,7 +3578,7 @@ function woocommerceUpaymentsInit() {
                         && isset($result['data']['transactionData'])
                         && is_array($result['data']['transactionData'])
                         && isset($result['data']['transactionData']['redirect_url'])
-                        && is_scalar($result['data']['transactionData']['redirect_url'])
+                        && is_string($result['data']['transactionData']['redirect_url'])
                     ) {
                         $redirect_url = $this->normalize_upayments_redirect_url($result['data']['transactionData']['redirect_url']);
                     }
@@ -4366,12 +4294,12 @@ function woocommerceUpaymentsInit() {
         public function getSavedCards($customer_token)
         {
             $api_key = $this->apiKey;
-            if (empty($api_key) || !is_scalar($customer_token) || (string) $customer_token === '') {
+            if (empty($api_key) || !is_string($customer_token) || $customer_token === '') {
                 return null;
             }
 
             // Strict request input: must be ASCII numeric, 8-18 digits.
-            $token_str = (string) $customer_token;
+            $token_str = $customer_token;
             if (!preg_match('/^[0-9]{8,18}$/', $token_str)) {
                 return null;
             }
@@ -4465,7 +4393,7 @@ function woocommerceUpaymentsInit() {
                 return null;
             }
             $cc_value = $payment_data['payment']['cc'];
-            if (!is_scalar($cc_value) || (string) $cc_value === '') {
+            if (!is_string($cc_value) || $cc_value === '') {
                 return null;
             }
 

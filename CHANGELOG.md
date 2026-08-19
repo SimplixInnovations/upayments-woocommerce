@@ -4,6 +4,53 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #16 — token-typing, rollback, redirect-validator, semantic_runtime, ECON type assertions
+
+This is a fast-forward child of `1aad81130fe4bf4e0c833cbc4c5035725d14cd94`. Every change below is a strict defect closure that the independent reviewer flagged against the prior head. No behaviour changes beyond closing the residual defects; no new features.
+
+**Token typing (strict-string)**
+
+- `CustomerTokenIdentity::validate_provenance_record()` rejects any non-string `token` field, including int/float/bool/array/null. The `is_string && $token !== ''` check is mandatory and replaces every prior `(string)` cast on token fields.
+- `CustomerTokenIdentity::classify_create_token_response()` requires the provider's `customerUniqueToken` to be an exact string. Integer, float, bool, array, null responses are rejected with `missing_token`. The submitted token must also be an exact non-empty string; int submissions are rejected.
+- `CustomerTokenIdentity::get_saved_cards_for_current_user()` rejects non-string customer tokens before any provider call.
+- `CustomerTokenIdentity::verify_card_membership()` rejects non-string submitted card tokens and non-string provider card entry tokens. Integer provider tokens never coerce-equal a string submitted token.
+- `UPayments::getSavedCards()` rejects non-string customer tokens and non-string `cc_value`.
+- Charge dispatch rejects non-string redirect URLs in `result.data.link` and `result.data.transactionData.redirect_url`.
+
+**Rollback provenance (delete + verify)**
+
+- `CustomerTokenIdentity::rollback_provenance()` now performs exact-value `delete_user_meta(uid, key, record)`, requires success, force-refreshes the user-meta cache, reads back all values for the exact key, and asserts the inserted record is no longer present before returning `ok=true` with `reason=verified_absent`. Failures return `ok=false` with one of `delete_failed`, `refresh_failed`, `readback_failed`, `record_remains`.
+- All 12 `create_provenance()` rollback paths propagate the structured result and record the failure reason via `record_rollback_state()` / `last_rollback_state()`.
+
+**Redirect validator (single canonical)**
+
+- `UPayments::normalize_upayments_redirect_url()` is the sole canonical production validator. Rejects CR/LF injection, length > 250, non-`http(s)` schemes, and malformed URLs.
+- Deleted the public static test-only duplicates `extract_charge_redirect_target()` and `validate_charge_redirect_candidate()`. Production never had alternative semantics; the duplicates widened the surface and risked drift.
+
+**Production visibility (smallest appropriate)**
+
+- `is_valid_subscription_plan()` and `normalize_store_api_route()` restored to `private`. The harness now invokes them via reflection helper `upay_call_static()`.
+
+**Harness classification (semantic vs helper)**
+
+- All 102 mislabeled reflection / helper / classifier / parser / routing / digit / charge / redirect / subscription tests moved from `semantic_runtime` to `helper_unit_runtime`. `semantic_runtime` now means a test that exercises a real externally-meaningful production workflow / state transition (real `process_payment()`, authoritative identity establishment, real saved-card authorization, provider-call behaviour).
+- 80 new genuine `semantic_runtime` tests added covering token-typing direct regressions, rollback race outcomes, real subprocess Store API isolation, transport variants, validate_provenance_record shape/type, and rollback verify-after-delete.
+- New `tests/harness/store_api_child.php` — a real PHP subprocess entrypoint that defines `REST_REQUEST=true|false` BEFORE production loads, sets `REQUEST_URI` / `REQUEST_METHOD`, sets hostile Classic `$_POST`, validates the Store API body extension, and emits a machine-readable JSON line with the dispatch decision and provider/mutation counters. The parent harness shells out to it for each Store API isolation scenario.
+
+**ECON final JSON type assertions (tightened)**
+
+- Raw Charge `product.price` and `product.quantity` must be PHP numeric, not string. Both lexical raw JSON (`"price":0.125` not `"price":"0.125"`) and decoded PHP type are asserted independently.
+- Multi-line and zero-price lines get the same lexical + typed dual assertion.
+
+**Out of scope (explicit non-changes)**
+
+- No changes to `includes/Subscription/Cron/Scheduler.php` (blob SHA `5251866d4df2d1326e7c09f0c8ec1d146c0bb325`, byte-identical to base).
+- No changes to `includes/Subscription/Cron/CycleClaim.php` (blob SHA `c34d83e2d77cc65024fe663e4c378cecb2b17347`, byte-identical to base).
+- No Phase 9I / updater / version / release work.
+- No live or sandbox provider calls; no production DB / option / usermeta / order writes.
+- No amend / rebase / force-push / merge work — this is a fast-forward child of `1aad811`.
+- No new public methods; no new fields; no schema migrations.
+
 ### Repository foundation
 
 - Establish Simplix Innovations maintenance identity and governance.
