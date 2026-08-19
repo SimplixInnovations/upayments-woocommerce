@@ -4524,7 +4524,7 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     $repo_root = realpath(__DIR__ . '/../..');
     $child = str_replace('\\', '/', $repo_root . '/tests/harness/store_api_child.php');
     if (!file_exists($child)) {
-        return ['error' => 'child script missing'];
+        return ['error' => 'child script missing', 'scenario' => $scenario_name, 'exit' => -1];
     }
     // Windows escapeshellarg corrupts JSON via colon padding; pass body via env var.
     putenv('UPAY_BODY=' . $body_json);
@@ -4541,14 +4541,55 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     exec($cmd, $output_lines, $exit);
     putenv('UPAY_BODY');
     $output = implode("\n", $output_lines);
+
+    // Residual Correction #18: require exit === 0 before parsing.
+    // Silently ignoring nonzero exit hides subprocess crashes (PHP fatal
+    // errors, missing bootstrap, etc.) which would otherwise be reported
+    // as "SP-X9 result=failure" instead of the actual broken child.
+    if ($exit !== 0) {
+        return [
+            'error'            => 'child subprocess exited nonzero',
+            'scenario'         => $scenario_name,
+            'exit'             => $exit,
+            'output'           => $output,
+            'path'             => 'child_error',
+            'body_consumed_count' => 0,
+            'charge_calls'     => 0,
+            'create_token_calls' => 0,
+            'retrieve_calls'   => 0,
+            'secret_creates'   => 0,
+            'identity_writes'  => 0,
+            'provenance_writes' => 0,
+            'usermeta_writes'  => 0,
+            'order_meta_writes' => 0,
+            'process_payment_result' => ['result' => 'failure', 'redirect' => 'child_error'],
+        ];
+    }
+
     $json_start = strpos($output, '{');
     $json_end = strrpos($output, '}');
     if ($json_start === false || $json_end === false) {
-        return ['error' => 'no JSON in output', 'output' => $output, 'exit' => $exit];
+        return [
+            'error'   => 'no JSON in output',
+            'scenario' => $scenario_name,
+            'output'  => $output,
+            'exit'    => $exit,
+            'path'    => 'child_error',
+        ];
     }
     $json_str = substr($output, $json_start, $json_end - $json_start + 1);
     $decoded = json_decode($json_str, true);
-    return is_array($decoded) ? $decoded : ['error' => 'invalid JSON', 'json_str' => $json_str, 'output' => $output];
+    if (!is_array($decoded)) {
+        return [
+            'error'    => 'invalid JSON',
+            'scenario' => $scenario_name,
+            'json_str' => $json_str,
+            'output'   => $output,
+            'exit'     => $exit,
+            'path'     => 'child_error',
+        ];
+    }
+    return $decoded;
 }
 
 // Build a minimal valid Store API body with hostile Classic $_POST conflict
@@ -4625,22 +4666,67 @@ upay_assert(
 // missing — the absence of extensions is detected inside the Blocks flow,
 // not before it. path=store_api proves production did NOT silently
 // classic-fallback.)
+//
+// Residual Correction #18: assert full fail-closed behavior. Because
+// production entered the Store API code path but body validation failed,
+// EVERY zero-mutation invariant must hold simultaneously:
+//   * process_payment_result.result === 'failure'
+//   * charge_calls === 0            (no Charge dispatch)
+//   * create_token_calls === 0      (no CreateToken dispatch)
+//   * retrieve_calls === 0          (no RetrieveCards dispatch)
+//   * secret_creates === 0          (no new signing secret)
+//   * identity_writes === 0         (no customer identity written)
+//   * provenance_writes === 0       (no provenance record written)
+//   * usermeta_writes === 0         (no user meta touched)
+//   * order_meta_writes === 0       (no order meta touched)
+// A single dispatch or write would mean production DID classic-fallback
+// or sneak a mutation past the Store API classifier — fail-closed broken.
 $result_sp6 = upay_run_store_api_child('SP-6', true, '/wc/store/v1/checkout', 'POST', wp_json_encode(['payment_data' => ['order_id' => 99999]]));
 upay_assert(
     isset($result_sp6['path']) && $result_sp6['path'] === 'store_api',
     'SP-6 missing Store extension + hostile Classic POST -> no Classic fallback (path=store_api, got: ' . var_export($result_sp6['path'] ?? null, true) . ')',
         'helper_unit_runtime'
 );
+upay_assert_eq(
+    $result_sp6['process_payment_result']['result'] ?? null,
+    'failure',
+    'SP-6 fail-closed: process_payment_result.result === failure',
+    'helper_unit_runtime'
+);
+upay_assert_eq((int) ($result_sp6['charge_calls'] ?? 0), 0, 'SP-6 fail-closed: charge_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['create_token_calls'] ?? 0), 0, 'SP-6 fail-closed: create_token_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['retrieve_calls'] ?? 0), 0, 'SP-6 fail-closed: retrieve_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['secret_creates'] ?? 0), 0, 'SP-6 fail-closed: secret_creates === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['identity_writes'] ?? 0), 0, 'SP-6 fail-closed: identity_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['provenance_writes'] ?? 0), 0, 'SP-6 fail-closed: provenance_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['usermeta_writes'] ?? 0), 0, 'SP-6 fail-closed: usermeta_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['order_meta_writes'] ?? 0), 0, 'SP-6 fail-closed: order_meta_writes === 0', 'helper_unit_runtime');
 
 // SP-7: malformed Store extension + hostile Classic $_POST -> must NOT classic-fallback
 // (same rationale as SP-6: production enters Store API, fails on body
 // validation, but does NOT classic-fallback. path=store_api proves this.)
+//
+// Residual Correction #18: identical zero-mutation invariant set as SP-6.
 $result_sp7 = upay_run_store_api_child('SP-7', true, '/wc/store/v1/checkout', 'POST', $malformed_store_body);
 upay_assert(
     isset($result_sp7['path']) && $result_sp7['path'] === 'store_api',
     'SP-7 malformed Store extension + hostile Classic POST -> no Classic fallback (path=store_api, got: ' . var_export($result_sp7['path'] ?? null, true) . ')',
         'helper_unit_runtime'
 );
+upay_assert_eq(
+    $result_sp7['process_payment_result']['result'] ?? null,
+    'failure',
+    'SP-7 fail-closed: process_payment_result.result === failure',
+    'helper_unit_runtime'
+);
+upay_assert_eq((int) ($result_sp7['charge_calls'] ?? 0), 0, 'SP-7 fail-closed: charge_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['create_token_calls'] ?? 0), 0, 'SP-7 fail-closed: create_token_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['retrieve_calls'] ?? 0), 0, 'SP-7 fail-closed: retrieve_calls === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['secret_creates'] ?? 0), 0, 'SP-7 fail-closed: secret_creates === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['identity_writes'] ?? 0), 0, 'SP-7 fail-closed: identity_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['provenance_writes'] ?? 0), 0, 'SP-7 fail-closed: provenance_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['usermeta_writes'] ?? 0), 0, 'SP-7 fail-closed: usermeta_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['order_meta_writes'] ?? 0), 0, 'SP-7 fail-closed: order_meta_writes === 0', 'helper_unit_runtime');
 
 // ===========================================================================
 // Section #17: Genuine semantic_runtime assertions exercising real
@@ -4717,24 +4803,45 @@ upay_assert(is_array($result_empty['process_payment_result'] ?? null), 'SP-X9 em
 upay_assert_eq($result_empty['process_payment_result']['result'] ?? null, 'failure', 'SP-X9 empty body -> result=failure', 'semantic_runtime');
 
 // --- SP-X10: Valid extensions body --------------------------------------
+//
+// Production's Store API body contract reads (UPayments.php line 2514):
+//   $request_data['extensions']['upayments']
+// The earlier fixture placed `extensions` inside `payment_data` — that
+// key is NOT read by production's classifier, so production returned
+// Whitelabel "missing source" failure and silently never dispatched
+// Charge. Residual Correction #18: hoist `extensions` to TOP level to
+// match the WC Store API body shape.
+//
+// Production's Blocks path reads (UPayments.php line 2670):
+//   $extension_data['upayment_payment_type']
+// (key `paymentType` was also wrong — production expects
+// `upayment_payment_type`).
+//
+// `card_token` is set to null (not '0') because production's
+// has_selected_card check (UPayments.php line 2709) treats the literal
+// string '0' as a selected card — and selected-card + src=knet fails
+// Whitelabel validation at line 3244. null is the canonical "no
+// selected card" sentinel.
 $valid_ext_body = wp_json_encode([
+    'extensions' => [
+        'upayments' => [
+            'order_id' => 99999,
+            'upayment_payment_type' => 'knet',
+            'card_token' => null,
+            'save_card' => '0',
+            'upay_subscription_plan' => 'one_time',
+            'upay_subscription_interval' => '0',
+        ],
+    ],
     'payment_data' => [
         'order_id' => 99999,
-        'extensions' => [
-            'upayments' => [
-                'order_id' => 99999,
-                'paymentType' => 'knet',
-                'card_token' => '0',
-                'save_card' => '0',
-            ],
-        ],
     ],
 ]);
 $result_valid_ext = upay_run_store_api_child('SP-X10', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
 upay_assert_eq($result_valid_ext['path'] ?? null, 'store_api', 'SP-X10 valid extensions body -> store_api path', 'semantic_runtime');
 upay_assert_eq((int) ($result_valid_ext['body_consumed_count'] ?? 0), 1, 'SP-X10 valid extensions -> body consumed', 'semantic_runtime');
 upay_assert(is_array($result_valid_ext['payload_decoded'] ?? null), 'SP-X10 valid extensions -> payload decoded', 'semantic_runtime');
-upay_assert_eq($result_valid_ext['payload_decoded']['payment_data']['extensions']['upayments']['paymentType'] ?? null, 'knet', 'SP-X10 valid extensions -> paymentType=knet preserved', 'semantic_runtime');
+upay_assert_eq($result_valid_ext['payload_decoded']['extensions']['upayments']['upayment_payment_type'] ?? null, 'knet', 'SP-X10 valid extensions -> upayment_payment_type=knet preserved', 'semantic_runtime');
 
 // --- SP-X11: Non-empty extensions upayments dict -----------------------
 $nonempty_ext_body = wp_json_encode([
@@ -4840,91 +4947,156 @@ $result_str_ext = upay_run_store_api_child('SP-X25', true, '/wc/store/v1/checkou
 upay_assert_eq($result_str_ext['path'] ?? null, 'store_api', 'SP-X25 string extensions -> store_api path', 'semantic_runtime');
 
 // --- SP-X26: Charge dispatched exactly once for valid extensions body --
+//             Genuine semantic_runtime: each counter reflects a real
+//             provider dispatch decision inside production.
 $result_init = upay_run_store_api_child('SP-X26', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
 upay_assert_eq((int) ($result_init['create_token_calls'] ?? 0), 0, 'SP-X26 create_token_calls=0 (no save_card path)', 'semantic_runtime');
 upay_assert_eq((int) ($result_init['retrieve_calls'] ?? 0), 0, 'SP-X26 retrieve_calls=0 (card_token=0 skips Retrieve)', 'semantic_runtime');
 upay_assert_eq((int) ($result_init['availability_calls'] ?? 0), 0, 'SP-X26 availability_calls=0 (no whitelabel gate hit)', 'semantic_runtime');
 upay_assert_eq((int) ($result_init['charge_calls'] ?? 0), 1, 'SP-X26 charge_calls=1 (one Charge dispatched per process_payment)', 'semantic_runtime');
 
-// --- SP-X27: process_payment_result shape ------------------------------
+// --- SP-X27: process_payment_result shape is the production WC_Payment_Gateway
+//             contract (array of {result, redirect}). The keys are
+//             production contract, not harness infrastructure.
 upay_assert(is_array($result_init['process_payment_result'] ?? null), 'SP-X27 process_payment_result is array', 'semantic_runtime');
 upay_assert(array_key_exists('result', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has result key', 'semantic_runtime');
 upay_assert(array_key_exists('redirect', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has redirect key', 'semantic_runtime');
 
 // --- SP-X28: pid isolation ----------------------------------------------
+//             HARNESS self-test (subprocess isolation plumbing), not
+//             production payment/identity behaviour.
 $pid_a = (int) ($result_init['pid'] ?? 0);
 $pid_b = (int) (upay_run_store_api_child('SP-X28', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body)['pid'] ?? 0);
-upay_assert($pid_a > 0 && $pid_b > 0, 'SP-X28 child subprocess has positive pid', 'semantic_runtime');
-upay_assert($pid_a !== $pid_b, 'SP-X28 separate subprocess invocations produce distinct pids (true isolation)', 'semantic_runtime');
+upay_assert($pid_a > 0 && $pid_b > 0, 'SP-X28 child subprocess has positive pid', 'harness_self_test');
+upay_assert($pid_a !== $pid_b, 'SP-X28 separate subprocess invocations produce distinct pids (true isolation)', 'harness_self_test');
 
 // --- SP-X29: wc_loaded is true in subprocess ---------------------------
-upay_assert_eq($result_init['wc_loaded'] ?? null, true, 'SP-X29 wc_loaded=true in subprocess (production actually loaded)', 'semantic_runtime');
+//             HARNESS self-test: confirms the child bootstrap actually
+//             evaluated require_once UPayments.php. Production code path
+//             is already verified by SP-X26 charge_calls.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert_eq($result_init['wc_loaded'] ?? null, true, 'SP-X29 wc_loaded=true in subprocess (production actually loaded)', 'harness_self_test');
 
 // --- SP-X30: payload_decoded shape for valid body ---------------------
-upay_assert(is_array($result_valid_ext['payload_decoded'] ?? null), 'SP-X30 payload_decoded is array', 'semantic_runtime');
-upay_assert_eq($result_valid_ext['payload_decoded']['payment_data']['order_id'] ?? null, 99999, 'SP-X30 payload order_id preserved', 'semantic_runtime');
+//             HARNESS self-test: confirms the child's getenv('UPAY_BODY') +
+//             json_decode plumbing round-tripped the test fixture.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_valid_ext['payload_decoded'] ?? null), 'SP-X30 payload_decoded is array', 'harness_self_test');
+upay_assert_eq($result_valid_ext['payload_decoded']['payment_data']['order_id'] ?? null, 99999, 'SP-X30 payload order_id preserved', 'harness_self_test');
 
 // --- SP-X31: notices array shape ---------------------------------------
-upay_assert(is_array($result_init['notices'] ?? null), 'SP-X31 notices is array', 'semantic_runtime');
+//             HARNESS self-test: array-shape contract of the child
+//             emitter, not a production semantic claim.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_init['notices'] ?? null), 'SP-X31 notices is array', 'harness_self_test');
 
 // --- SP-X32: process_payment_exception is null when no exception ------
+//             HARNESS self-test: child emitter always reports
+//             process_payment_exception so its absence proves the
+//             subprocess completed cleanly. Production exception
+//             handling is covered by separate SP-X behavior assertions.
+//             Residual Correction #18: reclassified harness_self_test.
 $proc_exc = (is_array($result_valid_ext ?? null)
     && array_key_exists('process_payment_exception', $result_valid_ext))
     ? $result_valid_ext['process_payment_exception']
     : 'MISSING';
-upay_assert_eq($proc_exc, null, 'SP-X32 process_payment_exception=null when no exception thrown', 'semantic_runtime');
+upay_assert_eq($proc_exc, null, 'SP-X32 process_payment_exception=null when no exception thrown', 'harness_self_test');
 
 // --- SP-X33: request_uri passed through verbatim ------------------------
+//             HARNESS self-test: subprocess arg plumbing.
+//             Residual Correction #18: reclassified harness_self_test.
 $custom_uri_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_custom_uri = upay_run_store_api_child('SP-X33', true, '/wc/store/v1/checkout', 'POST', $custom_uri_body);
-upay_assert_eq($result_custom_uri['request_uri'] ?? '', '/wc/store/v1/checkout', 'SP-X33 request_uri passed verbatim to subprocess', 'semantic_runtime');
-upay_assert_eq($result_custom_uri['request_method'] ?? '', 'POST', 'SP-X33 request_method POST preserved', 'semantic_runtime');
+upay_assert_eq($result_custom_uri['request_uri'] ?? '', '/wc/store/v1/checkout', 'SP-X33 request_uri passed verbatim to subprocess', 'harness_self_test');
+upay_assert_eq($result_custom_uri['request_method'] ?? '', 'POST', 'SP-X33 request_method POST preserved', 'harness_self_test');
 
 // --- SP-X34: REST_REQUEST=false suppresses Store API path --------------
-upay_assert_eq($result_norest['rest_request_observed'] ?? null, false, 'SP-X34 REST_REQUEST=false in subprocess observed', 'semantic_runtime');
-upay_assert_eq($result_norest['rest_request_value'] ?? '', '', 'SP-X34 REST_REQUEST value empty string (false)', 'semantic_runtime');
+//             The REST_REQUEST observation itself is harness self-test
+//             plumbing. The actual production routing of REST_REQUEST=false
+//             is covered by SP-X6 (which has no dependency on the
+//             rest_request_observed value being readable).
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert_eq($result_norest['rest_request_observed'] ?? null, false, 'SP-X34 REST_REQUEST=false in subprocess observed', 'harness_self_test');
+upay_assert_eq($result_norest['rest_request_value'] ?? '', '', 'SP-X34 REST_REQUEST value empty string (false)', 'harness_self_test');
 
 // --- SP-X35: hostile POST never wins over Store API body (SP-5) -------
+//             This is genuine semantic: body_consumed_count=1 with
+//             hostile $_POST proves production entered Store API path.
 $result_sp5_again = upay_run_store_api_child('SP-X35', true, '/wc/store/v1/checkout', 'POST', $store_body);
 upay_assert_eq($result_sp5_again['path'] ?? null, 'store_api', 'SP-X35 hostile Classic POST cannot override Store API body', 'semantic_runtime');
 upay_assert_eq((int) ($result_sp5_again['body_consumed_count'] ?? 0), 1, 'SP-X35 Store API body consumed despite hostile POST', 'semantic_runtime');
 
-// --- SP-X36: secret-related counters unchanged (no provenance write) ---
+// --- SP-X36: production observed zero secret/provenance writes -------
+//             Genuine semantic: a successful charge would normally have
+//             count=1; count=0 proves production did not silently perform
+//             an out-of-band identity or secret mutation.
 upay_assert_eq((int) ($result_valid_ext['secret_creates'] ?? 0), 0, 'SP-X36 no secret created in subprocess (pre-existing secret state)', 'semantic_runtime');
 upay_assert_eq((int) ($result_valid_ext['provenance_writes'] ?? 0), 0, 'SP-X36 no provenance write for non-rollback scenario', 'semantic_runtime');
 
 // --- SP-X37: option counters unchanged in subprocess ------------------
+//             Genuine semantic: would be >0 if production wrote any WP
+//             option during process_payment.
 upay_assert_eq((int) ($result_valid_ext['option_creates'] ?? 0), 0, 'SP-X37 no option_creates in subprocess', 'semantic_runtime');
 upay_assert_eq((int) ($result_valid_ext['option_writes'] ?? 0), 0, 'SP-X37 no option_writes in subprocess', 'semantic_runtime');
 
 // --- SP-X38: identity_writes unchanged in subprocess (no identity) ----
+//             Genuine semantic: if production wrote identity in this
+//             scenario it would represent a regression.
 upay_assert_eq((int) ($result_valid_ext['identity_writes'] ?? 0), 0, 'SP-X38 no identity_writes in subprocess', 'semantic_runtime');
 
-// --- SP-X39: order_meta_writes unchanged in subprocess -----------------
-upay_assert_eq((int) ($result_valid_ext['order_meta_writes'] ?? 0), 0, 'SP-X39 no order_meta_writes in subprocess', 'semantic_runtime');
+// --- SP-X39: successful charge writes authoritative order meta ---------
+//             Genuine semantic: a successful knet one_time charge
+//             dispatches and writes `UPayments_order_id` to the order
+//             (line ~3607 of UPayments.php). count >= 1 here is the
+//             production contract.
+upay_assert((int) ($result_valid_ext['order_meta_writes'] ?? 0) >= 1, 'SP-X39 successful charge writes >=1 order_meta entry (UPayments_order_id)', 'semantic_runtime');
 
 // --- SP-X40: usermeta_writes unchanged in subprocess -------------------
+//             Genuine semantic: identity-linked card tokens are
+//             authoritative state and must NOT be touched here.
 upay_assert_eq((int) ($result_valid_ext['usermeta_writes'] ?? 0), 0, 'SP-X40 no usermeta_writes in subprocess', 'semantic_runtime');
 
 // --- SP-X41: transport_log is array ------------------------------------
-upay_assert(is_array($result_valid_ext['transport_log'] ?? null), 'SP-X41 transport_log is array', 'semantic_runtime');
+//             HARNESS self-test: array-shape contract of the child's
+//             state emitter, not a production semantic claim.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_valid_ext['transport_log'] ?? null), 'SP-X41 transport_log is array', 'harness_self_test');
 
 // --- SP-X42: last_charge_body captures the dispatched charge JSON -----
-upay_assert(is_string($result_valid_ext['last_charge_body'] ?? null), 'SP-X42 last_charge_body is string when charge dispatched', 'semantic_runtime');
+//             HARNESS self-test: only the harness reads this field; it
+//             is the test-state echo from the testable transport. The
+//             real SP-X26 charge_calls assertion carries the semantic
+//             meaning of "Charge dispatched".
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_string($result_valid_ext['last_charge_body'] ?? null), 'SP-X42 last_charge_body is string when charge dispatched', 'harness_self_test');
 
 // --- SP-X43: create_token_bodies is array ------------------------------
-upay_assert(is_array($result_valid_ext['create_token_bodies'] ?? null), 'SP-X43 create_token_bodies is array', 'semantic_runtime');
+//             HARNESS self-test: child emitter array shape.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_valid_ext['create_token_bodies'] ?? null), 'SP-X43 create_token_bodies is array', 'harness_self_test');
 
 // --- SP-X44: retrieve_bodies is array ---------------------------------
-upay_assert(is_array($result_valid_ext['retrieve_bodies'] ?? null), 'SP-X44 retrieve_bodies is array', 'semantic_runtime');
+//             HARNESS self-test: child emitter array shape.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_valid_ext['retrieve_bodies'] ?? null), 'SP-X44 retrieve_bodies is array', 'harness_self_test');
 
 // --- SP-X45: charge_bodies is array ------------------------------------
-upay_assert(is_array($result_valid_ext['charge_bodies'] ?? null), 'SP-X45 charge_bodies is array', 'semantic_runtime');
+//             HARNESS self-test: child emitter array shape.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert(is_array($result_valid_ext['charge_bodies'] ?? null), 'SP-X45 charge_bodies is array', 'harness_self_test');
 
 // --- SP-X46: scenario label preserved ---------------------------------
-upay_assert_eq($result_valid_ext['scenario'] ?? '', 'SP-X10', 'SP-X46 scenario label preserved in subprocess', 'semantic_runtime');
+//             HARNESS self-test: subprocess arg echo.
+//             Residual Correction #18: reclassified harness_self_test.
+upay_assert_eq($result_valid_ext['scenario'] ?? '', 'SP-X10', 'SP-X46 scenario label preserved in subprocess', 'harness_self_test');
 
-// --- SP-X47: SP-X1..SP-X10 results all have valid result/redirect keys -
+// --- SP-X47: SP-X1..SP-X10 results all have valid process_payment_result
+//             shape. process_payment_result is a genuine production
+//             contract. The wc_loaded field is harness subprocess load
+//             confirmation — split into two assertions with separate
+//             categories.
+//             Residual Correction #18: reclassified wc_loaded to
+//             harness_self_test; result is array stays semantic_runtime.
 foreach ([$result_subdir, $result_pretty, $result_plain, $result_trail, $result_get,
           $result_norest, $result_put, $result_wpusers, $result_empty, $result_valid_ext,
           $result_nonempty_ext, $result_subdir_plain, $result_index, $result_empty_uri,
@@ -4933,7 +5105,7 @@ foreach ([$result_subdir, $result_pretty, $result_plain, $result_trail, $result_
           $result_null_ext, $result_str_ext, $result_init] as $i => $r) {
     $sp = "SP-X47-" . ($i + 1);
     upay_assert(is_array($r ?? null), "$sp result is array", 'semantic_runtime');
-    upay_assert_eq($r['wc_loaded'] ?? null, true, "$sp wc_loaded=true", 'semantic_runtime');
+    upay_assert_eq($r['wc_loaded'] ?? null, true, "$sp wc_loaded=true (subprocess load confirmed)", 'harness_self_test');
 }
 
 // --- SP-X48: production enters Store API only when body is consumed ----
@@ -4958,8 +5130,11 @@ upay_assert(
 );
 
 // --- SP-X50: SP-1 path is consistent across multiple invocations ------
+//             HARNESS self-test: subprocess invocation determinism
+//             (no production state mutated, no real time-dependent
+//             decision). Residual Correction #18: reclassified.
 $result_sp1_again = upay_run_store_api_child('SP-1', true, '/wc/store/v1/checkout', 'POST', $store_body);
-upay_assert_eq($result_sp1_again['path'] ?? null, $result_sp1['path'] ?? null, 'SP-X50 SP-1 path deterministic across invocations', 'semantic_runtime');
+upay_assert_eq($result_sp1_again['path'] ?? null, $result_sp1['path'] ?? null, 'SP-X50 SP-1 path deterministic across invocations', 'harness_self_test');
 
 // ===========================================================================
 // Section #17b: Genuine semantic_runtime assertions exercising real
@@ -4994,12 +5169,17 @@ $body_variants = [
 
 foreach ($body_variants as $label => $payload) {
     $result = upay_run_store_api_child($label, true, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
+    // Genuine semantic_runtime: production's classifier decided store_api
+    // and consumed the body — these are real production routing
+    // decisions.
     upay_assert_eq($result['path'] ?? null, 'store_api', "$label body shape -> store_api path", 'semantic_runtime');
     upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'semantic_runtime');
-    upay_assert_eq($result['rest_request_observed'] ?? null, true, "$label -> REST_REQUEST observed true", 'semantic_runtime');
+    // HARNESS self-test: subprocess arg + load plumbing echoes.
+    // Residual Correction #18: reclassified.
+    upay_assert_eq($result['rest_request_observed'] ?? null, true, "$label -> REST_REQUEST observed true (subprocess env echo)", 'harness_self_test');
     upay_assert(is_array($result['process_payment_result'] ?? null), "$label -> process_payment returned array", 'semantic_runtime');
     upay_assert(array_key_exists('result', $result['process_payment_result'] ?? []), "$label -> result key present", 'semantic_runtime');
-    upay_assert_eq($result['wc_loaded'] ?? null, true, "$label -> wc_loaded true", 'semantic_runtime');
+    upay_assert_eq($result['wc_loaded'] ?? null, true, "$label -> wc_loaded true (subprocess load confirmed)", 'harness_self_test');
 }
 
 // --- SP-X80..SP-X85: hostile REST_REQUEST=false variations -------------
@@ -5014,9 +5194,12 @@ $false_variants = [
 
 foreach ($false_variants as $label => $payload) {
     $result = upay_run_store_api_child($label, false, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
+    // Genuine semantic_runtime: production routing decisions.
     upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label REST_REQUEST=false -> not store_api", 'semantic_runtime');
     upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label -> body NOT consumed", 'semantic_runtime');
-    upay_assert_eq($result['rest_request_observed'] ?? null, false, "$label -> REST_REQUEST observed false", 'semantic_runtime');
+    // HARNESS self-test: subprocess env echo.
+    // Residual Correction #18: reclassified.
+    upay_assert_eq($result['rest_request_observed'] ?? null, false, "$label -> REST_REQUEST observed false (subprocess env echo)", 'harness_self_test');
 }
 
 // --- SP-X86..SP-X90: method variants all NOT Store API ------------------
@@ -5042,59 +5225,88 @@ foreach ([
 
 // --- SP-X96..SP-X100: valid body with all field combinations ----------
 foreach ([
-    'SP-X96' => ['order_id' => 99999, 'paymentType' => 'knet'],
-    'SP-X97' => ['order_id' => 99999, 'paymentType' => 'cc'],
-    'SP-X98' => ['order_id' => 99999, 'paymentType' => 'knet', 'card_token' => '12345678'],
-    'SP-X99' => ['order_id' => 99999, 'paymentType' => 'knet', 'save_card' => '1'],
-    'SP-X100' => ['order_id' => 99999, 'paymentType' => 'knet', 'subscription_plan' => 'monthly', 'subscription_interval' => '1'],
+    'SP-X96' => ['order_id' => 99999, 'upayment_payment_type' => 'knet'],
+    'SP-X97' => ['order_id' => 99999, 'upayment_payment_type' => 'cc'],
+    'SP-X98' => ['order_id' => 99999, 'upayment_payment_type' => 'knet', 'card_token' => '12345678'],
+    'SP-X99' => ['order_id' => 99999, 'upayment_payment_type' => 'knet', 'save_card' => '1'],
+    'SP-X100' => ['order_id' => 99999, 'upayment_payment_type' => 'knet', 'upay_subscription_plan' => 'monthly', 'upay_subscription_interval' => '1'],
 ] as $label => $ext) {
-    $payload = ['payment_data' => ['order_id' => 99999, 'extensions' => ['upayments' => $ext]]];
+    $payload = [
+        'extensions' => ['upayments' => $ext],
+        'payment_data' => ['order_id' => 99999],
+    ];
     $result = upay_run_store_api_child($label, true, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
+    // Genuine semantic_runtime: production consumed the body and the
+    // extension dict survived round-trip into production's body parser.
     upay_assert_eq($result['path'] ?? null, 'store_api', "$label -> store_api path", 'semantic_runtime');
     upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'semantic_runtime');
-    upay_assert_eq($result['payload_decoded']['payment_data']['extensions']['upayments']['paymentType'] ?? null, $ext['paymentType'], "$label -> paymentType preserved", 'semantic_runtime');
+    // payload_decoded is the harness subprocess echo of the JSON it
+    // decoded; preserved means the subprocess arg plumbing works,
+    // NOT that production parsed the field. Genuine production payload
+    // routing is already covered by SP-X26 charge_calls and SP-X35.
+    // Residual Correction #18: reclassified.
+    upay_assert_eq($result['payload_decoded']['extensions']['upayments']['upayment_payment_type'] ?? null, $ext['upayment_payment_type'], "$label -> upayment_payment_type preserved (subprocess JSON round-trip)", 'harness_self_test');
 }
 
 // --- SP-X101..SP-X105: production invariants for valid Store API body --
+//             Genuine semantic: a successful charge writes the
+//             `UPayments_order_id` order-meta key but writes NO
+//             identity, provenance, secret, or usermeta.
+//             Residual Correction #18: refactored from previous
+//             "all-zero" expectation (which was only correct under
+//             the broken-old-fixture Charge-silently-failing path)
+//             to the actual production contract.
 $result_inv1 = upay_run_store_api_child('SP-X101', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
-upay_assert_eq((int) ($result_inv1['identity_writes'] ?? 0), 0, 'SP-X101 identity_writes=0 (no identity write in this scenario)', 'semantic_runtime');
-upay_assert_eq((int) ($result_inv1['provenance_writes'] ?? 0), 0, 'SP-X101 provenance_writes=0 (no rollback)', 'semantic_runtime');
-upay_assert_eq((int) ($result_inv1['secret_creates'] ?? 0), 0, 'SP-X101 secret_creates=0', 'semantic_runtime');
-upay_assert_eq((int) ($result_inv1['usermeta_writes'] ?? 0), 0, 'SP-X101 usermeta_writes=0', 'semantic_runtime');
-upay_assert_eq((int) ($result_inv1['order_meta_writes'] ?? 0), 0, 'SP-X101 order_meta_writes=0', 'semantic_runtime');
+upay_assert((int) ($result_inv1['order_meta_writes'] ?? 0) >= 1, 'SP-X101 order_meta_writes>=1 (UPayments_order_id written on success)', 'semantic_runtime');
+upay_assert_eq((int) ($result_inv1['identity_writes'] ?? 0), 0, 'SP-X101 identity_writes=0 (no save_card path; selected card also null)', 'semantic_runtime');
+upay_assert_eq((int) ($result_inv1['provenance_writes'] ?? 0), 0, 'SP-X101 provenance_writes=0 (no rollback path)', 'semantic_runtime');
+upay_assert_eq((int) ($result_inv1['secret_creates'] ?? 0), 0, 'SP-X101 secret_creates=0 (pre-existing secret state)', 'semantic_runtime');
+upay_assert_eq((int) ($result_inv1['usermeta_writes'] ?? 0), 0, 'SP-X101 usermeta_writes=0 (no identity-linked card token write)', 'semantic_runtime');
 
 // --- SP-X106..SP-X110: cross-process invariants ------------------------
+//             HARNESS self-test: subprocess OS-level pid comparison is
+//             infrastructure, not production. Residual Correction #18:
+//             reclassified.
 $pid_1 = (int) (upay_run_store_api_child('SP-X106', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body)['pid'] ?? 0);
 $pid_2 = (int) (upay_run_store_api_child('SP-X107', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body)['pid'] ?? 0);
 $pid_3 = (int) (upay_run_store_api_child('SP-X108', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body)['pid'] ?? 0);
-upay_assert($pid_1 > 0 && $pid_2 > 0 && $pid_3 > 0, 'SP-X108 all subprocesses have positive pid', 'semantic_runtime');
-upay_assert($pid_1 !== $pid_2, 'SP-X109 pid_1 != pid_2 (truly separate processes)', 'semantic_runtime');
-upay_assert($pid_2 !== $pid_3, 'SP-X110 pid_2 != pid_3 (truly separate processes)', 'semantic_runtime');
+upay_assert($pid_1 > 0 && $pid_2 > 0 && $pid_3 > 0, 'SP-X108 all subprocesses have positive pid (subprocess OS-level isolation)', 'harness_self_test');
+upay_assert($pid_1 !== $pid_2, 'SP-X109 pid_1 != pid_2 (truly separate processes)', 'harness_self_test');
+upay_assert($pid_2 !== $pid_3, 'SP-X110 pid_2 != pid_3 (truly separate processes)', 'harness_self_test');
 
 // --- SP-X111..SP-X115: result shape consistency -----------------------
+//             HARNESS self-test: subprocess determinism across
+//             invocations; the production contract (result+redirect
+//             keys) is already covered by SP-X27.
+//             Residual Correction #18: reclassified harness_self_test.
 $result_shape1 = upay_run_store_api_child('SP-X111', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
 $result_shape2 = upay_run_store_api_child('SP-X112', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
-upay_assert_eq(count($result_shape1['process_payment_result'] ?? []), count($result_shape2['process_payment_result'] ?? []), 'SP-X111 result shape deterministic across invocations', 'semantic_runtime');
-upay_assert_eq(array_keys($result_shape1['process_payment_result'] ?? [])[0] ?? null, 'result', 'SP-X112 first result key is "result"', 'semantic_runtime');
-upay_assert_eq(array_keys($result_shape1['process_payment_result'] ?? [])[1] ?? null, 'redirect', 'SP-X113 second result key is "redirect"', 'semantic_runtime');
-upay_assert_eq(is_string($result_shape1['process_payment_result']['redirect'] ?? null), true, 'SP-X114 redirect is string', 'semantic_runtime');
-upay_assert_eq(is_string($result_shape1['process_payment_result']['result'] ?? null), true, 'SP-X115 result is string', 'semantic_runtime');
+upay_assert_eq(count($result_shape1['process_payment_result'] ?? []), count($result_shape2['process_payment_result'] ?? []), 'SP-X111 result shape deterministic across invocations', 'harness_self_test');
+upay_assert_eq(array_keys($result_shape1['process_payment_result'] ?? [])[0] ?? null, 'result', 'SP-X112 first result key is "result"', 'harness_self_test');
+upay_assert_eq(array_keys($result_shape1['process_payment_result'] ?? [])[1] ?? null, 'redirect', 'SP-X113 second result key is "redirect"', 'harness_self_test');
+upay_assert_eq(is_string($result_shape1['process_payment_result']['redirect'] ?? null), true, 'SP-X114 redirect is string', 'harness_self_test');
+upay_assert_eq(is_string($result_shape1['process_payment_result']['result'] ?? null), true, 'SP-X115 result is string', 'harness_self_test');
 
 // --- SP-X116..SP-X120: subprocess output field types -------------------
+//             HARNESS self-test: PHP runtime types of subprocess
+//             emitter output. Not production behaviour.
+//             Residual Correction #18: reclassified harness_self_test.
 $result_types = upay_run_store_api_child('SP-X116', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
-upay_assert_eq(is_int($result_types['body_consumed_count'] ?? 'NOT_INT'), true, 'SP-X116 body_consumed_count is int', 'semantic_runtime');
-upay_assert_eq(is_bool($result_types['rest_request_observed'] ?? 'NOT_BOOL'), true, 'SP-X117 rest_request_observed is bool', 'semantic_runtime');
-upay_assert_eq(is_int($result_types['pid'] ?? 'NOT_INT'), true, 'SP-X118 pid is int', 'semantic_runtime');
-upay_assert_eq(is_array($result_types['transport_log'] ?? 'NOT_ARR'), true, 'SP-X119 transport_log is array', 'semantic_runtime');
-upay_assert_eq(is_array($result_types['notices'] ?? 'NOT_ARR'), true, 'SP-X120 notices is array', 'semantic_runtime');
+upay_assert_eq(is_int($result_types['body_consumed_count'] ?? 'NOT_INT'), true, 'SP-X116 body_consumed_count is int (PHP runtime type)', 'harness_self_test');
+upay_assert_eq(is_bool($result_types['rest_request_observed'] ?? 'NOT_BOOL'), true, 'SP-X117 rest_request_observed is bool (PHP runtime type)', 'harness_self_test');
+upay_assert_eq(is_int($result_types['pid'] ?? 'NOT_INT'), true, 'SP-X118 pid is int (PHP runtime type)', 'harness_self_test');
+upay_assert_eq(is_array($result_types['transport_log'] ?? 'NOT_ARR'), true, 'SP-X119 transport_log is array (PHP runtime type)', 'harness_self_test');
+upay_assert_eq(is_array($result_types['notices'] ?? 'NOT_ARR'), true, 'SP-X120 notices is array (PHP runtime type)', 'harness_self_test');
 
 // --- SP-X121..SP-X123: final integration invariants --------------------
+//             HARNESS self-test: subprocess invocation determinism.
+//             Residual Correction #18: reclassified harness_self_test.
 $result_final_a = upay_run_store_api_child('SP-X121', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
 $result_final_b = upay_run_store_api_child('SP-X122', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
 $result_final_c = upay_run_store_api_child('SP-X123', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
-upay_assert_eq($result_final_a['path'] ?? null, $result_final_b['path'] ?? null, 'SP-X121 path invariant across two invocations', 'semantic_runtime');
-upay_assert_eq($result_final_a['path'] ?? null, $result_final_c['path'] ?? null, 'SP-X122 path invariant across three invocations', 'semantic_runtime');
-upay_assert_eq($result_final_a['body_consumed_count'] ?? null, $result_final_b['body_consumed_count'] ?? null, 'SP-X123 body_consumed_count invariant across invocations', 'semantic_runtime');
+upay_assert_eq($result_final_a['path'] ?? null, $result_final_b['path'] ?? null, 'SP-X121 path invariant across two invocations', 'harness_self_test');
+upay_assert_eq($result_final_a['path'] ?? null, $result_final_c['path'] ?? null, 'SP-X122 path invariant across three invocations', 'harness_self_test');
+upay_assert_eq($result_final_a['body_consumed_count'] ?? null, $result_final_b['body_consumed_count'] ?? null, 'SP-X123 body_consumed_count invariant across invocations', 'harness_self_test');
 
 
 
@@ -5114,11 +5326,17 @@ echo "  lint_tooling:          $_fail_lint_tooling\n";
 
 // Section #14: A failed semantic_runtime assertion is a contract break;
 // we exit with non-zero so CI cannot accidentally accept a regressed build.
-if ($fail > 0 || $_pass_semantic_runtime < 600) {
-    echo "\n--- ABORT: semantic_runtime below 600 or any FAIL detected ---\n";
-    if ($_pass_semantic_runtime < 600) {
-        echo "semantic_runtime PASS count: $_pass_semantic_runtime (need >= 600)\n";
-    }
+//
+// Residual Correction #18: Removed the inflated `>= 600 semantic_runtime`
+// numeric gate. The previous gate was a numeric target, not a semantic
+// one. Per the directive "enforce semantic meaning instead of a numeric
+// target", we now exit non-zero only on `$fail > 0`. The previous claim
+// "semantic_runtime = 600" was inflated by ≥176 harness/subprocess
+// assertions and has been withdrawn. The honest PASS count is whatever
+// the real semantic assertions reach — currently ~489 (rebuilt from
+// zero with semantic meaning, not numeric padding).
+if ($fail > 0) {
+    echo "\n--- ABORT: any FAIL detected ---\n";
 }
 
 if ($fail > 0) {
@@ -5130,4 +5348,4 @@ if ($fail > 0) {
     }
 }
 
-exit(($fail > 0 || $_pass_semantic_runtime < 560) ? 1 : 0);
+exit($fail > 0 ? 1 : 0);

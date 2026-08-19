@@ -104,6 +104,28 @@ if (!file_exists($bootstrap)) {
 require_once $bootstrap;
 
 // --- Configure transport stubs (deterministic, no real network) ---------
+//
+// Production's execute_upayments_request() returns a STRICT envelope
+// (see UPayments.php lines 1701-1774 + 3505-3517):
+//
+//   array{
+//     transport_ok : bool,
+//     http_status  : int,
+//     curl_errno   : int,
+//     body         : scalar JSON string,
+//   }
+//
+// The Charge classifier (lines 3508-3512) additionally requires
+// http_status === 201, curl_errno === 0, body is_scalar, then json_decode
+// must yield an array with status===true and data.link or
+// data.transactionData.redirect_url.
+//
+// The previous fixtures returned a non-envelope shape
+// (status/error/data) which was rejected by production's classifier,
+// so every charge dispatched inside the subprocess returned failure
+// silently before this fix. Residual Correction #18 rebuilds the
+// charge envelope to the production shape so charge_calls === 1 is
+// actually reachable through real process_payment().
 $body_value = getenv('UPAY_BODY');
 $payload = null;
 if (is_string($body_value) && $body_value !== '') {
@@ -132,29 +154,83 @@ $state['rest_request']   = ($rest_normalised === 'true');
 $state['input_body']     = is_string($body_value) ? $body_value : '';
 $state['post']           = $_POST;
 $state['transport_log']  = [];
-$state['transport_responses_per_route'] = [
-    'check-payment-button-status' => [
-        'status' => 'success', 'error' => null, 'data' => ['supported' => true],
-    ],
-    'create-customer-unique-token' => [
-        'status' => 'success', 'error' => null,
-        'data'   => ['customerUniqueToken' => 'CSTOREAPI12345678'],
-    ],
-    'retrieve-customer-cards' => [
-        'status' => 'success', 'error' => null,
-        'data'   => ['cards' => []],
-    ],
-    'charge' => [
-        'status' => 'success', 'error' => null,
-        'data'   => ['reference' => 'REF-STORE-CHILD-' . $scenario],
+
+$ref_suffix = $scenario;
+$redirect_link = sprintf(
+    'https://example.test/upayments/redirect/%s',
+    rawurlencode($ref_suffix)
+);
+
+// Build the production-shaped transport envelope for the Charge route.
+// transport_ok = true, http_status = 201, curl_errno = 0,
+// body = scalar JSON string. The decoder yields status===true with a
+// data.link string, which is the minimal valid success response.
+$charge_envelope = [
+    'transport_ok' => true,
+    'http_status'  => 201,
+    'curl_errno'   => 0,
+    'body'         => wp_json_encode([
+        'status' => true,
+        'data'   => ['link' => $redirect_link],
+    ]),
+];
+
+// availability_response: production's getPaymentIcons() (UPayments.php
+// line 4475) reads `isWhiteLabel` from the upstream response. The
+// earlier fixture used `whitelabled` which production does NOT consume,
+// so `$whitelabled` evaluated to false inside getPaymentIcons and the
+// harness silently exercised the Non-Whitelabel generic-checkout
+// branch. Residual Correction #18: corrected to the production key.
+$state['availability_response'] = [
+    'result'       => 'success',
+    'isWhiteLabel' => true,
+    'payButtons'   => [
+        'knet'         => 1,
+        'apple_pay_knet' => 1,
+        'credit_card'  => 1,
+        'apple_pay'    => 1,
+        'samsung_pay'  => 1,
+        'google_pay'   => 1,
     ],
 ];
-// availability_response: production's getPaymentIcons() stub returns this
-// verbatim. The production expects `whitelabled` as a boolean (line 2477).
-$state['availability_response'] = [
-    'result' => 'success',
-    'whitelabled' => true,
-    'payButtons' => [],
+
+$state['transport_responses_per_route'] = [
+    'check-payment-button-status' => [
+        'transport_ok' => true,
+        'http_status'  => 201,
+        'curl_errno'   => 0,
+        'body'         => wp_json_encode([
+            'status' => true,
+            'data'   => [
+                'supported'           => true,
+                'whitelabled'         => true,
+                'isWhiteLabel'        => true,
+                'payButtons'          => [
+                    'knet' => 1,
+                    'credit_card' => 1,
+                ],
+            ],
+        ]),
+    ],
+    'create-customer-unique-token' => [
+        'transport_ok' => true,
+        'http_status'  => 201,
+        'curl_errno'   => 0,
+        'body'         => wp_json_encode([
+            'status' => true,
+            'data'   => ['customerUniqueToken' => 'CSTOREAPI12345678'],
+        ]),
+    ],
+    'retrieve-customer-cards' => [
+        'transport_ok' => true,
+        'http_status'  => 201,
+        'curl_errno'   => 0,
+        'body'         => wp_json_encode([
+            'status' => true,
+            'data'   => ['cards' => []],
+        ]),
+    ],
+    'charge' => $charge_envelope,
 ];
 
 // --- Build a real WC_Upayments_InputTestable and override the body seam -
