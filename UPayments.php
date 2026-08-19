@@ -2970,8 +2970,8 @@ function woocommerceUpaymentsInit() {
             if ($email !== '' && strlen($email) <= 50 && filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 $customer_data['email'] = $email;
             }
-            if ($customer_unique_id !== '' && is_scalar($customer_unique_id) && strlen((string) $customer_unique_id) <= 50) {
-                $customer_data['uniqueId'] = (string) $customer_unique_id;
+            if (is_string($customer_unique_id) && $customer_unique_id !== '' && strlen($customer_unique_id) <= 50) {
+                $customer_data['uniqueId'] = $customer_unique_id;
             }
             if ($provider_mobile !== '' && is_scalar($provider_mobile)) {
                 $customer_data['mobile'] = (string) $provider_mobile;
@@ -3717,10 +3717,10 @@ function woocommerceUpaymentsInit() {
             if ($order->get_payment_method() === $this->id)
             {
                 $payment_status_raw = $order->get_meta('UPayments_Result', true);
-                $payment_status = is_scalar($payment_status_raw) ? (string) $payment_status_raw : '';
+                $payment_status = is_string($payment_status_raw) ? $payment_status_raw : '';
 
                 $upayment_id_raw = $order->get_meta('UPayments_PaymentID', true);
-                $upayment_id = is_scalar($upayment_id_raw) ? (string) $upayment_id_raw : '';
+                $upayment_id = is_string($upayment_id_raw) ? $upayment_id_raw : '';
 
                 if ($payment_status !== '' || $upayment_id !== '') { ?>
                     <table class="wc-order-totals" style="border-top: 1px solid #999; margin-top:12px; padding-top:12px">

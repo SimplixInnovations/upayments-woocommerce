@@ -2234,8 +2234,8 @@ class CustomerTokenIdentity {
         $generation = $order->get_meta('_upay_customer_token_generation_v1', true, 'edit');
         $token = $order->get_meta('_upay_customer_unique_token', true, 'edit');
 
-        if (!is_scalar($kind) || !is_scalar($scope) || !is_scalar($generation) || !is_scalar($token)) {
-            return true; // non-scalar — preserve
+        if (!is_string($kind) || !is_string($scope) || !is_string($generation) || !is_string($token)) {
+            return true; // non-string — preserve
         }
 
         $valid_kinds = array(self::KIND_CANONICAL, self::KIND_LEGACY_COMPAT);
