@@ -633,10 +633,56 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     record(sub === null, 'H-ST-19 exact label match rejects substring', 'harness');
 }
 {
-    // H-ST-20 (REMOVED): findButtonByLabel with mode='leaf-contains' is forbidden.
-    // Substring matching against security-contract controls is no longer permitted.
-    // Exact-only matching is enforced; see H-ST-18/H-ST-19 above.
-    record(true, 'H-ST-20 removed: leaf-contains mode forbidden', 'harness');
+    // H-ST-20a: button leaf "****12345 (Visa)" does NOT match lookup "****1234 (Visa)"
+    const tree = {
+        tag: 'div', props: {},
+        children: [
+            { tag: 'button', props: { onClick: function () {} }, children: [
+                { tag: 'span', props: {}, children: ['****12345 (Visa)'] },
+            ]},
+        ],
+    };
+    const match = findButtonByLabel(tree, '****1234 (Visa)', { mode: 'exact' });
+    record(match === null, 'H-ST-20a similar-prefix card does not match wrong lookup', 'harness');
+}
+{
+    // H-ST-20b: prop-only value does NOT satisfy leaf lookup
+    const tree = {
+        tag: 'div', props: {},
+        children: [
+            { tag: 'button', props: { onClick: function () {}, 'data-card': '****1234 (Visa)' }, children: [
+                { tag: 'span', props: {}, children: ['Other Text'] },
+            ]},
+        ],
+    };
+    const match = findButtonByLabel(tree, '****1234 (Visa)', { mode: 'exact' });
+    record(match === null, 'H-ST-20b prop-only value does not satisfy leaf lookup', 'harness');
+}
+{
+    // H-ST-20c: two same-prefix cards — each exact label selects only its own button
+    const tree = {
+        tag: 'div', props: {},
+        children: [
+            { tag: 'button', props: { onClick: function () {} }, children: [
+                { tag: 'span', props: {}, children: ['****1234 (Visa)'] },
+            ]},
+            { tag: 'button', props: { onClick: function () {} }, children: [
+                { tag: 'span', props: {}, children: ['****12345 (Visa)'] },
+            ]},
+        ],
+    };
+    const match1 = findButtonByLabel(tree, '****1234 (Visa)', { mode: 'exact' });
+    const match2 = findButtonByLabel(tree, '****12345 (Visa)', { mode: 'exact' });
+    record(match1 !== null && match2 !== null, 'H-ST-20c both same-prefix cards found', 'harness');
+    record(match1 !== match2, 'H-ST-20d same-prefix cards resolve to different buttons', 'harness');
+}
+{
+    // H-ST-20e: mode='leaf-contains' throws explicitly
+    let threw = false;
+    try {
+        findButtonByLabel({ tag: 'div', props: {}, children: [] }, 'test', { mode: 'leaf-contains' });
+    } catch (e) { threw = true; }
+    record(threw, 'H-ST-20e leaf-contains mode throws (forbidden)', 'harness');
 }
 {
     // H-ST-21: findSelectByOption finds the right select by its option text.
@@ -1595,9 +1641,49 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         // Re-render content: it must NOT collapse to 1 instance (proves
         // content and edit fibers remain distinct across re-renders).
         renderRegistered(scene.registered, scene.mockReact, 'content');
-        record(scene.mockReact.getInstanceCount() === 2,
+    record(scene.mockReact.getInstanceCount() === 2,
             'B-INDEP2-4 content re-render preserves edit slot instance (per-fiber persistence)', 'runtime');
-    }
+}
+{
+    // B-INDEP3: A/B setter isolation self-test — same function F, two instances.
+    // Mutate A's state via setter, rerender both, prove B unchanged.
+    const m = createMockReact();
+    let setterA = null;
+    let setterB = null;
+    let valueA = null;
+    let valueB = null;
+    const F = function () {
+        const s = m.useState('initial');
+        // Capture setter and value based on current instance key
+        if (m._currentKey === 'A') { setterA = s[1]; valueA = s[0]; }
+        if (m._currentKey === 'B') { setterB = s[1]; valueB = s[0]; }
+        return null;
+    };
+    // Monkey-patch to expose current key during render
+    const origRender = m.renderComponent;
+    m.renderComponent = function (fn, key, props) {
+        m._currentKey = key;
+        return origRender.call(m, fn, key, props);
+    };
+    m.renderComponent(F, 'A', {});
+    m.renderComponent(F, 'B', {});
+    record(m.getInstanceCount() === 2, 'B-INDEP3-1 two instances of same function', 'harness');
+    record(valueA === 'initial', 'B-INDEP3-2 A starts at initial', 'harness');
+    record(valueB === 'initial', 'B-INDEP3-3 B starts at initial', 'harness');
+    // Mutate A only
+    setterA('mutated_A');
+    // Rerender both
+    m.renderComponent(F, 'A', {});
+    m.renderComponent(F, 'B', {});
+    record(valueA === 'mutated_A', 'B-INDEP3-4 A reflects mutation', 'harness');
+    record(valueB === 'initial', 'B-INDEP3-5 B unchanged after A mutation', 'harness');
+    // Mutate B only
+    setterB('mutated_B');
+    m.renderComponent(F, 'A', {});
+    m.renderComponent(F, 'B', {});
+    record(valueA === 'mutated_A', 'B-INDEP3-6 A unchanged after B mutation', 'harness');
+    record(valueB === 'mutated_B', 'B-INDEP3-7 B reflects mutation', 'harness');
+}
 }
 
 // ────────────────────────────────────────────────────────────

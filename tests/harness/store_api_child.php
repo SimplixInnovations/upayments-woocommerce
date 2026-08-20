@@ -215,7 +215,7 @@ $order = new FakeWCOrder((int) $order_id, [
 ]);
 $product = new FakeWCProduct(1, 'Test Product', 'simple');
 // FakeWCOrderItem_Product extends WC_Order_Item_Product so production's
-// instanceof WC_Order_Item_Product gate passes.
+// instanceof gate passes.
 $order->items_meta = [new FakeWCOrderItem_Product($product, 1, '12.50')];
 $state['orders_fixture'][(int) $order_id] = $order;
 $state['current_user_id'] = 1;
@@ -225,6 +225,27 @@ $state['rest_request']   = ($rest_normalised === 'true');
 $state['input_body']     = is_string($body_value) ? $body_value : '';
 $state['post']           = $_POST;
 $state['transport_log']  = [];
+
+// --- Residual Correction #20: Pre-seed identity/provenance for selected-card
+// scenarios. The parent passes UPAY_IDENTITY_SETUP env var as JSON.
+$identity_setup = getenv('UPAY_IDENTITY_SETUP');
+if (is_string($identity_setup) && $identity_setup !== '') {
+    $setup = json_decode($identity_setup, true);
+    if (is_array($setup)) {
+        // Pre-seed secret record.
+        if (isset($setup['secret']) && is_array($setup['secret'])) {
+            $state['options']['upayments_token_identity_secret_v2'] = $setup['secret'];
+        }
+        // Pre-seed user meta (identity + provenance).
+        $uid = isset($setup['user_id']) ? (int) $setup['user_id'] : 1;
+        if (isset($setup['meta']) && is_array($setup['meta'])) {
+            foreach ($setup['meta'] as $key => $value) {
+                if (!isset($state['usermeta'][$uid])) $state['usermeta'][$uid] = [];
+                $state['usermeta'][$uid][$key] = [$value];
+            }
+        }
+    }
+}
 
 $ref_suffix = $scenario;
 $redirect_link = sprintf(
@@ -263,41 +284,42 @@ $state['availability_response'] = [
     ],
 ];
 
-// --- Create-token envelope: dynamically echo exact submitted candidate --
+// --- Create-token envelope: dynamically inspect actual outbound request body --
 //
-// Residual Correction #18 returned a hard-coded fake
-// 'CSTOREAPI12345678' that was neither a valid canonical token (8-18
-// numeric digits; CSTOREAPI12345678 starts with C) nor equal to the
-// submitted candidate, so production's classifier rejected it with
-// reason=token_mismatch at CustomerTokenIdentity.php:1029 and the
-// create_token_calls counter was reachable but the result was
-// never token_mismatch-passable.
-//
-// Residual Correction #19: if the parent supplied a valid canonical
-// candidate, echo it back verbatim inside data.customerUniqueToken.
-// Production's classifier then validates
-//     $body['data']['customerUniqueToken'] === $submitted_token
-// and passes (reason=success). If no candidate was submitted, the
-// envelope reports an empty token (production will fail with
-// reason=missing_token), which is the correct fail-closed behavior.
-$create_token_body = ['status' => false, 'data' => []];
-if ($submitted_token_candidate !== null
-    && preg_match('/^[0-9]{8,18}$/', $submitted_token_candidate) === 1
-) {
-    $create_token_body = [
-        'status' => true,
-        'data'   => ['customerUniqueToken' => $submitted_token_candidate],
+// Residual Correction #20: The child must NOT precompute the Create response
+// from the inbound body. Production generates the candidate via
+// generate_canonical_token() which uses random_int(10000000, 99999999).
+// The actual candidate exists only when production sends the outbound Create
+// request. Therefore the transport stub must inspect the actual $body at
+// dispatch time, extract the customerUniqueToken, validate it, and echo it.
+$create_token_callback = function($outbound_body) {
+    $decoded = json_decode((string) $outbound_body, true);
+    $candidate = null;
+    if (is_array($decoded) && isset($decoded['customerUniqueToken'])
+        && is_string($decoded['customerUniqueToken'])
+    ) {
+        $candidate = $decoded['customerUniqueToken'];
+    }
+    // Validate canonical 8-digit: leading 1-9, followed by 7 digits.
+    if ($candidate !== null && preg_match('/^[1-9][0-9]{7}$/', $candidate) === 1) {
+        return [
+            'transport_ok' => true,
+            'http_status'  => 201,
+            'curl_errno'   => 0,
+            'body'         => wp_json_encode([
+                'status' => true,
+                'data'   => ['customerUniqueToken' => $candidate],
+            ]),
+        ];
+    }
+    // Malformed or missing candidate — return failure (production fails closed).
+    return [
+        'transport_ok' => true,
+        'http_status'  => 201,
+        'curl_errno'   => 0,
+        'body'         => wp_json_encode(['status' => false, 'data' => []]),
     ];
-} elseif ($submitted_token_candidate !== null) {
-    // Candidate present but malformed — return the malformed candidate
-    // back to production so its own validator (is_valid_canonical_token)
-    // performs the rejection. Production must fail closed with
-    // reason=invalid_candidate.
-    $create_token_body = [
-        'status' => true,
-        'data'   => ['customerUniqueToken' => $submitted_token_candidate],
-    ];
-}
+};
 
 // --- Retrieve-cards envelope: use data.customerCards (NOT data.cards) ---
 //
@@ -352,12 +374,7 @@ $state['transport_responses_per_route'] = [
         'curl_errno'   => 0,
         'body'         => $check_status_body,
     ],
-    'create-customer-unique-token' => [
-        'transport_ok' => true,
-        'http_status'  => 201,
-        'curl_errno'   => 0,
-        'body'         => wp_json_encode($create_token_body),
-    ],
+    'create-customer-unique-token' => $create_token_callback,
     'retrieve-customer-cards' => [
         'transport_ok' => true,
         'http_status'  => 201,
@@ -370,6 +387,16 @@ $state['transport_responses_per_route'] = [
 // --- Build a real WC_Upayments_InputTestable and override the body seam -
 $gateway = new WC_Upayments_InputTestable();
 $gateway->input_body = is_string($body_value) ? $body_value : '';
+// Configure gateway settings for save_card and payment method support.
+$gateway->apiKey = 'test_api_key';
+$gateway->testMode = 'no';
+$gateway->saveCardEnabled = 'yes';
+$gateway->autoDeduction = 'no';
+$gateway->multiMerchant = 'no';
+$gateway->debug = 'no';
+// Also set API key in options for production code that reads from options.
+$state['options']['woocommerce_test_api_key'] = 'test_api_key';
+$state['options']['woocommerce_live_api_key'] = '';
 
 // DEBUG: observe is_store_api_checkout_request directly via reflection so
 // the harness can assert WHICH branch production entered. The classifier is

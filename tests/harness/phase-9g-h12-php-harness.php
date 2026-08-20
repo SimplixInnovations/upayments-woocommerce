@@ -4520,7 +4520,7 @@ foreach ($vpr_cases as $vpr_name => list($rec, $expected_class, $is_valid)) {
 // We then assert the exact emitted counters (charged_count, classic_fallback,
 // store_api_path, etc.) for each scenario.
 
-function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json) {
+function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json, $identity_setup = null) {
     $repo_root = realpath(__DIR__ . '/../..');
     $child = str_replace('\\', '/', $repo_root . '/tests/harness/store_api_child.php');
     if (!file_exists($child)) {
@@ -4528,6 +4528,12 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     }
     // Windows escapeshellarg corrupts JSON via colon padding; pass body via env var.
     putenv('UPAY_BODY=' . $body_json);
+    // Residual Correction #20: pass identity setup for selected-card scenarios.
+    if ($identity_setup !== null) {
+        putenv('UPAY_IDENTITY_SETUP=' . wp_json_encode($identity_setup));
+    } else {
+        putenv('UPAY_IDENTITY_SETUP');
+    }
     $cmd = sprintf(
         'php %s --scenario=%s --rest=%s --uri=%s --method=%s 2>&1',
         escapeshellarg($child),
@@ -4540,6 +4546,7 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     $exit = 0;
     exec($cmd, $output_lines, $exit);
     putenv('UPAY_BODY');
+    putenv('UPAY_IDENTITY_SETUP');
     $output = implode("\n", $output_lines);
 
     // Residual Correction #18: require exit === 0 before parsing.
@@ -4703,20 +4710,21 @@ upay_assert(
     'SP-6 missing Store extension + hostile Classic POST -> no Classic fallback (path=store_api, got: ' . var_export($result_sp6['path'] ?? null, true) . ')',
         'helper_unit_runtime'
 );
+// Reclassified #20: genuine subprocess outcomes → semantic_runtime.
 upay_assert_eq(
     $result_sp6['process_payment_result']['result'] ?? null,
     'failure',
     'SP-6 fail-closed: process_payment_result.result === failure',
-    'helper_unit_runtime'
+    'semantic_runtime'
 );
-upay_assert_eq((int) ($result_sp6['charge_calls'] ?? 0), 0, 'SP-6 fail-closed: charge_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['create_token_calls'] ?? 0), 0, 'SP-6 fail-closed: create_token_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['retrieve_calls'] ?? 0), 0, 'SP-6 fail-closed: retrieve_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['secret_creates'] ?? 0), 0, 'SP-6 fail-closed: secret_creates === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['identity_writes'] ?? 0), 0, 'SP-6 fail-closed: identity_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['provenance_writes'] ?? 0), 0, 'SP-6 fail-closed: provenance_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['usermeta_writes'] ?? 0), 0, 'SP-6 fail-closed: usermeta_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp6['order_meta_writes'] ?? 0), 0, 'SP-6 fail-closed: order_meta_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp6['charge_calls'] ?? 0), 0, 'SP-6 fail-closed: charge_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['create_token_calls'] ?? 0), 0, 'SP-6 fail-closed: create_token_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['retrieve_calls'] ?? 0), 0, 'SP-6 fail-closed: retrieve_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['secret_creates'] ?? 0), 0, 'SP-6 fail-closed: secret_creates === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['identity_writes'] ?? 0), 0, 'SP-6 fail-closed: identity_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['provenance_writes'] ?? 0), 0, 'SP-6 fail-closed: provenance_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['usermeta_writes'] ?? 0), 0, 'SP-6 fail-closed: usermeta_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp6['order_meta_writes'] ?? 0), 0, 'SP-6 fail-closed: order_meta_writes === 0', 'semantic_runtime');
 
 // SP-7: Store API request body has extensions.upayments BUT every field is
 // malformed (non-int order_id, etc.) + hostile Classic $_POST → production
@@ -4748,92 +4756,62 @@ upay_assert(
     'SP-7 malformed Store extension + hostile Classic POST -> no Classic fallback (path=store_api, got: ' . var_export($result_sp7['path'] ?? null, true) . ')',
         'helper_unit_runtime'
 );
+// Reclassified #20: genuine subprocess outcomes → semantic_runtime.
 upay_assert_eq(
     $result_sp7['process_payment_result']['result'] ?? null,
     'failure',
     'SP-7 fail-closed: process_payment_result.result === failure',
-    'helper_unit_runtime'
+    'semantic_runtime'
 );
-upay_assert_eq((int) ($result_sp7['charge_calls'] ?? 0), 0, 'SP-7 fail-closed: charge_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['create_token_calls'] ?? 0), 0, 'SP-7 fail-closed: create_token_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['retrieve_calls'] ?? 0), 0, 'SP-7 fail-closed: retrieve_calls === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['secret_creates'] ?? 0), 0, 'SP-7 fail-closed: secret_creates === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['identity_writes'] ?? 0), 0, 'SP-7 fail-closed: identity_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['provenance_writes'] ?? 0), 0, 'SP-7 fail-closed: provenance_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['usermeta_writes'] ?? 0), 0, 'SP-7 fail-closed: usermeta_writes === 0', 'helper_unit_runtime');
-upay_assert_eq((int) ($result_sp7['order_meta_writes'] ?? 0), 0, 'SP-7 fail-closed: order_meta_writes === 0', 'helper_unit_runtime');
+upay_assert_eq((int) ($result_sp7['charge_calls'] ?? 0), 0, 'SP-7 fail-closed: charge_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['create_token_calls'] ?? 0), 0, 'SP-7 fail-closed: create_token_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['retrieve_calls'] ?? 0), 0, 'SP-7 fail-closed: retrieve_calls === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['secret_creates'] ?? 0), 0, 'SP-7 fail-closed: secret_creates === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['identity_writes'] ?? 0), 0, 'SP-7 fail-closed: identity_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['provenance_writes'] ?? 0), 0, 'SP-7 fail-closed: provenance_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['usermeta_writes'] ?? 0), 0, 'SP-7 fail-closed: usermeta_writes === 0', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp7['order_meta_writes'] ?? 0), 0, 'SP-7 fail-closed: order_meta_writes === 0', 'semantic_runtime');
 
 // ===========================================================================
 // Section #16: SP-X family manifest. Residual Correction #19.
 //
 // The SP-X labels below are organised into FAMILIES (not a contiguous
 // numeric range). Each family covers a distinct production contract
-// surface and is verified by a coherent test cluster. The manifest below
-// is the authoritative source for which SP-X labels exist and what they
-// prove. New tests MUST add to one of these families or create a new
-// family with its own header comment — bare numeric appendices are
-// forbidden (brittle, undocumented).
+// surface and is verified by a coherent test cluster. Labels are
+// generated dynamically from the harness source; the semantic family
+// names below are the authoritative grouping, not numeric ranges.
 //
-// Family 1: Path classification (SP-X1..SP-X8)
+// Family: Path-classification
 //   URI-shape → is_store_api_checkout_request() outcomes.
-//   SP-X1 subdirectory-no-wpjson  → classic (production rejects)
-//   SP-X2 pretty-permalink       → store_api (production accepts)
-//   SP-X3 plain-permalink        → store_api (production extracts rest_route=)
-//   SP-X4 trailing-slash         → store_api (trailing slash preserved)
-//   SP-X5 GET method             → not_store_api (POST required)
-//   SP-X6 REST_REQUEST=false     → not_store_api (REST context required)
-//   SP-X7 PUT method             → not_store_api (POST required)
-//   SP-X8 unrelated WP REST      → not_store_api (Store API namespace required)
 //
-// Family 2: Body-shape gates (SP-X9..SP-X15)
+// Family: Body-shape-gates
 //   Empty / array / whitespace / malformed bodies.
-//   SP-X9 empty body             → store_api + result=failure (fail-closed)
-//   SP-X10 valid extensions body → store_api + body_consumed=1
-//   SP-X11 nonempty extensions   → store_api (parsed)
-//   SP-X12 subdir plain-permalink → store_api (subdir rest_route=)
-//   SP-X13 /index.php prefix     → store_api (stripped)
-//   SP-X14 empty URI             → not_store_api
-//   SP-X15 array body            → store_api (array passed through)
 //
-// Family 3: Card-token / save-card / plan / interval inputs (SP-X16..SP-X25)
-//   Field-shape edge cases.
-//   SP-X16 zero card_token       → not_store_api (zero is a selected-card token)
-//   SP-X17 whitespace-only URI   → not_store_api
-//   SP-X18 PATCH method          → not_store_api
-//   SP-X19 DELETE method         → not_store_api
-//   SP-X20 /wc/store/v1/cart     → not_store_api (cart namespace rejected)
-//   SP-X21 /wc/store/v1/products → not_store_api (products namespace rejected)
-//   SP-X22 subdir pretty-permalink → store_api
-//   SP-X23 bad JSON              → store_api (json_decode returns null, handled)
-//   SP-X24 null extensions body  → store_api + result=failure
-//   SP-X25 string extensions body → store_api + result=failure (wrong shape)
+// Family: Field-shape-edge-cases
+//   Card-token / save-card / plan / interval input edge cases.
 //
-// Family 4: Process-payment observation (SP-X26..SP-X40)
+// Family: Process-payment-observation
 //   Result-shape, payload-decoded shape, body_consumed, hostile-Classic
-//   rejection. SP-X27..SP-X40 each observe a distinct runtime field.
+//   rejection.
 //
-// Family 5: Hostile Classic POST must not bleed into Store API path
-//   (SP-X41..SP-X50)
+// Family: Hostile-Classic-POST-rejection
+//   Hostile Classic POST must not bleed into Store API path.
 //
-// Family 6: Production-shape transport envelopes (SP-X60..SP-X86)
+// Family: Production-shape-transport-envelopes
 //   charge, create-customer-unique-token, retrieve-customer-cards,
 //   check-payment-button-status must all return the production-shaped
 //   scalar-JSON envelope: {transport_ok, http_status, curl_errno, body}.
 //
-// Family 7: Availability response key (SP-X90..SP-X91)
+// Family: Availability-response-key
 //   availability_response must use isWhiteLabel (NOT whitelabled).
 //
-// Family 8: Subprocess determinism (SP-X100..SP-X123)
+// Family: Subprocess-determinism
 //   Process ID isolation, body consumption invariance, result shape
 //   determinism, subprocess output field types.
 //
-// Family 9 (Residual Correction #19): semantic_runtime expansion
-//   (SP-R19-CTV, SP-R19-LTV, SP-R19-TFK, SP-R19-GEN, SP-R19-SCP,
-//   SP-R19-UMK, SP-R19-LCK, SP-R19-VSP, SP-R19-NSR, SP-R19-CTR,
-//   SP-R19-BLN)
-//
-// Family 10 (Residual Correction #19): Genuine successful Store API
-//   end-to-end (SP-SUCCESS-1)
+// Family: Genuine-successful-Store-API
+//   SP-SUCCESS-1, SP-SAVE-CARD, SP-SELECTED-CARD, SP-CARD-MISMATCH
+//   Real end-to-end production workflows via subprocess.
 //
 // ===========================================================================
 // Section #17: Genuine semantic_runtime assertions exercising real
@@ -5458,9 +5436,9 @@ upay_assert_eq((int) ($result_success['retrieve_calls'] ?? 0), 0,
 // Final result is success.
 upay_assert_eq($result_success['process_payment_result']['result'] ?? null, 'success',
     'SP-SUCCESS-1 final result === success', 'semantic_runtime');
-// Redirect URL is the exact Charge-envelope link, prefix-matched.
+// Redirect URL is the exact Charge-envelope link (strict equality, not prefix).
 $success_redirect = (string) ($result_success['process_payment_result']['redirect'] ?? '');
-upay_assert_eq(strpos($success_redirect, 'https://example.test/upayments/redirect/SP-SUCCESS-1') === 0, true,
+upay_assert_eq($success_redirect, 'https://example.test/upayments/redirect/SP-SUCCESS-1',
     'SP-SUCCESS-1 redirect URL is the exact Charge envelope link', 'semantic_runtime');
 // No thrown exception.
 upay_assert_eq($result_success['process_payment_exception'] ?? 'none', 'none',
@@ -5485,6 +5463,18 @@ upay_assert_eq(is_array($last_charge) && isset($last_charge['is_whitelabled']) &
 // tokens block present.
 upay_assert_eq(is_array($last_charge) && isset($last_charge['tokens']) && is_array($last_charge['tokens']), true,
     'SP-SUCCESS-1 tokens block present in Charge body', 'semantic_runtime');
+// Prove Classic POST values did not leak into Charge (hostile $_POST had cc,
+// card_token=9999999988887777, save_card=1, monthly, HOSTILE_CLASSIC_SHOULD_NOT_WIN).
+upay_assert_eq(isset($last_charge['tokens']['creditCard']), false,
+    'SP-SUCCESS-1 tokens.creditCard absent (Classic card did not leak)', 'semantic_runtime');
+upay_assert_eq(isset($last_charge['tokens']['customerUniqueToken']), false,
+    'SP-SUCCESS-1 tokens.customerUniqueToken absent (no token for one_time KNET)', 'semantic_runtime');
+upay_assert_eq(strpos($last_charge_body_str, '9999999988887777') === false, true,
+    'SP-SUCCESS-1 hostile Classic card token absent from Charge body', 'semantic_runtime');
+upay_assert_eq(strpos($last_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') === false, true,
+    'SP-SUCCESS-1 hostile Classic sentinel absent from Charge body', 'semantic_runtime');
+upay_assert_eq(strpos($last_charge_body_str, 'monthly') === false, true,
+    'SP-SUCCESS-1 hostile Classic subscription plan absent from Charge body', 'semantic_runtime');
 
 
 // ===========================================================================
@@ -5496,139 +5486,149 @@ upay_assert_eq(is_array($last_charge) && isset($last_charge['tokens']) && is_arr
 // ===========================================================================
 
 // --- 19.1 is_valid_canonical_token: exact 8-digit, leading 1-9 --------------
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678'), true, 'PHP-R19-CTV-1 8-digit canonical valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('99999999'), true, 'PHP-R19-CTV-2 8-digit all-9 canonical valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('19999999'), true, 'PHP-R19-CTV-3 leading-1 canonical valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('02345678'), false, 'PHP-R19-CTV-4 leading-0 rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234567'), false, 'PHP-R19-CTV-5 7 digits rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456789'), false, 'PHP-R19-CTV-6 9 digits rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678901234567'), false, 'PHP-R19-CTV-7 17 digits rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456789012345678'), false, 'PHP-R19-CTV-8 18 digits rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(''), false, 'PHP-R19-CTV-9 empty rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(' 12345678'), false, 'PHP-R19-CTV-10 leading-space rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678 '), false, 'PHP-R19-CTV-11 trailing-space rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234567a'), false, 'PHP-R19-CTV-12 trailing-letter rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345-78'), false, 'PHP-R19-CTV-13 dash rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234.678'), false, 'PHP-R19-CTV-14 dot rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12.345.678'), false, 'PHP-R19-CTV-15 grouped-digit rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456780'), false, 'PHP-R19-CTV-16 9 digits leading-1 rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('00000000'), false, 'PHP-R19-CTV-17 all-zero rejected (canonical)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('01234567'), false, 'PHP-R19-CTV-18 0-leading 8-digit rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(null), false, 'PHP-R19-CTV-19 null rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(12345678), false, 'PHP-R19-CTV-20 int rejected (strict-string)', 'semantic_runtime');
+// Reclassified #20: direct helper/validator calls → helper_unit_runtime.
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678'), true, 'PHP-R19-CTV-1 8-digit canonical valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('99999999'), true, 'PHP-R19-CTV-2 8-digit all-9 canonical valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('19999999'), true, 'PHP-R19-CTV-3 leading-1 canonical valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('02345678'), false, 'PHP-R19-CTV-4 leading-0 rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234567'), false, 'PHP-R19-CTV-5 7 digits rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456789'), false, 'PHP-R19-CTV-6 9 digits rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678901234567'), false, 'PHP-R19-CTV-7 17 digits rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456789012345678'), false, 'PHP-R19-CTV-8 18 digits rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(''), false, 'PHP-R19-CTV-9 empty rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(' 12345678'), false, 'PHP-R19-CTV-10 leading-space rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345678 '), false, 'PHP-R19-CTV-11 trailing-space rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234567a'), false, 'PHP-R19-CTV-12 trailing-letter rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12345-78'), false, 'PHP-R19-CTV-13 dash rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('1234.678'), false, 'PHP-R19-CTV-14 dot rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('12.345.678'), false, 'PHP-R19-CTV-15 grouped-digit rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('123456780'), false, 'PHP-R19-CTV-16 9 digits leading-1 rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('00000000'), false, 'PHP-R19-CTV-17 all-zero rejected (canonical)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token('01234567'), false, 'PHP-R19-CTV-18 0-leading 8-digit rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(null), false, 'PHP-R19-CTV-19 null rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token(12345678), false, 'PHP-R19-CTV-20 int rejected (strict-string)', 'helper_unit_runtime');
 
 // --- 19.2 is_valid_legacy_token: 8-18 digits, leading 0 allowed -------------
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678'), true, 'PHP-R19-LTV-1 8-digit legacy valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('02345678'), true, 'PHP-R19-LTV-2 leading-0 8-digit legacy valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('00000000'), true, 'PHP-R19-LTV-3 all-zero 8-digit legacy valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678901234567'), true, 'PHP-R19-LTV-4 17-digit legacy valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('123456789012345678'), true, 'PHP-R19-LTV-5 18-digit legacy valid (boundary)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567'), false, 'PHP-R19-LTV-6 7-digit rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567890123456789'), false, 'PHP-R19-LTV-7 19-digit rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678901234567890'), false, 'PHP-R19-LTV-8 20-digit rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(''), false, 'PHP-R19-LTV-9 empty rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567a'), false, 'PHP-R19-LTV-10 trailing-letter rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678a'), false, 'PHP-R19-LTV-11 8-digit + letter rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345-678'), false, 'PHP-R19-LTV-12 dash rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234.5678'), false, 'PHP-R19-LTV-13 dot rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(' 12345678'), false, 'PHP-R19-LTV-14 leading-space rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(null), false, 'PHP-R19-LTV-15 null rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(12345678), false, 'PHP-R19-LTV-16 int rejected (strict-string)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('abcdefgh'), false, 'PHP-R19-LTV-17 letters-only rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567☢8'), false, 'PHP-R19-LTV-18 non-ASCII rejected', 'semantic_runtime');
+// Reclassified #20: direct helper/validator calls → helper_unit_runtime.
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678'), true, 'PHP-R19-LTV-1 8-digit legacy valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('02345678'), true, 'PHP-R19-LTV-2 leading-0 8-digit legacy valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('00000000'), true, 'PHP-R19-LTV-3 all-zero 8-digit legacy valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678901234567'), true, 'PHP-R19-LTV-4 17-digit legacy valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('123456789012345678'), true, 'PHP-R19-LTV-5 18-digit legacy valid (boundary)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567'), false, 'PHP-R19-LTV-6 7-digit rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567890123456789'), false, 'PHP-R19-LTV-7 19-digit rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678901234567890'), false, 'PHP-R19-LTV-8 20-digit rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(''), false, 'PHP-R19-LTV-9 empty rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567a'), false, 'PHP-R19-LTV-10 trailing-letter rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345678a'), false, 'PHP-R19-LTV-11 8-digit + letter rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('12345-678'), false, 'PHP-R19-LTV-12 dash rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234.5678'), false, 'PHP-R19-LTV-13 dot rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(' 12345678'), false, 'PHP-R19-LTV-14 leading-space rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(null), false, 'PHP-R19-LTV-15 null rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token(12345678), false, 'PHP-R19-LTV-16 int rejected (strict-string)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('abcdefgh'), false, 'PHP-R19-LTV-17 letters-only rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_legacy_token('1234567☢8'), false, 'PHP-R19-LTV-18 non-ASCII rejected', 'helper_unit_runtime');
 
 // --- 19.3 is_valid_token_for_kind: kind dispatch ----------------------------
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'canonical'), true, 'PHP-R19-TFK-1 canonical kind dispatches', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('02345678', 'canonical'), false, 'PHP-R19-TFK-2 leading-0 fails canonical dispatch', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('02345678', 'legacy_compat'), true, 'PHP-R19-TFK-3 legacy_compat allows leading-0', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'legacy_compat'), true, 'PHP-R19-TFK-4 legacy_compat allows 8-digit', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('1234567', 'legacy_compat'), false, 'PHP-R19-TFK-5 legacy_compat rejects <8 digits', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'unknown_kind'), false, 'PHP-R19-TFK-6 unknown kind rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', ''), false, 'PHP-R19-TFK-7 empty kind rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind(null, 'canonical'), false, 'PHP-R19-TFK-8 null token rejected', 'semantic_runtime');
+// Reclassified #20: direct helper/validator calls → helper_unit_runtime.
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'canonical'), true, 'PHP-R19-TFK-1 canonical kind dispatches', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('02345678', 'canonical'), false, 'PHP-R19-TFK-2 leading-0 fails canonical dispatch', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('02345678', 'legacy_compat'), true, 'PHP-R19-TFK-3 legacy_compat allows leading-0', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'legacy_compat'), true, 'PHP-R19-TFK-4 legacy_compat allows 8-digit', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('1234567', 'legacy_compat'), false, 'PHP-R19-TFK-5 legacy_compat rejects <8 digits', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', 'unknown_kind'), false, 'PHP-R19-TFK-6 unknown kind rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind('12345678', ''), false, 'PHP-R19-TFK-7 empty kind rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_token_for_kind(null, 'canonical'), false, 'PHP-R19-TFK-8 null token rejected', 'helper_unit_runtime');
 
 // --- 19.4 generate_canonical_token: shape and uniqueness --------------------
+// Reclassified #20: direct helper calls → helper_unit_runtime.
 $gen_t1 = \UPayments\Token\CustomerTokenIdentity::generate_canonical_token();
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token($gen_t1), true, 'PHP-R19-GEN-1 generated token passes canonical validator', 'semantic_runtime');
-upay_assert_eq(strlen($gen_t1) === 8, true, 'PHP-R19-GEN-2 generated token is exactly 8 chars', 'semantic_runtime');
-upay_assert_eq(ctype_digit($gen_t1), true, 'PHP-R19-GEN-3 generated token is all-digit', 'semantic_runtime');
-upay_assert_eq($gen_t1[0] >= '1' && $gen_t1[0] <= '9', true, 'PHP-R19-GEN-4 generated token leading char is 1-9', 'semantic_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_canonical_token($gen_t1), true, 'PHP-R19-GEN-1 generated token passes canonical validator', 'helper_unit_runtime');
+upay_assert_eq(strlen($gen_t1) === 8, true, 'PHP-R19-GEN-2 generated token is exactly 8 chars', 'helper_unit_runtime');
+upay_assert_eq(ctype_digit($gen_t1), true, 'PHP-R19-GEN-3 generated token is all-digit', 'helper_unit_runtime');
+upay_assert_eq($gen_t1[0] >= '1' && $gen_t1[0] <= '9', true, 'PHP-R19-GEN-4 generated token leading char is 1-9', 'helper_unit_runtime');
 $gen_t2 = \UPayments\Token\CustomerTokenIdentity::generate_canonical_token();
 $gen_t3 = \UPayments\Token\CustomerTokenIdentity::generate_canonical_token();
-upay_assert_eq($gen_t1 !== $gen_t2, true, 'PHP-R19-GEN-5 two consecutive tokens differ', 'semantic_runtime');
-upay_assert_eq($gen_t2 !== $gen_t3, true, 'PHP-R19-GEN-6 second and third tokens differ', 'semantic_runtime');
+upay_assert_eq($gen_t1 !== $gen_t2, true, 'PHP-R19-GEN-5 two consecutive tokens differ', 'helper_unit_runtime');
+upay_assert_eq($gen_t2 !== $gen_t3, true, 'PHP-R19-GEN-6 second and third tokens differ', 'helper_unit_runtime');
 
 // --- 19.5 is_valid_scope: 32-char hex ---------------------------------------
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 32)), true, 'PHP-R19-SCP-1 32-hex scope valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('f', 32)), true, 'PHP-R19-SCP-2 all-f scope valid', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope('0123456789abcdef0123456789abcDEF'), false, 'PHP-R19-SCP-3 mixed-case hex rejected (strict-lowercase)', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 31)), false, 'PHP-R19-SCP-4 31-char rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 33)), false, 'PHP-R19-SCP-5 33-char rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(''), false, 'PHP-R19-SCP-6 empty rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('z', 32)), false, 'PHP-R19-SCP-7 non-hex rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(null), false, 'PHP-R19-SCP-8 null rejected', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 32) . '!'), false, 'PHP-R19-SCP-9 trailing-non-hex rejected', 'semantic_runtime');
+// Reclassified #20: direct validator calls → helper_unit_runtime.
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 32)), true, 'PHP-R19-SCP-1 32-hex scope valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('f', 32)), true, 'PHP-R19-SCP-2 all-f scope valid', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope('0123456789abcdef0123456789abcDEF'), false, 'PHP-R19-SCP-3 mixed-case hex rejected (strict-lowercase)', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 31)), false, 'PHP-R19-SCP-4 31-char rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 33)), false, 'PHP-R19-SCP-5 33-char rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(''), false, 'PHP-R19-SCP-6 empty rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('z', 32)), false, 'PHP-R19-SCP-7 non-hex rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(null), false, 'PHP-R19-SCP-8 null rejected', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::is_valid_scope(str_repeat('a', 32) . '!'), false, 'PHP-R19-SCP-9 trailing-non-hex rejected', 'helper_unit_runtime');
 
 // --- 19.6 get_user_meta_key: same/different inputs (blog_id is strict-string) -
+// Reclassified #20: direct helper calls → helper_unit_runtime.
 $k_a = \UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', str_repeat('a', 32));
 $k_b = \UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', str_repeat('a', 32));
 $k_c = \UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', str_repeat('b', 32));
 $k_d = \UPayments\Token\CustomerTokenIdentity::get_user_meta_key('2', str_repeat('a', 32));
-upay_assert_eq(is_string($k_a) && strlen($k_a) > 0, true, 'PHP-R19-UMK-1 meta key is non-empty string', 'semantic_runtime');
-upay_assert_eq($k_a === $k_b, true, 'PHP-R19-UMK-2 same inputs → same key (deterministic)', 'semantic_runtime');
-upay_assert_eq($k_a !== $k_c, true, 'PHP-R19-UMK-3 different scope → different key', 'semantic_runtime');
-upay_assert_eq($k_a !== $k_d, true, 'PHP-R19-UMK-4 different user → different key', 'semantic_runtime');
-upay_assert_eq(strpos($k_a, str_repeat('a', 32)) !== false, true, 'PHP-R19-UMK-5 key embeds scope fingerprint', 'semantic_runtime');
+upay_assert_eq(is_string($k_a) && strlen($k_a) > 0, true, 'PHP-R19-UMK-1 meta key is non-empty string', 'helper_unit_runtime');
+upay_assert_eq($k_a === $k_b, true, 'PHP-R19-UMK-2 same inputs → same key (deterministic)', 'helper_unit_runtime');
+upay_assert_eq($k_a !== $k_c, true, 'PHP-R19-UMK-3 different scope → different key', 'helper_unit_runtime');
+upay_assert_eq($k_a !== $k_d, true, 'PHP-R19-UMK-4 different user → different key', 'helper_unit_runtime');
+upay_assert_eq(strpos($k_a, str_repeat('a', 32)) !== false, true, 'PHP-R19-UMK-5 key embeds scope fingerprint', 'helper_unit_runtime');
 // Integer blog_id is rejected (strict-string boundary).
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key(1, str_repeat('a', 32)), null, 'PHP-R19-UMK-6 int blog_id rejected (strict-string boundary)', 'semantic_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key(1, str_repeat('a', 32)), null, 'PHP-R19-UMK-6 int blog_id rejected (strict-string boundary)', 'helper_unit_runtime');
 // Malformed scope returns null.
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', str_repeat('z', 32)), null, 'PHP-R19-UMK-7 invalid scope returns null', 'semantic_runtime');
-upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', ''), null, 'PHP-R19-UMK-8 empty scope returns null', 'semantic_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', str_repeat('z', 32)), null, 'PHP-R19-UMK-7 invalid scope returns null', 'helper_unit_runtime');
+upay_assert_eq(\UPayments\Token\CustomerTokenIdentity::get_user_meta_key('1', ''), null, 'PHP-R19-UMK-8 empty scope returns null', 'helper_unit_runtime');
 
 // --- 19.7 get_lock_name: same/different inputs ------------------------------
+// Reclassified #20: direct helper calls → helper_unit_runtime.
 $lock_a = \UPayments\Token\CustomerTokenIdentity::get_lock_name(str_repeat('a', 32), '1');
 $lock_b = \UPayments\Token\CustomerTokenIdentity::get_lock_name(str_repeat('a', 32), '1');
 $lock_c = \UPayments\Token\CustomerTokenIdentity::get_lock_name(str_repeat('b', 32), '1');
 $lock_d = \UPayments\Token\CustomerTokenIdentity::get_lock_name(str_repeat('a', 32), '2');
-upay_assert_eq(is_string($lock_a) && strlen($lock_a) > 0, true, 'PHP-R19-LCK-1 lock name is non-empty string', 'semantic_runtime');
-upay_assert_eq($lock_a === $lock_b, true, 'PHP-R19-LCK-2 same inputs → same lock', 'semantic_runtime');
-upay_assert_eq($lock_a !== $lock_c, true, 'PHP-R19-LCK-3 different scope → different lock', 'semantic_runtime');
-upay_assert_eq($lock_a !== $lock_d, true, 'PHP-R19-LCK-4 different user → different lock', 'semantic_runtime');
+upay_assert_eq(is_string($lock_a) && strlen($lock_a) > 0, true, 'PHP-R19-LCK-1 lock name is non-empty string', 'helper_unit_runtime');
+upay_assert_eq($lock_a === $lock_b, true, 'PHP-R19-LCK-2 same inputs → same lock', 'helper_unit_runtime');
+upay_assert_eq($lock_a !== $lock_c, true, 'PHP-R19-LCK-3 different scope → different lock', 'helper_unit_runtime');
+upay_assert_eq($lock_a !== $lock_d, true, 'PHP-R19-LCK-4 different user → different lock', 'helper_unit_runtime');
 
 // --- 19.8 is_valid_subscription_plan: allowlist enforcement -----------------
 // Production allowlist: {one_time, daily, weekly, monthly, quarterly, yearly}.
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['one_time']), true, 'PHP-R19-VSP-1 one_time allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['weekly']), true, 'PHP-R19-VSP-2 weekly allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['monthly']), true, 'PHP-R19-VSP-3 monthly allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['quarterly']), true, 'PHP-R19-VSP-4 quarterly allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['daily']), true, 'PHP-R19-VSP-5 daily allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['yearly']), true, 'PHP-R19-VSP-6 yearly allowed', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['annual']), false, 'PHP-R19-VSP-7 annual rejected (not in allowlist)', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['semi_annual']), false, 'PHP-R19-VSP-8 semi_annual rejected (not in allowlist)', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['biweekly']), false, 'PHP-R19-VSP-9 biweekly rejected (not in allowlist)', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['onetime']), false, 'PHP-R19-VSP-10 onetime typo rejected', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['ONE_TIME']), false, 'PHP-R19-VSP-11 uppercase rejected (strict-case)', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['']), false, 'PHP-R19-VSP-12 empty rejected', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', [' one_time']), false, 'PHP-R19-VSP-13 leading-space rejected', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['one_time ']), false, 'PHP-R19-VSP-14 trailing-space rejected', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['semi-annual']), false, 'PHP-R19-VSP-15 hyphenated variant rejected', 'semantic_runtime');
+// Reclassified #20: direct helper calls via reflection → helper_unit_runtime.
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['one_time']), true, 'PHP-R19-VSP-1 one_time allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['weekly']), true, 'PHP-R19-VSP-2 weekly allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['monthly']), true, 'PHP-R19-VSP-3 monthly allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['quarterly']), true, 'PHP-R19-VSP-4 quarterly allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['daily']), true, 'PHP-R19-VSP-5 daily allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['yearly']), true, 'PHP-R19-VSP-6 yearly allowed', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['annual']), false, 'PHP-R19-VSP-7 annual rejected (not in allowlist)', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['semi_annual']), false, 'PHP-R19-VSP-8 semi_annual rejected (not in allowlist)', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['biweekly']), false, 'PHP-R19-VSP-9 biweekly rejected (not in allowlist)', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['onetime']), false, 'PHP-R19-VSP-10 onetime typo rejected', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['ONE_TIME']), false, 'PHP-R19-VSP-11 uppercase rejected (strict-case)', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['']), false, 'PHP-R19-VSP-12 empty rejected', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', [' one_time']), false, 'PHP-R19-VSP-13 leading-space rejected', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['one_time ']), false, 'PHP-R19-VSP-14 trailing-space rejected', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'is_valid_subscription_plan', ['semi-annual']), false, 'PHP-R19-VSP-15 hyphenated variant rejected', 'helper_unit_runtime');
 
 // --- 19.9 normalize_store_api_route: additional edge cases -------------------
 // Production behaviour: leading slash is NOT prepended to a route that
 // doesn't start with one. The function only adds a leading slash to
 // paths stripped of /index.php and /wp-json/ prefixes.
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['wc/store/v1/checkout']), 'wc/store/v1/checkout', 'PHP-R19-NSR-1 no-leading-slash passthrough', 'semantic_runtime');
+// Reclassified #20: direct helper calls via reflection → helper_unit_runtime.
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['wc/store/v1/checkout']), 'wc/store/v1/checkout', 'PHP-R19-NSR-1 no-leading-slash passthrough', 'helper_unit_runtime');
 // Query string without rest_route= is stripped (function only extracts rest_route from query).
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout?foo=bar']), '/wc/store/v1/checkout', 'PHP-R19-NSR-2 query-without-rest_route stripped', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout#fragment']), '/wc/store/v1/checkout#fragment', 'PHP-R19-NSR-3 fragment passthrough', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wp-json/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-4 wp-json prefix stripped', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout/']), '/wc/store/v1/checkout/', 'PHP-R19-NSR-5 trailing-slash preserved', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v2/checkout']), '/wc/store/v2/checkout', 'PHP-R19-NSR-6 v2 namespace passthrough (not stripped)', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout-order']), '/wc/store/v1/checkout-order', 'PHP-R19-NSR-7 similar-suffix passthrough', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/?rest_route=/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-8 rest_route plain permalink', 'semantic_runtime');
-upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/index.php/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-9 /index.php prefix stripped', 'semantic_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout?foo=bar']), '/wc/store/v1/checkout', 'PHP-R19-NSR-2 query-without-rest_route stripped', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout#fragment']), '/wc/store/v1/checkout#fragment', 'PHP-R19-NSR-3 fragment passthrough', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wp-json/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-4 wp-json prefix stripped', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout/']), '/wc/store/v1/checkout/', 'PHP-R19-NSR-5 trailing-slash preserved', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v2/checkout']), '/wc/store/v2/checkout', 'PHP-R19-NSR-6 v2 namespace passthrough (not stripped)', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/wc/store/v1/checkout-order']), '/wc/store/v1/checkout-order', 'PHP-R19-NSR-7 similar-suffix passthrough', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/?rest_route=/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-8 rest_route plain permalink', 'helper_unit_runtime');
+upay_assert_eq(upay_call_static('WC_Upayments', 'normalize_store_api_route', ['/index.php/wc/store/v1/checkout']), '/wc/store/v1/checkout', 'PHP-R19-NSR-9 /index.php prefix stripped', 'helper_unit_runtime');
 
 // --- 19.10 classify_create_token_response: strict token-match enforcement ----
+// Reclassified #20: direct classifier calls → helper_unit_runtime.
 // Body claims data.customerUniqueToken = '99999999' but submitted is '12345678'
 // → must reject (no echo acceptance of claimed token).
 $transport_mismatch = [
@@ -5636,77 +5636,77 @@ $transport_mismatch = [
     'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => '99999999']])
 ];
 $reason_mismatch = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_mismatch, '12345678')['reason'];
-upay_assert_eq($reason_mismatch === 'token_mismatch', true, 'PHP-R19-CTR-1 echoed token != submitted → token_mismatch', 'semantic_runtime');
+upay_assert_eq($reason_mismatch === 'token_mismatch', true, 'PHP-R19-CTR-1 echoed token != submitted → token_mismatch', 'helper_unit_runtime');
 
 $transport_match = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0,
     'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => '12345678']])
 ];
 $reason_match = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_match, '12345678')['reason'];
-upay_assert_eq($reason_match === 'success', true, 'PHP-R19-CTR-2 echoed token == submitted → success', 'semantic_runtime');
+upay_assert_eq($reason_match === 'success', true, 'PHP-R19-CTR-2 echoed token == submitted → success', 'helper_unit_runtime');
 
 $transport_no_data = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0,
     'body' => json_encode(['status' => true])
 ];
 $reason_no_data = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_no_data, '12345678')['reason'];
-upay_assert_eq($reason_no_data !== 'success', true, 'PHP-R19-CTR-3 missing data → not success', 'semantic_runtime');
+upay_assert_eq($reason_no_data !== 'success', true, 'PHP-R19-CTR-3 missing data → not success', 'helper_unit_runtime');
 
 $transport_no_cut = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0,
     'body' => json_encode(['status' => true, 'data' => []])
 ];
 $reason_no_cut = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_no_cut, '12345678')['reason'];
-upay_assert_eq($reason_no_cut !== 'success', true, 'PHP-R19-CTR-4 empty data → not success', 'semantic_runtime');
+upay_assert_eq($reason_no_cut !== 'success', true, 'PHP-R19-CTR-4 empty data → not success', 'helper_unit_runtime');
 
 $transport_nonstring_cut = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0,
     'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => 12345678]])
 ];
 $reason_nonstring = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_nonstring_cut, '12345678')['reason'];
-upay_assert_eq($reason_nonstring !== 'success', true, 'PHP-R19-CTR-5 non-string customerUniqueToken → not success', 'semantic_runtime');
+upay_assert_eq($reason_nonstring !== 'success', true, 'PHP-R19-CTR-5 non-string customerUniqueToken → not success', 'helper_unit_runtime');
 
 $transport_empty_body = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0, 'body' => ''
 ];
 $reason_empty = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_empty_body, '12345678')['reason'];
-upay_assert_eq($reason_empty !== 'success', true, 'PHP-R19-CTR-6 empty body → not success', 'semantic_runtime');
+upay_assert_eq($reason_empty !== 'success', true, 'PHP-R19-CTR-6 empty body → not success', 'helper_unit_runtime');
 
 $transport_garbage_body = [
     'http_status' => 201, 'transport_ok' => true, 'curl_errno' => 0,
     'body' => 'not-json-at-all{'
 ];
 $reason_garbage = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_garbage_body, '12345678')['reason'];
-upay_assert_eq($reason_garbage !== 'success', true, 'PHP-R19-CTR-7 garbage body → not success', 'semantic_runtime');
+upay_assert_eq($reason_garbage !== 'success', true, 'PHP-R19-CTR-7 garbage body → not success', 'helper_unit_runtime');
 
 // --- 19.11 Additional semantic coverage: transport-shape + boundary checks ---
 // Non-array transport → transport_failure.
 $transport_not_array = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response('not-array', '12345678')['reason'];
-upay_assert_eq($transport_not_array === 'transport_failure', true, 'PHP-R19-CTR-8 non-array transport → transport_failure', 'semantic_runtime');
+upay_assert_eq($transport_not_array === 'transport_failure', true, 'PHP-R19-CTR-8 non-array transport → transport_failure', 'helper_unit_runtime');
 
 // Missing http_status → transport_failure.
 $transport_no_status = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response(['transport_ok' => true, 'body' => '{}'], '12345678')['reason'];
-upay_assert_eq($transport_no_status === 'transport_failure', true, 'PHP-R19-CTR-9 missing http_status → transport_failure', 'semantic_runtime');
+upay_assert_eq($transport_no_status === 'transport_failure', true, 'PHP-R19-CTR-9 missing http_status → transport_failure', 'helper_unit_runtime');
 
 // Non-int http_status → transport_failure.
 $transport_status_str = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response(['http_status' => '201', 'transport_ok' => true, 'body' => '{}'], '12345678')['reason'];
-upay_assert_eq($transport_status_str === 'transport_failure', true, 'PHP-R19-CTR-10 string http_status → transport_failure', 'semantic_runtime');
+upay_assert_eq($transport_status_str === 'transport_failure', true, 'PHP-R19-CTR-10 string http_status → transport_failure', 'helper_unit_runtime');
 
 // Zero http_status → transport_failure.
 $transport_zero_status = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response(['http_status' => 0, 'transport_ok' => true, 'body' => '{}'], '12345678')['reason'];
-upay_assert_eq($transport_zero_status === 'transport_failure', true, 'PHP-R19-CTR-11 http_status=0 → transport_failure', 'semantic_runtime');
+upay_assert_eq($transport_zero_status === 'transport_failure', true, 'PHP-R19-CTR-11 http_status=0 → transport_failure', 'helper_unit_runtime');
 
 // Empty submitted_token → invalid_candidate.
 $transport_empty_submitted = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_match, '')['reason'];
-upay_assert_eq($transport_empty_submitted === 'invalid_candidate', true, 'PHP-R19-CTR-12 empty submitted_token → invalid_candidate', 'semantic_runtime');
+upay_assert_eq($transport_empty_submitted === 'invalid_candidate', true, 'PHP-R19-CTR-12 empty submitted_token → invalid_candidate', 'helper_unit_runtime');
 
 // Non-canonical submitted_token → invalid_candidate.
 $transport_noncanon = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_match, 'abc')['reason'];
-upay_assert_eq($transport_noncanon === 'invalid_candidate', true, 'PHP-R19-CTR-13 non-canonical submitted → invalid_candidate', 'semantic_runtime');
+upay_assert_eq($transport_noncanon === 'invalid_candidate', true, 'PHP-R19-CTR-13 non-canonical submitted → invalid_candidate', 'helper_unit_runtime');
 
 // Submitted token as int → invalid_candidate (strict-string).
 $transport_int_submitted = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_match, 12345678)['reason'];
-upay_assert_eq($transport_int_submitted === 'invalid_candidate', true, 'PHP-R19-CTR-14 int submitted → invalid_candidate', 'semantic_runtime');
+upay_assert_eq($transport_int_submitted === 'invalid_candidate', true, 'PHP-R19-CTR-14 int submitted → invalid_candidate', 'helper_unit_runtime');
 
 // Echoed token with leading zero (canonical would reject, but legacy might accept) → mismatch.
 $transport_leading_zero = [
@@ -5714,13 +5714,14 @@ $transport_leading_zero = [
     'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => '02345678']])
 ];
 $reason_lz = \UPayments\Token\CustomerTokenIdentity::classify_create_token_response($transport_leading_zero, '02345678')['reason'];
-upay_assert_eq($reason_lz === 'invalid_candidate', true, 'PHP-R19-CTR-15 leading-zero submitted → invalid_candidate (canonical rejects)', 'semantic_runtime');
+upay_assert_eq($reason_lz === 'invalid_candidate', true, 'PHP-R19-CTR-15 leading-zero submitted → invalid_candidate (canonical rejects)', 'helper_unit_runtime');
 
 // --- 19.12 get_bootstrap_lock_name: deterministic singleton ------------------
+// Reclassified #20: direct helper calls → helper_unit_runtime.
 $boot_a = \UPayments\Token\CustomerTokenIdentity::get_bootstrap_lock_name();
 $boot_b = \UPayments\Token\CustomerTokenIdentity::get_bootstrap_lock_name();
-upay_assert_eq(is_string($boot_a) && strlen($boot_a) > 0, true, 'PHP-R19-BLN-1 bootstrap lock name is non-empty string', 'semantic_runtime');
-upay_assert_eq($boot_a === $boot_b, true, 'PHP-R19-BLN-2 bootstrap lock name is deterministic', 'semantic_runtime');
+upay_assert_eq(is_string($boot_a) && strlen($boot_a) > 0, true, 'PHP-R19-BLN-1 bootstrap lock name is non-empty string', 'helper_unit_runtime');
+upay_assert_eq($boot_a === $boot_b, true, 'PHP-R19-BLN-2 bootstrap lock name is deterministic', 'helper_unit_runtime');
 
 
 

@@ -677,16 +677,24 @@ class WC_Upayments_Testable extends WC_Upayments {
             $state['charge_calls']++;
             $state['last_charge_body'] = $body;
         }
-        if ($state['transport_route'] === $route && $state['transport_response'] !== null) {
-            $r = $state['transport_response'];
-            if ($r === false) return false;
-            return $r;
-        }
         // Per-route response map: if the test set responses per-route, prefer
         // the route-specific response (used when multiple provider endpoints
         // are dispatched in the same process_payment call).
+        // Residual Correction #20: support callable responses for dynamic
+        // transport stubs that inspect the actual outbound request body.
         if (isset($state['transport_responses_per_route'][$route])) {
             $r = $state['transport_responses_per_route'][$route];
+            if (is_callable($r)) {
+                return $r($body);
+            }
+            if ($r === false) return false;
+            return $r;
+        }
+        if ($state['transport_route'] === $route && $state['transport_response'] !== null) {
+            $r = $state['transport_response'];
+            if (is_callable($r)) {
+                return $r($body);
+            }
             if ($r === false) return false;
             return $r;
         }
