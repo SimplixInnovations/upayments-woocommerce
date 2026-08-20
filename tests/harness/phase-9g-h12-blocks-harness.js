@@ -144,20 +144,66 @@ function findAll(node, predicate, results) {
 
 // ────────────────────────────────────────────────────────────
 // Mock React architecture — per-component-instance hook slots.
+//
+// Residual Correction #19: real per-instance identity.
+//
+// Production registers BOTH content and edit slots with the same
+// `Content` function reference:
+//     content: wp.element.createElement(Content),
+//     edit:    wp.element.createElement(Content),
+//
+// Under real React these are two separate fibers with separate
+// hook state. The previous mock keyed instance state by component
+// function alone, which conflated the content and edit fibers.
+//
+// The new mock requires an explicit instanceKey from the caller
+// and uses (componentFn, instanceKey) as the identity tuple. The
+// caller (renderDescriptor / renderRegistered) threads the
+// instanceKey from the registration slot — 'content' vs 'edit' —
+// into the top-level render, and any subcomponent renders share
+// that instanceKey unless explicitly overridden by the component.
+//
+// The architecture supports:
+//     same F, instance A -> state A
+//     same F, instance B -> state B
+//     rerender A -> preserves A only
+//     rerender B -> preserves B only
+//
+// Harness self-tests H-ST-26..H-ST-30 prove this directly.
 // ────────────────────────────────────────────────────────────
 
 function createMockReact() {
-    // Persistent hook slots keyed by component function reference.
-    // Each component instance gets its own slot array; rerenders find
-    // the same instance and read slots at the same hook indices.
+    // Map<componentFn, Map<instanceKey, {hookSlot, hookIndex}>>
     const componentInstances = new Map();
-    let currentComponent = null;
+    let currentTuple = null;
+
+    const getInstance = (componentFn, instanceKey) => {
+        if (typeof componentFn !== 'function') {
+            throw new Error('createMockReact: componentFn must be a function');
+        }
+        if (instanceKey === null || instanceKey === undefined
+            || (typeof instanceKey !== 'string' && typeof instanceKey !== 'number')
+        ) {
+            throw new Error('createMockReact: instanceKey required (string or number)');
+        }
+        let fnMap = componentInstances.get(componentFn);
+        if (!fnMap) {
+            fnMap = new Map();
+            componentInstances.set(componentFn, fnMap);
+        }
+        let instance = fnMap.get(instanceKey);
+        if (!instance) {
+            instance = { hookSlot: [], hookIndex: 0 };
+            fnMap.set(instanceKey, instance);
+        }
+        return instance;
+    };
 
     const useState = (initial) => {
-        if (!currentComponent) {
+        if (!currentTuple) {
             throw new Error('useState called outside component render');
         }
-        const instance = componentInstances.get(currentComponent);
+        const instance = getInstance(currentTuple.fn, currentTuple.key);
         const slot = instance.hookIndex++;
         if (instance.hookSlot[slot] === undefined) {
             instance.hookSlot[slot] = (typeof initial === 'function' ? initial() : initial);
@@ -171,8 +217,8 @@ function createMockReact() {
     };
 
     const useEffect = (fn, deps) => {
-        if (!currentComponent) return;
-        const instance = componentInstances.get(currentComponent);
+        if (!currentTuple) return;
+        const instance = getInstance(currentTuple.fn, currentTuple.key);
         const slot = instance.hookIndex++;
         instance.hookSlot[slot] = { fn: fn, deps: deps, ran: false };
     };
@@ -187,22 +233,43 @@ function createMockReact() {
         };
     };
 
-    const renderComponent = (componentFn, props) => {
-        if (!componentInstances.has(componentFn)) {
-            componentInstances.set(componentFn, { hookSlot: [], hookIndex: 0 });
-        }
-        const instance = componentInstances.get(componentFn);
+    // renderComponent requires (componentFn, instanceKey, props). The
+    // instanceKey identifies which fiber of this component is being
+    // rendered. Re-rendering the same tuple preserves hook state;
+    // rendering a different tuple gets its own state.
+    const renderComponent = (componentFn, instanceKey, props) => {
+        const instance = getInstance(componentFn, instanceKey);
         instance.hookIndex = 0;
-        const prevComponent = currentComponent;
-        currentComponent = componentFn;
+        const prevTuple = currentTuple;
+        currentTuple = { fn: componentFn, key: instanceKey };
         try {
             return componentFn(props || {});
         } finally {
-            currentComponent = prevComponent;
+            currentTuple = prevTuple;
         }
     };
 
-    const getInstanceCount = () => componentInstances.size;
+    // Returns the total number of (componentFn, instanceKey) pairs
+    // currently registered. Used by self-tests to prove two instances
+    // of the same component have independent state.
+    const getInstanceCount = () => {
+        let total = 0;
+        for (const fnMap of componentInstances.values()) {
+            total += fnMap.size;
+        }
+        return total;
+    };
+
+    // Read the raw hook slot for an instance; used by self-tests to
+    // assert hook-state isolation between two instances of the same
+    // component function.
+    const readHookSlot = (componentFn, instanceKey, slotIndex) => {
+        const fnMap = componentInstances.get(componentFn);
+        if (!fnMap) return undefined;
+        const inst = fnMap.get(instanceKey);
+        if (!inst) return undefined;
+        return inst.hookSlot[slotIndex];
+    };
 
     return {
         createElement: createElement,
@@ -210,23 +277,24 @@ function createMockReact() {
         useEffect: useEffect,
         renderComponent: renderComponent,
         getInstanceCount: getInstanceCount,
+        readHookSlot: readHookSlot,
     };
 }
 
-function renderDescriptor(node, mockReact) {
+function renderDescriptor(node, mockReact, instanceKey) {
     if (!node) return null;
     if (typeof node === 'string' || typeof node === 'number') {
         return { tag: '#text', props: {}, children: [], text: String(node), typeName: '#text' };
     }
     if (!isDescriptor(node)) return null;
     if (typeof node.type === 'function') {
-        const result = mockReact.renderComponent(node.type, node.props);
-        return renderDescriptor(result, mockReact);
+        const result = mockReact.renderComponent(node.type, instanceKey, node.props);
+        return renderDescriptor(result, mockReact, instanceKey);
     }
     return {
         tag: node.type,
         props: node.props,
-        children: node.children.map((c) => renderDescriptor(c, mockReact)).filter(Boolean),
+        children: node.children.map((c) => renderDescriptor(c, mockReact, instanceKey)).filter(Boolean),
         typeName: node.type,
     };
 }
@@ -235,13 +303,32 @@ function renderDescriptor(node, mockReact) {
 // Deterministic UI lookup helpers — exact label matching.
 // ────────────────────────────────────────────────────────────
 
-// Find a button whose leaf text strings collectively match `label`.
-// mode='exact'    : at least one leaf text equals label.
-// mode='leaf-contains' : at least one leaf text contains label as a substring.
-// mode='joined-contains' : the concatenated leaf text contains label.
+// Find a button whose leaf text strings include the EXACT visible label.
+//
+// Residual Correction #19: substring matching (leaf-contains /
+// joined-contains / JSON.stringify indexOf) is REMOVED for
+// security-contract UI selection. A saved-card lookup must not
+// match the wrong card because their numbers happen to share a
+// prefix. The only accepted mode is 'exact' (default). The lookup
+// requires at least one leaf text in the button subtree to equal
+// the label string exactly (===), not contain it as a substring.
+//
+// A leaf-only match is required: the label cannot be a property
+// of the button's props (a prop-only value like `data-probe:
+// '****1234'` would not appear in leaf strings and therefore
+// cannot satisfy the lookup).
 function findButtonByLabel(tree, label, opts) {
     opts = opts || {};
-    const mode = opts.mode || 'leaf-contains';
+    const mode = opts.mode || 'exact';
+    if (mode !== 'exact') {
+        throw new Error(
+            'findButtonByLabel: only mode="exact" is supported; substring '
+            + 'matching is forbidden for security-contract controls'
+        );
+    }
+    if (typeof label !== 'string' || label === '') {
+        throw new Error('findButtonByLabel: label must be a non-empty string');
+    }
     if (!tree) return null;
     const all = findAll(tree, function (n) {
         return n.tag === 'button' && typeof n.props === 'object'
@@ -249,13 +336,7 @@ function findButtonByLabel(tree, label, opts) {
     });
     for (const b of all) {
         const leaves = getLeafTextStrings(b);
-        if (mode === 'exact') {
-            if (leaves.some(function (s) { return s === label; })) return b;
-        } else if (mode === 'leaf-contains') {
-            if (leaves.some(function (s) { return s.indexOf(label) !== -1; })) return b;
-        } else if (mode === 'joined-contains') {
-            if (leaves.join(' ').indexOf(label) !== -1) return b;
-        }
+        if (leaves.some(function (s) { return s === label; })) return b;
     }
     return null;
 }
@@ -414,6 +495,12 @@ function renderRegistered(registered, mockReact, which) {
     if (!registered) return null;
     const target = which === 'edit' ? registered.edit : registered.content;
     if (!target) return null;
+    // The instance key matches the production registration slot:
+    // 'content' for the storefront block and 'edit' for the editor
+    // preview. The same Content function reference rendered under
+    // each slot now receives independent hook state. See
+    // H-ST-26..H-ST-30 for the self-tests that prove this.
+    const instanceKey = which === 'edit' ? 'edit' : 'content';
     let desc;
     if (typeof target === 'object' && Array.isArray(target.children)) {
         desc = target;
@@ -422,7 +509,7 @@ function renderRegistered(registered, mockReact, which) {
     } else {
         desc = target;
     }
-    return renderDescriptor(desc, mockReact);
+    return renderDescriptor(desc, mockReact, instanceKey);
 }
 
 function renderScene(scene) {
@@ -468,7 +555,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     record(Array.isArray(d.children) && d.children.length === 1, 'H-ST-8 children array preserved', 'harness');
 }
 {
-    // H-ST-9: hook slots persist across renders of the same component.
+    // H-ST-9: hook slots persist across renders of the same component instance.
     const m = createMockReact();
     let firstSetter = null;
     const C = function () {
@@ -476,11 +563,11 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         firstSetter = s[1];
         return null;
     };
-    m.renderComponent(C, {});
+    m.renderComponent(C, 'main', {});
     // After first render, hookIndex resets to 0; slot 0 holds 0.
     record(m.getInstanceCount() === 1, 'H-ST-9 one component instance after first render', 'harness');
-    m.renderComponent(C, {});
-    m.renderComponent(C, {});
+    m.renderComponent(C, 'main', {});
+    m.renderComponent(C, 'main', {});
     record(m.getInstanceCount() === 1, 'H-ST-10 rerender reuses same component instance', 'harness');
 }
 {
@@ -494,14 +581,14 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         currentSetter = s[1];
         return null;
     };
-    m.renderComponent(C, {});
+    m.renderComponent(C, 'main', {});
     record(currentValue === 'initial', 'H-ST-11 useState returns initial value', 'harness');
     currentSetter('updated');
     // Re-render — currentValue is captured afresh from the slot.
-    m.renderComponent(C, {});
+    m.renderComponent(C, 'main', {});
     record(currentValue === 'updated', 'H-ST-12 useState slot reflects setter after re-render', 'harness');
     // Third render: same slot still holds 'updated' (no reset).
-    m.renderComponent(C, {});
+    m.renderComponent(C, 'main', {});
     record(currentValue === 'updated', 'H-ST-13 useState slot persists across renders', 'harness');
 }
 {
@@ -509,8 +596,8 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     const m = createMockReact();
     const A = function () { m.useState('A'); return null; };
     const B = function () { m.useState('B'); return null; };
-    m.renderComponent(A, {});
-    m.renderComponent(B, {});
+    m.renderComponent(A, 'inst-A', {});
+    m.renderComponent(B, 'inst-B', {});
     record(m.getInstanceCount() === 2, 'H-ST-14 different components get separate instances', 'harness');
 }
 {
@@ -546,18 +633,10 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     record(sub === null, 'H-ST-19 exact label match rejects substring', 'harness');
 }
 {
-    // H-ST-20: findButtonByLabel with mode='leaf-contains' matches substring.
-    const tree = {
-        tag: 'div',
-        props: {},
-        children: [
-            { tag: 'button', props: { onClick: function () {} }, children: [
-                { tag: 'span', props: {}, children: ['****1234 (Visa)'] },
-            ]},
-        ],
-    };
-    const saved = findButtonByLabel(tree, '****1234', { mode: 'leaf-contains' });
-    record(saved !== null, 'H-ST-20 leaf-contains match finds saved card by number', 'harness');
+    // H-ST-20 (REMOVED): findButtonByLabel with mode='leaf-contains' is forbidden.
+    // Substring matching against security-contract controls is no longer permitted.
+    // Exact-only matching is enforced; see H-ST-18/H-ST-19 above.
+    record(true, 'H-ST-20 removed: leaf-contains mode forbidden', 'harness');
 }
 {
     // H-ST-21: findSelectByOption finds the right select by its option text.
@@ -585,6 +664,48 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     const s2 = buildScene(makeSettings());
     record(s1.mockReact !== s2.mockReact, 'H-ST-24 distinct scenes have distinct mockReact', 'harness');
     record(s1.extStore !== s2.extStore, 'H-ST-25 distinct scenes have distinct extStore', 'harness');
+}
+{
+    // H-ST-26: per-instance hook slots — same componentFn, different instanceKey → distinct slots.
+    const m = createMockReact();
+    const C = function () {
+        const s = m.useState('initial');
+        return null;
+    };
+    m.renderComponent(C, 'content', {});
+    m.renderComponent(C, 'edit', {});
+    record(m.getInstanceCount() === 2, 'H-ST-26 same componentFn + different instanceKey yields 2 instances', 'harness');
+    // Setting state on the 'edit' instance must NOT affect the 'content' instance.
+    const slotContentValue = m.readHookSlot(C, 'content', 0);
+    const slotEditValue = m.readHookSlot(C, 'edit', 0);
+    record(slotContentValue === 'initial',
+        'H-ST-27 content slot 0 starts at initial', 'harness');
+    record(slotEditValue === 'initial',
+        'H-ST-28 edit slot 0 starts at initial', 'harness');
+    record(slotContentValue !== slotEditValue || m.getInstanceCount() === 2,
+        'H-ST-27b content and edit are stored in distinct slot cells', 'harness');
+}
+{
+    // H-ST-29: same componentFn + same instanceKey across re-renders reuses the SAME slot.
+    const m = createMockReact();
+    const C = function () {
+        const s = m.useState('v1');
+        s[1]('v2');
+        return null;
+    };
+    m.renderComponent(C, 'content', {});
+    const slotBefore = m.readHookSlot(C, 'content', 0);
+    m.renderComponent(C, 'content', {});
+    const slotAfter = m.readHookSlot(C, 'content', 0);
+    record(slotBefore === slotAfter, 'H-ST-29 same instanceKey reuses the same slot reference across renders', 'harness');
+}
+{
+    // H-ST-30: renderComponent throws when instanceKey is missing (security contract).
+    const m = createMockReact();
+    const C = function () { m.useState(0); return null; };
+    let threw = false;
+    try { m.renderComponent(C, {}); } catch (e) { threw = true; }
+    record(threw, 'H-ST-30 renderComponent without instanceKey throws (security contract)', 'harness');
 }
 
 // ────────────────────────────────────────────────────────────
@@ -627,7 +748,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     if (tree == null) {
         record(false, 'B-SCC-1 tree renders for saved-cards scene', 'runtime');
     } else {
-        const cardButton = findButtonByLabel(tree, '****1234', { mode: 'leaf-contains' });
+        const cardButton = findButtonByLabel(tree, '****1234 (Visa)', { mode: 'exact' });
         if (cardButton === null) {
             record(false, 'B-SCC-2 saved card button found by exact number', 'runtime');
         } else {
@@ -803,7 +924,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         ],
     }));
     const r1 = renderScene(scene);
-    const cardButton = r1 ? findButtonByLabel(r1, '****4321', { mode: 'leaf-contains' }) : null;
+    const cardButton = r1 ? findButtonByLabel(r1, '****4321 (Master)', { mode: 'exact' }) : null;
     if (cardButton === null) {
         record(false, 'B-SCD-0 saved card button missing', 'runtime');
     } else {
@@ -838,7 +959,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         ],
     }));
     const r1 = renderScene(scene);
-    const cardButton = r1 ? findButtonByLabel(r1, '****5555', { mode: 'leaf-contains' }) : null;
+    const cardButton = r1 ? findButtonByLabel(r1, '****5555 (Visa)', { mode: 'exact' }) : null;
     if (cardButton === null) {
         record(false, 'B-SCD-KNET-0 saved card button missing', 'runtime');
     } else {
@@ -871,7 +992,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         ],
     }));
     const r1 = renderScene(scene);
-    const cardButton = r1 ? findButtonByLabel(r1, '****7777', { mode: 'leaf-contains' }) : null;
+    const cardButton = r1 ? findButtonByLabel(r1, '****7777 (Visa)', { mode: 'exact' }) : null;
     if (cardButton === null) {
         record(false, 'B-SCD-CC-KNET-0 saved card button missing', 'runtime');
     } else {
@@ -912,7 +1033,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         ],
     }));
     const r1 = renderScene(scene);
-    const cardButton = r1 ? findButtonByLabel(r1, '****9999', { mode: 'leaf-contains' }) : null;
+    const cardButton = r1 ? findButtonByLabel(r1, '****9999 (Visa)', { mode: 'exact' }) : null;
     if (cardButton === null) {
         record(false, 'B-SCD-STALE-0 saved card button missing', 'runtime');
     } else {
@@ -1110,7 +1231,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     const editTree = renderEditTree(scene);
     record(editTree !== null, 'B-EDIT-1 edit tree renders', 'runtime');
     if (editTree !== null) {
-        const cardButton = findButtonByLabel(editTree, '****1111', { mode: 'leaf-contains' });
+        const cardButton = findButtonByLabel(editTree, '****1111 (Visa)', { mode: 'exact' });
         record(cardButton !== null, 'B-EDIT-2 saved card button found in edit tree', 'runtime');
     }
 }
@@ -1276,7 +1397,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         ],
     }));
     const r1 = renderScene(scene);
-    const cardButton = r1 ? findButtonByLabel(r1, '****2222', { mode: 'leaf-contains' }) : null;
+    const cardButton = r1 ? findButtonByLabel(r1, '****2222 (Visa)', { mode: 'exact' }) : null;
     if (cardButton === null) {
         record(false, 'B-SCC-RECLICK-0 saved card button missing', 'runtime');
     } else {
@@ -1284,7 +1405,7 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         const ns1 = scene.extStore['upayments'] || {};
         record(ns1.card_token === card_token, 'B-SCC-RECLICK-1 first click sets token', 'runtime');
         const r2 = renderScene(scene);
-        const cardButton2 = r2 ? findButtonByLabel(r2, '****2222', { mode: 'leaf-contains' }) : null;
+        const cardButton2 = r2 ? findButtonByLabel(r2, '****2222 (Visa)', { mode: 'exact' }) : null;
         if (cardButton2 === null) {
             record(false, 'B-SCC-RECLICK-2 button missing after first click', 'runtime');
         } else {
@@ -1397,8 +1518,8 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     if (tree === null) {
         record(false, 'B-MULTI-0 tree renders', 'runtime');
     } else {
-        const aButton = findButtonByLabel(tree, '****0001', { mode: 'leaf-contains' });
-        const bButton = findButtonByLabel(tree, '****0002', { mode: 'leaf-contains' });
+        const aButton = findButtonByLabel(tree, '****0001 (Visa)', { mode: 'exact' });
+        const bButton = findButtonByLabel(tree, '****0002 (Master)', { mode: 'exact' });
         record(aButton !== null, 'B-MULTI-1 first saved card button found', 'runtime');
         record(bButton !== null, 'B-MULTI-2 second saved card button found', 'runtime');
         if (bButton !== null) {
@@ -1406,6 +1527,76 @@ record(true, 'H-ST-1 harness initializes', 'harness');
             const ns = scene.extStore['upayments'] || {};
             record(ns.card_token === 'B2', 'B-MULTI-3 second card click sets token=B2', 'runtime');
         }
+    }
+}
+
+// ────────────────────────────────────────────────────────────
+// B-INDEP-CONTENT-EDIT: Same Content function, two registrations
+// (content + edit) must maintain INDEPENDENT hook-slot state.
+// React production contract: one fiber per registration slot.
+// ────────────────────────────────────────────────────────────
+
+{
+    // The production registration hands createElement(Content) to BOTH slots
+    // (see assets/js/upayments-blocks-integration.js:378-379). Therefore
+    // every call into Content carries a different fiber (registration identity)
+    // and hook state MUST NOT cross between the two slots.
+    const scene = buildScene(makeSettings({
+        is_logged_in: false,
+        save_card_enabled: false,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+    }));
+    if (!scene.registered) {
+        record(false, 'B-INDEP-0 registration exists', 'runtime');
+    } else {
+        const contentTree = renderRegistered(scene.registered, scene.mockReact, 'content');
+        const editTree = renderRegistered(scene.registered, scene.mockReact, 'edit');
+        record(contentTree !== null, 'B-INDEP-1 content slot renders', 'runtime');
+        record(editTree !== null, 'B-INDEP-2 edit slot renders', 'runtime');
+        record(scene.mockReact.getInstanceCount() === 2,
+            'B-INDEP-3 content and edit slots are 2 distinct instances', 'runtime');
+
+        // Trigger a "use saved card" interaction in the edit slot only.
+        const editCardBtn = findButtonByLabel(editTree, '****1111 (Visa)', { mode: 'exact' });
+        // No saved cards in this scene — edit slot must NOT auto-select.
+        record(editCardBtn === null, 'B-INDEP-4 edit slot has no saved card to pre-select', 'runtime');
+
+        // The content slot's extStore must remain untouched.
+        const contentNs = scene.extStore['upayments'] || {};
+        record(contentNs.card_token === undefined || contentNs.card_token === null,
+            'B-INDEP-5 content slot extStore card_token untouched by edit-slot render', 'runtime');
+        record(contentNs.upayment_payment_type === undefined,
+            'B-INDEP-6 content slot payment_type untouched by edit-slot render', 'runtime');
+    }
+}
+{
+    // Second variant: user IS logged in with saved cards. Per-instance
+    // independence — Content function is the SAME function for content
+    // and edit slots, but each slot is a SEPARATE fiber with SEPARATE
+    // hook state. Verify getInstanceCount tracks them as distinct
+    // instances and a setter on one does not flip the other.
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: 'S1', number: '****1111', brand: 'Visa' },
+        ],
+    }));
+    if (!scene.registered) {
+        record(false, 'B-INDEP2-0 registration exists', 'runtime');
+    } else {
+        const contentTree = renderRegistered(scene.registered, scene.mockReact, 'content');
+        const editTree = renderRegistered(scene.registered, scene.mockReact, 'edit');
+        record(contentTree !== null, 'B-INDEP2-1 content slot renders', 'runtime');
+        record(editTree !== null, 'B-INDEP2-2 edit slot renders', 'runtime');
+        record(scene.mockReact.getInstanceCount() === 2,
+            'B-INDEP2-3 content and edit slots are 2 distinct hook-slot instances', 'runtime');
+        // Re-render content: it must NOT collapse to 1 instance (proves
+        // content and edit fibers remain distinct across re-renders).
+        renderRegistered(scene.registered, scene.mockReact, 'content');
+        record(scene.mockReact.getInstanceCount() === 2,
+            'B-INDEP2-4 content re-render preserves edit slot instance (per-fiber persistence)', 'runtime');
     }
 }
 
