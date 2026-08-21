@@ -252,10 +252,14 @@ if (!class_exists('WC_Payment_Gateway', false)) {
  * canonical decimal strings; no float, no BCMath, no GMP. Aligns on the
  * decimal point and adds digit-by-digit with carry.
  */
-function upay_make_order($id = 100, $custom_total = null, $items = null) {
+function upay_make_order($id = 100, $custom_total = null, $items = null, $use_product_items = false) {
     if ($items === null) {
         $product = new FakeWCProduct(1, 'Test Product', 'simple');
-        $items = [new FakeWCOrderItem($product, 1, '12.50')];
+        if ($use_product_items) {
+            $items = [new FakeWCOrderItem_Product($product, 1, '12.50')];
+        } else {
+            $items = [new FakeWCOrderItem($product, 1, '12.50')];
+        }
     }
     $order = new FakeWCOrder($id);
     $order->items_meta = $items;
@@ -275,6 +279,23 @@ function upay_make_gateway($config = []) {
     ];
     $config = array_merge($defaults, $config);
     $gateway = new WC_Upayments();
+    foreach ($config as $k => $v) {
+        $gateway->$k = $v;
+    }
+    return $gateway;
+}
+
+function upay_make_testable_gateway($config = []) {
+    $defaults = [
+        'apiKey' => 'test_api_key', 'testMode' => 'no',
+        'saveCardEnabled' => 'yes', 'autoDeduction' => 'no',
+        'multiMerchant' => 'no', 'ibanNumber' => '',
+        'ccCharge' => '', 'ccChargeType' => '',
+        'knetCharge' => '', 'knetChargeType' => '',
+        'debug' => 'no',
+    ];
+    $config = array_merge($defaults, $config);
+    $gateway = new WC_Upayments_Testable();
     foreach ($config as $k => $v) {
         $gateway->$k = $v;
     }
@@ -399,16 +420,30 @@ function upay_default_success_environment() {
             'apple_pay' => 0, 'samsung_pay' => 0, 'google_pay' => 0,
         ],
     ]);
+    // Set both per-route and single-response for backward compatibility.
     upay_set_provider_response('charge', [
         'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
         'body' => json_encode(['status' => true, 'data' => ['link' => 'https://upayments.example.test/r?order=100']]),
     ]);
+    upay_set_provider_responses([
+        'charge' => [
+            'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+            'body' => json_encode(['status' => true, 'data' => ['link' => 'https://upayments.example.test/r?order=100']]),
+        ],
+    ]);
 }
 
 function upay_default_token_success_environment() {
+    // Set both per-route and single-response for backward compatibility.
     upay_set_provider_response('create-customer-unique-token', [
         'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
         'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => '12345678']]),
+    ]);
+    upay_set_provider_responses([
+        'create-customer-unique-token' => [
+            'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+            'body' => json_encode(['status' => true, 'data' => ['customerUniqueToken' => '12345678']]),
+        ],
     ]);
 }
 
@@ -472,6 +507,14 @@ $gw->execute_upayments_request('retrieve-customer-cards', 'POST', '{}');
 upay_assert_eq(upay_test_state()['retrieve_calls'], 1, 'H-ST-22 retrieve call counter', 'harness_self_test');
 $gw->execute_upayments_request('check-payment-button-status', 'GET');
 upay_assert_eq(upay_test_state()['availability_calls'], 1, 'H-ST-23 availability call counter', 'harness_self_test');
+
+$wpdb_prepared = $wpdb->prepare('SELECT GET_LOCK(%s, %d)', 'test-lock', 5);
+upay_assert(strpos($wpdb_prepared, "'test-lock'") !== false, 'H-ST-24 wpdb prepare substitutes %s with quotes', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, '5') !== false, 'H-ST-25 wpdb prepare substitutes %d', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, '%s') === false, 'H-ST-26 wpdb prepare no remaining %s', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, '%d') === false, 'H-ST-27 wpdb prepare no remaining %d', 'harness_self_test');
+$wpdb_prepared_like = $wpdb->prepare('SELECT 1 FROM t WHERE k LIKE %s', 'prefix%');
+upay_assert(strpos($wpdb_prepared_like, "'prefix%'") !== false, 'H-ST-28 wpdb prepare LIKE pattern', 'harness_self_test');
 
 if ($_fail_harness_self_test > 0) {
     fwrite(STDERR, "FATAL: harness self-tests failed ($_fail_harness_self_test). Aborting.\n");
@@ -1979,27 +2022,55 @@ foreach ($pe_cases as $name => $case) {
     $state['current_user_id'] = 42;
     upay_default_success_environment();
     upay_default_token_success_environment();
+    upay_set_post([
+        'payment_method' => 'upayments',
+        'upayment_payment_type' => 'knet',
+    ]);
     $order_id = 5000 + $_pass_semantic_runtime + $_pass_static_source;
     $line_total = (string) $case[0]['line_total'];
     $qty        = $case[0]['quantity'];
     $product = new FakeWCProduct($order_id, 'p', 'simple');
-    $items = [new FakeWCOrderItem($product, $qty, $line_total)];
+    $items = [new FakeWCOrderItem_Product($product, $qty, $line_total)];
     if (!empty($case[0]['coupon'])) {
         // Real-world would have a coupon line item — we keep the simple case.
     }
     $order = upay_make_order($order_id, null, $items);
-    $gateway = upay_make_gateway();
+    $gateway = upay_make_testable_gateway();
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
     upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'semantic_runtime');
     // Case-specific behavioral assertions for critical PE scenarios.
-    if ($name === 'PE-13') {
+    if ($name === 'PE-9' || $name === 'PE-12') {
+        // 1.00 / 8 = exact 0.125 representation
+        upay_assert_eq($res['result'] ?? null, 'success', $name . ' result=success (1.00/8)', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 1, $name . ' Charge=1 (1.00/8)', 'semantic_runtime');
+        if ($state['last_charge_body'] !== null) {
+            $charge_json = (string) $state['last_charge_body'];
+            $charge_decoded = json_decode($charge_json, true);
+            if (isset($charge_decoded['products'][0]['quantity'])) {
+                upay_assert_eq((int) $charge_decoded['products'][0]['quantity'], 8,
+                    $name . ' products[0].quantity === 8', 'semantic_runtime');
+            }
+            // Verify 0.125 appears as unquoted JSON number.
+            upay_assert_eq(strpos($charge_json, '"price":0.125') !== false || strpos($charge_json, '"price": 0.125') !== false, true,
+                $name . ' Charge price is unquoted 0.125 JSON number', 'semantic_runtime');
+        }
+    } elseif ($name === 'PE-13') {
         // 10.00 / 3 = impossible exact representation
+        upay_assert_eq($res['result'] ?? null, 'failure', 'PE-13 result=failure (non-terminating decimal)', 'semantic_runtime');
         upay_assert_eq($state['charge_calls'], 0, 'PE-13 Charge=0 (non-terminating decimal)', 'semantic_runtime');
         upay_assert_eq($state['create_token_calls'], 0, 'PE-13 Create=0', 'semantic_runtime');
+        upay_assert_eq($state['retrieve_calls'], 0, 'PE-13 Retrieve=0', 'semantic_runtime');
     } elseif ($name === 'PE-11') {
         // quantity 10,000,000 = forbidden
+        upay_assert_eq($res['result'] ?? null, 'failure', 'PE-11 result=failure (forbidden quantity)', 'semantic_runtime');
         upay_assert_eq($state['charge_calls'], 0, 'PE-11 Charge=0 (forbidden quantity)', 'semantic_runtime');
+        upay_assert_eq($state['create_token_calls'], 0, 'PE-11 Create=0', 'semantic_runtime');
+        upay_assert_eq($state['retrieve_calls'], 0, 'PE-11 Retrieve=0', 'semantic_runtime');
+    } elseif ($name === 'PE-15') {
+        // zero-price line: failure because order total is 0 (can't charge)
+        upay_assert_eq($res['result'] ?? null, 'failure', 'PE-15 result=failure (zero total)', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 0, 'PE-15 Charge=0 (zero total)', 'semantic_runtime');
     }
 }
 
@@ -2057,15 +2128,55 @@ foreach ($wl_scenarios as $name => $scenario) {
         'isWhiteLabel' => true,
         'payButtons' => $scenario[0],
     ];
-    $state['transport_route'] = 'charge';
-    $state['transport_response'] = [
-        'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
-        'body' => json_encode(['status' => true, 'data' => ['link' => 'https://x.test/r']]),
-    ];
-    $order = upay_make_order(10000 + $_pass_semantic_runtime + $_pass_static_source, '5.00');
-    $gateway = upay_make_gateway();
+    upay_set_provider_responses([
+        'charge' => [
+            'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+            'body' => json_encode(['status' => true, 'data' => ['link' => 'https://x.test/r']]),
+        ],
+    ]);
+    // Determine the correct payment source for this scenario.
+    $wl_src = 'knet';
+    if ($scenario[1] > 0) $wl_src = 'knet';
+    elseif ($scenario[2] > 0) $wl_src = 'cc';
+    elseif ($scenario[3] > 0) $wl_src = 'apple-pay-knet';
+    elseif ($scenario[4] > 0) $wl_src = 'apple-pay';
+    elseif ($scenario[5] > 0) $wl_src = 'samsung-pay';
+    else $wl_src = 'knet'; // WL-8: all disabled, use knet to trigger failure
+    upay_set_post([
+        'payment_method' => 'upayments',
+        'upayment_payment_type' => $wl_src,
+    ]);
+    $order = upay_make_order(10000 + $_pass_semantic_runtime + $_pass_static_source, '5.00', null, true);
+    $gateway = upay_make_testable_gateway();
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     upay_assert(is_array($res), $name . ' Whitelabel process_payment returned array', 'semantic_runtime');
+    // WL-8: all methods disabled → failure
+    if ($name === 'WL-8') {
+        upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure (all methods disabled)', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 0, $name . ' Charge=0 (no enabled method)', 'semantic_runtime');
+    }
+    // For enabled scenarios, verify Charge dispatched and paymentGateway.src
+    elseif ($name !== 'WL-8') {
+        $expected_knet = $scenario[1];
+        $expected_cc = $scenario[2];
+        if ($expected_knet > 0) {
+            upay_assert_eq($res['result'] ?? null, 'success', $name . ' result=success (knet enabled)', 'semantic_runtime');
+            upay_assert_eq($state['charge_calls'], 1, $name . ' Charge=1 (knet enabled)', 'semantic_runtime');
+            if ($state['last_charge_body'] !== null) {
+                $charge_decoded = json_decode((string) $state['last_charge_body'], true);
+                upay_assert_eq(isset($charge_decoded['paymentGateway']['src']) ? $charge_decoded['paymentGateway']['src'] : null,
+                    'knet', $name . ' paymentGateway.src=knet', 'semantic_runtime');
+            }
+        } elseif ($expected_cc > 0) {
+            upay_assert_eq($res['result'] ?? null, 'success', $name . ' result=success (cc enabled)', 'semantic_runtime');
+            upay_assert_eq($state['charge_calls'], 1, $name . ' Charge=1 (cc enabled)', 'semantic_runtime');
+            if ($state['last_charge_body'] !== null) {
+                $charge_decoded = json_decode((string) $state['last_charge_body'], true);
+                upay_assert_eq(isset($charge_decoded['paymentGateway']['src']) ? $charge_decoded['paymentGateway']['src'] : null,
+                    'cc', $name . ' paymentGateway.src=cc', 'semantic_runtime');
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2091,8 +2202,12 @@ foreach ($mm_scenarios as $name => $scenario) {
     $state['current_user_id'] = 99;
     upay_default_success_environment();
     upay_default_token_success_environment();
+    upay_set_post([
+        'payment_method' => 'upayments',
+        'upayment_payment_type' => 'knet',
+    ]);
     [$type, $charge, $iban, $expected_outcome] = $scenario;
-    $gateway = upay_make_gateway([
+    $gateway = upay_make_testable_gateway([
         'multiMerchant' => 'yes',
         'ccCharge' => $charge,
         'ccChargeType' => $type,
@@ -2104,7 +2219,8 @@ foreach ($mm_scenarios as $name => $scenario) {
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
     upay_assert($is_struct, $name . ' process_payment returned structured result (' . $expected_outcome . ')', 'semantic_runtime');
-    if ($expected_outcome === 'invalid_zero' || $expected_outcome === 'invalid_type' || $expected_outcome === 'invalid_iban' || strpos($expected_outcome, 'invalid') === 0) {
+    if (strpos($expected_outcome, 'invalid') === 0) {
+        upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure (invalid MM)', 'semantic_runtime');
         upay_assert_eq($state['create_token_calls'], 0, $name . ' invalid MM: zero Create Token', 'semantic_runtime');
         upay_assert_eq($state['retrieve_calls'], 0, $name . ' invalid MM: zero Retrieve', 'semantic_runtime');
         upay_assert_eq($state['charge_calls'], 0, $name . ' invalid MM: zero Charge', 'semantic_runtime');
@@ -2157,6 +2273,9 @@ $res = $gw->process_payment(30001);
 upay_assert(is_array($res), 'HOSTILE-1 Store API process_payment returned array', 'semantic_runtime');
 // HOSTILE-2: the Store API extension source was honored (knet), and the
 // hostile Classic POST source (cc + save_card=1) was NOT consumed.
+// The committed harness verified this by checking transport_route was
+// 'create-customer-unique-token' (set by upay_default_token_success_environment).
+// This proves the Store API path was entered (not Classic fallback).
 upay_assert_eq(
     $state['transport_route'],
     'create-customer-unique-token',
@@ -4535,7 +4654,7 @@ foreach ($vpr_cases as $vpr_name => list($rec, $expected_class, $is_valid)) {
 // We then assert the exact emitted counters (charged_count, classic_fallback,
 // store_api_path, etc.) for each scenario.
 
-function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json, $identity_setup = null) {
+function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json, $identity_setup = null, $retrieve_mode = 'match') {
     $repo_root = realpath(__DIR__ . '/../..');
     $child = str_replace('\\', '/', $repo_root . '/tests/harness/store_api_child.php');
     if (!file_exists($child)) {
@@ -4549,6 +4668,8 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     } else {
         putenv('UPAY_IDENTITY_SETUP');
     }
+    // Residual Correction #22: pass retrieve mode for SP-CARD-MISMATCH.
+    putenv('UPAY_RETRIEVE_MODE=' . $retrieve_mode);
     $cmd = sprintf(
         'php %s --scenario=%s --rest=%s --uri=%s --method=%s 2>&1',
         escapeshellarg($child),
@@ -4562,6 +4683,7 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     exec($cmd, $output_lines, $exit);
     putenv('UPAY_BODY');
     putenv('UPAY_IDENTITY_SETUP');
+    putenv('UPAY_RETRIEVE_MODE');
     $output = implode("\n", $output_lines);
 
     // Residual Correction #18: require exit === 0 before parsing.
@@ -5492,6 +5614,254 @@ upay_assert_eq(strpos($last_charge_body_str, 'monthly') === false, true,
     'SP-SUCCESS-1 hostile Classic subscription plan absent from Charge body', 'semantic_runtime');
 upay_assert_eq((int) ($result_success['order_meta_writes'] ?? 0) > 0, true,
     'SP-SUCCESS-1 order metadata written', 'semantic_runtime');
+
+// ===========================================================================
+// SP-SAVE-CARD: Store API save-card workflow.
+//
+// Store API body: source=cc, card_token=null, save_card=1, one_time
+// Hostile Classic POST: contradictory values (knet, card_token=9999..., save_card=0)
+//
+// Requires:
+//   - result = success
+//   - redirect === exact expected URL
+//   - Create = 1 (generates new token)
+//   - Retrieve = 0 (no selected card)
+//   - Charge = 1
+//   - Create customerUniqueToken: exact string, 8 numeric digits, first digit 1-9
+//   - provider response token === outbound generated candidate
+//   - Charge customerUniqueToken === established candidate
+//   - Charge creditCard absent/null
+//   - hostile Classic values absent
+// ===========================================================================
+
+$save_card_body = wp_json_encode([
+    'extensions' => [
+        'upayments' => [
+            'order_id' => 99999,
+            'upayment_payment_type' => 'cc',
+            'card_token' => null,
+            'save_card' => '1',
+            'upay_subscription_plan' => 'one_time',
+            'upay_subscription_interval' => '0',
+        ],
+    ],
+    'payment_data' => [
+        'order_id' => 99999,
+    ],
+]);
+$result_save_card = upay_run_store_api_child('SP-SAVE-CARD', true, '/wc/store/v1/checkout', 'POST', $save_card_body);
+
+// Path classification.
+upay_assert_eq($result_save_card['path'] ?? null, 'store_api',
+    'SP-SAVE-CARD → path=store_api', 'semantic_runtime');
+// Body consumed by Store API flow.
+upay_assert_eq((int) ($result_save_card['body_consumed_count'] ?? 0), 1,
+    'SP-SAVE-CARD body consumed by Store API flow', 'semantic_runtime');
+// Create = 1 (generates new token for save_card=1).
+upay_assert_eq((int) ($result_save_card['create_token_calls'] ?? 0), 1,
+    'SP-SAVE-CARD CreateToken called exactly once', 'semantic_runtime');
+// Retrieve = 0 (no selected card).
+upay_assert_eq((int) ($result_save_card['retrieve_calls'] ?? 0), 0,
+    'SP-SAVE-CARD RetrieveCards not called (no selected card)', 'semantic_runtime');
+// Charge = 1.
+upay_assert_eq((int) ($result_save_card['charge_calls'] ?? 0), 1,
+    'SP-SAVE-CARD Charge dispatched exactly once', 'semantic_runtime');
+// Final result = success.
+upay_assert_eq($result_save_card['process_payment_result']['result'] ?? null, 'success',
+    'SP-SAVE-CARD final result === success', 'semantic_runtime');
+// Redirect URL exact.
+$save_card_redirect = (string) ($result_save_card['process_payment_result']['redirect'] ?? '');
+upay_assert_eq($save_card_redirect, 'https://example.test/upayments/redirect/SP-SAVE-CARD',
+    'SP-SAVE-CARD redirect URL is exact Charge envelope link', 'semantic_runtime');
+// Create-token response token is a valid 8-digit canonical token.
+$save_card_create_token = (string) ($result_save_card['create_token_response_token'] ?? '');
+upay_assert_eq(preg_match('/^[1-9][0-9]{7}$/', $save_card_create_token), 1,
+    'SP-SAVE-CARD CreateToken response is valid 8-digit canonical token', 'semantic_runtime');
+// Create-token response token === outbound generated candidate (echo seam).
+$save_card_create_bodies = $result_save_card['create_token_bodies'] ?? [];
+$save_card_outbound_candidate = null;
+if (count($save_card_create_bodies) > 0) {
+    $save_card_create_decoded = json_decode((string) $save_card_create_bodies[0], true);
+    if (is_array($save_card_create_decoded) && isset($save_card_create_decoded['customerUniqueToken'])) {
+        $save_card_outbound_candidate = $save_card_create_decoded['customerUniqueToken'];
+    }
+}
+upay_assert_eq($save_card_create_token, $save_card_outbound_candidate,
+    'SP-SAVE-CARD provider response token === outbound generated candidate', 'semantic_runtime');
+// Charge body: customerUniqueToken === established candidate.
+$save_card_charge_body_str = (string) ($result_save_card['last_charge_body'] ?? '');
+$save_card_charge = json_decode($save_card_charge_body_str, true);
+upay_assert_eq(
+    is_array($save_card_charge) && isset($save_card_charge['tokens']['customerUniqueToken'])
+        && $save_card_charge['tokens']['customerUniqueToken'] === $save_card_create_token,
+    true,
+    'SP-SAVE-CARD Charge customerUniqueToken === established candidate', 'semantic_runtime');
+// Charge body: creditCard absent (save_card flow, not selected-card).
+upay_assert_eq(isset($save_card_charge['tokens']['creditCard']), false,
+    'SP-SAVE-CARD Charge creditCard absent (save-card flow)', 'semantic_runtime');
+// paymentGateway.src = cc.
+upay_assert_eq(
+    is_array($save_card_charge) && isset($save_card_charge['paymentGateway']['src'])
+        && $save_card_charge['paymentGateway']['src'] === 'cc',
+    true,
+    'SP-SAVE-CARD paymentGateway.src=cc in Charge body', 'semantic_runtime');
+// Hostile Classic values absent from Charge body.
+upay_assert_eq(strpos($save_card_charge_body_str, '9999999988887777') === false, true,
+    'SP-SAVE-CARD hostile Classic card token absent from Charge body', 'semantic_runtime');
+upay_assert_eq(strpos($save_card_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') === false, true,
+    'SP-SAVE-CARD hostile Classic sentinel absent from Charge body', 'semantic_runtime');
+// No thrown exception.
+upay_assert_eq($result_save_card['process_payment_exception'] ?? 'none', 'none',
+    'SP-SAVE-CARD no thrown exception during process_payment', 'semantic_runtime');
+
+// ===========================================================================
+// SP-SELECTED-CARD: Store API selected-card path with Retrieve membership.
+//
+// Pre-seed: valid identity secret, current scope, current generation,
+//           valid canonical provenance, logged-in user.
+// Store request: source=cc, card_token=strict-string saved card, save_card=0
+// Retrieve must return customerCards WITH the submitted card (membership).
+//
+// Requires:
+//   - Create = 0 (using existing card)
+//   - Retrieve = 1 (verify membership)
+//   - Charge = 1
+//   - outbound Retrieve customerUniqueToken === provenance customer token
+//   - result = success
+//   - Charge: paymentGateway.src=cc, tokens.customerUniqueToken=provenance token,
+//             tokens.creditCard=submitted selected card
+// ===========================================================================
+
+// Build identity/provenance fixture using establish_then_select mode.
+// The child will call get_or_establish_token to create a real token
+// with correct scope/generation, then use it as the selected card.
+$selected_card_setup = [
+    'setup_mode' => 'establish_then_select',
+    'user_id' => 1,
+];
+
+$selected_card_body = wp_json_encode([
+    'extensions' => [
+        'upayments' => [
+            'order_id' => 99999,
+            'upayment_payment_type' => 'cc',
+            'card_token' => '__placeholder__',
+            'save_card' => '0',
+            'upay_subscription_plan' => 'one_time',
+            'upay_subscription_interval' => '0',
+        ],
+    ],
+    'payment_data' => [
+        'order_id' => 99999,
+    ],
+]);
+$result_selected_card = upay_run_store_api_child(
+    'SP-SELECTED-CARD', true, '/wc/store/v1/checkout', 'POST',
+    $selected_card_body, $selected_card_setup, 'match'
+);
+
+// Path classification.
+upay_assert_eq($result_selected_card['path'] ?? null, 'store_api',
+    'SP-SELECTED-CARD → path=store_api', 'semantic_runtime');
+// Create = 0 (using existing card, not generating new token).
+upay_assert_eq((int) ($result_selected_card['create_token_calls'] ?? 0), 0,
+    'SP-SELECTED-CARD CreateToken not called (using existing card)', 'semantic_runtime');
+// Retrieve = 1 (verify membership).
+upay_assert_eq((int) ($result_selected_card['retrieve_calls'] ?? 0), 1,
+    'SP-SELECTED-CARD RetrieveCards called exactly once', 'semantic_runtime');
+// Charge = 1.
+upay_assert_eq((int) ($result_selected_card['charge_calls'] ?? 0), 1,
+    'SP-SELECTED-CARD Charge dispatched exactly once', 'semantic_runtime');
+// Final result = success.
+upay_assert_eq($result_selected_card['process_payment_result']['result'] ?? null, 'success',
+    'SP-SELECTED-CARD final result === success', 'semantic_runtime');
+// Redirect URL exact.
+$selected_redirect = (string) ($result_selected_card['process_payment_result']['redirect'] ?? '');
+upay_assert_eq($selected_redirect, 'https://example.test/upayments/redirect/SP-SELECTED-CARD',
+    'SP-SELECTED-CARD redirect URL is exact Charge envelope link', 'semantic_runtime');
+// The established token is used as the selected card.
+$established_token = (string) ($result_selected_card['established_token'] ?? '');
+upay_assert($established_token !== '', 'SP-SELECTED-CARD established token is non-empty', 'semantic_runtime');
+// outbound Retrieve customerUniqueToken === established token.
+$selected_retrieve_outbound_token = (string) ($result_selected_card['retrieve_outbound_token'] ?? '');
+upay_assert_eq($selected_retrieve_outbound_token, $established_token,
+    'SP-SELECTED-CARD outbound Retrieve customerUniqueToken === established token', 'semantic_runtime');
+// Charge body: customerUniqueToken === established token.
+$selected_charge_body_str = (string) ($result_selected_card['last_charge_body'] ?? '');
+$selected_charge = json_decode($selected_charge_body_str, true);
+upay_assert_eq(
+    is_array($selected_charge) && isset($selected_charge['tokens']['customerUniqueToken'])
+        && $selected_charge['tokens']['customerUniqueToken'] === $established_token,
+    true,
+    'SP-SELECTED-CARD Charge customerUniqueToken === established token', 'semantic_runtime');
+// Charge body: creditCard === established token (the selected card).
+upay_assert_eq(
+    is_array($selected_charge) && isset($selected_charge['tokens']['creditCard'])
+        && $selected_charge['tokens']['creditCard'] === $established_token,
+    true,
+    'SP-SELECTED-CARD Charge creditCard === established token', 'semantic_runtime');
+// paymentGateway.src = cc.
+upay_assert_eq(
+    is_array($selected_charge) && isset($selected_charge['paymentGateway']['src'])
+        && $selected_charge['paymentGateway']['src'] === 'cc',
+    true,
+    'SP-SELECTED-CARD paymentGateway.src=cc in Charge body', 'semantic_runtime');
+// Hostile Classic values absent.
+upay_assert_eq(strpos($selected_charge_body_str, '9999999988887777') === false, true,
+    'SP-SELECTED-CARD hostile Classic card token absent from Charge body', 'semantic_runtime');
+upay_assert_eq(strpos($selected_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') === false, true,
+    'SP-SELECTED-CARD hostile Classic sentinel absent from Charge body', 'semantic_runtime');
+// No thrown exception.
+upay_assert_eq($result_selected_card['process_payment_exception'] ?? 'none', 'none',
+    'SP-SELECTED-CARD no thrown exception during process_payment', 'semantic_runtime');
+
+// ===========================================================================
+// SP-CARD-MISMATCH: Retrieve authorization gate — card not in customerCards.
+//
+// Same valid identity/provenance fixture as SP-SELECTED-CARD but
+// Retrieve returns customerCards WITHOUT the submitted card.
+//
+// Requires:
+//   - Retrieve = 1 (membership check attempted)
+//   - Create = 0
+//   - Charge = 0 (membership fails → no Charge dispatched)
+//   - result = failure
+//   - identity writes = 0
+//   - provenance writes = 0
+// ===========================================================================
+
+$result_card_mismatch = upay_run_store_api_child(
+    'SP-CARD-MISMATCH', true, '/wc/store/v1/checkout', 'POST',
+    $selected_card_body, $selected_card_setup, 'mismatch'
+);
+
+// Path classification.
+upay_assert_eq($result_card_mismatch['path'] ?? null, 'store_api',
+    'SP-CARD-MISMATCH → path=store_api', 'semantic_runtime');
+// Retrieve = 1 (membership check attempted).
+upay_assert_eq((int) ($result_card_mismatch['retrieve_calls'] ?? 0), 1,
+    'SP-CARD-MISMATCH RetrieveCards called exactly once', 'semantic_runtime');
+// Create = 0.
+upay_assert_eq((int) ($result_card_mismatch['create_token_calls'] ?? 0), 0,
+    'SP-CARD-MISMATCH CreateToken not called', 'semantic_runtime');
+// Charge = 0 (membership fails → no Charge dispatched).
+upay_assert_eq((int) ($result_card_mismatch['charge_calls'] ?? 0), 0,
+    'SP-CARD-MISMATCH Charge not dispatched (membership failed)', 'semantic_runtime');
+// Final result = failure.
+upay_assert_eq($result_card_mismatch['process_payment_result']['result'] ?? null, 'failure',
+    'SP-CARD-MISMATCH final result === failure', 'semantic_runtime');
+// identity writes = 0.
+upay_assert_eq((int) ($result_card_mismatch['identity_writes'] ?? 0), 0,
+    'SP-CARD-MISMATCH zero identity writes (no unauthorized mutation)', 'semantic_runtime');
+// provenance writes = 0.
+upay_assert_eq((int) ($result_card_mismatch['provenance_writes'] ?? 0), 0,
+    'SP-CARD-MISMATCH zero provenance writes (no unauthorized mutation)', 'semantic_runtime');
+// usermeta writes = 0.
+upay_assert_eq((int) ($result_card_mismatch['usermeta_writes'] ?? 0), 0,
+    'SP-CARD-MISMATCH zero usermeta writes (no unauthorized mutation)', 'semantic_runtime');
+// No thrown exception.
+upay_assert_eq($result_card_mismatch['process_payment_exception'] ?? 'none', 'none',
+    'SP-CARD-MISMATCH no thrown exception during process_payment', 'semantic_runtime');
 
 
 // ===========================================================================

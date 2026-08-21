@@ -1672,6 +1672,53 @@ record(true, 'H-ST-1 harness initializes', 'harness');
     record(valueA === 'mutated_A', 'B-INDEP3-6 A unchanged after B mutation', 'harness');
     record(valueB === 'mutated_B', 'B-INDEP3-7 B reflects mutation', 'harness');
 }
+{
+    // B-TOAST: Content/Edit toast isolation using real production useState.
+    // Click saved card in content → content shows "Saved card selected",
+    // edit does NOT. Then click saved card in edit → edit shows its own toast,
+    // content state preserved independently.
+    const scene = buildScene(makeSettings({
+        is_logged_in: true,
+        save_card_enabled: true,
+        payment_icons: { knet: 'KNET', cc: 'Credit Card' },
+        saved_cards: [
+            { token: 'TOAST_TOKEN', number: '****9999', brand: 'Visa' },
+        ],
+    }));
+    if (!scene.registered) {
+        record(false, 'B-TOAST-0 registration exists', 'runtime');
+    } else {
+        const contentTree = renderRegistered(scene.registered, scene.mockReact, 'content');
+        const editTree = renderRegistered(scene.registered, scene.mockReact, 'edit');
+        record(contentTree !== null, 'B-TOAST-1 content renders', 'runtime');
+        record(editTree !== null, 'B-TOAST-2 edit renders', 'runtime');
+
+        // Before any click: no toast visible in either
+        const contentTextsBefore = getLeafTextStrings(contentTree);
+        const editTextsBefore = getLeafTextStrings(editTree);
+        record(contentTextsBefore.indexOf('Saved card selected') === -1,
+            'B-TOAST-3 content has no toast before click', 'runtime');
+        record(editTextsBefore.indexOf('Saved card selected') === -1,
+            'B-TOAST-4 edit has no toast before click', 'runtime');
+
+        // Click saved card in content
+        const contentCardBtn = findButtonByLabel(contentTree, '****9999 (Visa)', { mode: 'exact' });
+        if (contentCardBtn === null) {
+            record(false, 'B-TOAST-5 saved card button found in content', 'runtime');
+        } else {
+            contentCardBtn.props.onClick({ preventDefault: function () {}, stopPropagation: function () {} });
+            // Re-render both after click
+            const contentTreeAfter = renderRegistered(scene.registered, scene.mockReact, 'content');
+            const editTreeAfter = renderRegistered(scene.registered, scene.mockReact, 'edit');
+            const contentTextsAfter = getLeafTextStrings(contentTreeAfter);
+            const editTextsAfter = getLeafTextStrings(editTreeAfter);
+            record(contentTextsAfter.indexOf('Saved card selected') !== -1,
+                'B-TOAST-6 content shows toast after saved card click', 'runtime');
+            record(editTextsAfter.indexOf('Saved card selected') === -1,
+                'B-TOAST-7 edit does NOT show toast after content click', 'runtime');
+        }
+    }
+}
 }
 
 // ────────────────────────────────────────────────────────────

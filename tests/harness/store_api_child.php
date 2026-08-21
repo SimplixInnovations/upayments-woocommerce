@@ -226,24 +226,31 @@ $state['input_body']     = is_string($body_value) ? $body_value : '';
 $state['post']           = $_POST;
 $state['transport_log']  = [];
 
-// --- Residual Correction #20: Pre-seed identity/provenance for selected-card
-// scenarios. The parent passes UPAY_IDENTITY_SETUP env var as JSON.
+// --- Pre-seed identity/provenance for selected-card scenarios.
+// UPAY_IDENTITY_SETUP env var as JSON controls behavior:
+//   'setup_mode' = 'establish_then_select': Call get_or_establish_token first,
+//                  then use the established token as the selected card.
+//   'setup_mode' = 'manual' (or absent): Use the provided secret/meta directly.
 $identity_setup = getenv('UPAY_IDENTITY_SETUP');
+$identity_setup_decoded = null;
 if (is_string($identity_setup) && $identity_setup !== '') {
-    $setup = json_decode($identity_setup, true);
-    if (is_array($setup)) {
-        // Pre-seed secret record.
-        if (isset($setup['secret']) && is_array($setup['secret'])) {
-            $state['options']['upayments_token_identity_secret_v2'] = $setup['secret'];
-        }
-        // Pre-seed user meta (identity + provenance).
-        $uid = isset($setup['user_id']) ? (int) $setup['user_id'] : 1;
-        if (isset($setup['meta']) && is_array($setup['meta'])) {
-            foreach ($setup['meta'] as $key => $value) {
-                if (!isset($state['usermeta'][$uid])) $state['usermeta'][$uid] = [];
-                $state['usermeta'][$uid][$key] = [$value];
+    $identity_setup_decoded = json_decode($identity_setup, true);
+    if (is_array($identity_setup_decoded)) {
+        $setup_mode = $identity_setup_decoded['setup_mode'] ?? 'manual';
+        if ($setup_mode === 'manual') {
+            // Manual mode: pre-seed secret and meta directly.
+            if (isset($identity_setup_decoded['secret']) && is_array($identity_setup_decoded['secret'])) {
+                $state['options']['upayments_token_identity_secret_v2'] = $identity_setup_decoded['secret'];
+            }
+            $uid = isset($identity_setup_decoded['user_id']) ? (int) $identity_setup_decoded['user_id'] : 1;
+            if (isset($identity_setup_decoded['meta']) && is_array($identity_setup_decoded['meta'])) {
+                foreach ($identity_setup_decoded['meta'] as $key => $value) {
+                    if (!isset($state['usermeta'][$uid])) $state['usermeta'][$uid] = [];
+                    $state['usermeta'][$uid][$key] = [$value];
+                }
             }
         }
+        // 'establish_then_select' mode is handled AFTER gateway construction below.
     }
 }
 
@@ -300,9 +307,8 @@ $create_token_callback = function($outbound_body) {
     ) {
         $candidate = $decoded['customerUniqueToken'];
     }
-    // Validate canonical 8-digit: leading 1-9, followed by 7 digits.
     if ($candidate !== null && preg_match('/^[1-9][0-9]{7}$/', $candidate) === 1) {
-        return [
+        $response = [
             'transport_ok' => true,
             'http_status'  => 201,
             'curl_errno'   => 0,
@@ -311,8 +317,10 @@ $create_token_callback = function($outbound_body) {
                 'data'   => ['customerUniqueToken' => $candidate],
             ]),
         ];
+        $state =& upay_test_state();
+        $state['create_token_response_token'] = $candidate;
+        return $response;
     }
-    // Malformed or missing candidate — return failure (production fails closed).
     return [
         'transport_ok' => true,
         'http_status'  => 201,
@@ -321,12 +329,11 @@ $create_token_callback = function($outbound_body) {
     ];
 };
 
-// --- Retrieve-cards envelope: dynamically inspect actual outbound request body --
-//
-// Residual Correction #22: Make Retrieve dynamic like Create-token.
-// At dispatch time, decode the actual outbound body, capture the
-// customerUniqueToken, and return scenario-specific customerCards.
-$retrieve_callback = function($outbound_body) use ($submitted_card_token) {
+// --- Retrieve-cards envelope: dynamically inspect actual outbound request body.
+// Use a reference so the callback sees updates from establish_then_select mode.
+$retrieve_mode = getenv('UPAY_RETRIEVE_MODE') ?: 'match';
+$_submitted_card_token_ref = &$submitted_card_token;
+$retrieve_callback = function($outbound_body) use (&$_submitted_card_token_ref, $retrieve_mode) {
     $decoded = json_decode((string) $outbound_body, true);
     $outbound_token = null;
     if (is_array($decoded) && isset($decoded['customerUniqueToken'])
@@ -334,14 +341,30 @@ $retrieve_callback = function($outbound_body) use ($submitted_card_token) {
     ) {
         $outbound_token = $decoded['customerUniqueToken'];
     }
-    // Store the outbound token for parent assertions.
     $state =& upay_test_state();
     $state['retrieve_outbound_token'] = $outbound_token;
-    // Membership: if submitted_card_token matches 8-18 digit regex,
-    // return it in customerCards. Otherwise empty.
-    if ($submitted_card_token !== null
-        && preg_match('/^[0-9]{8,18}$/', $submitted_card_token) === 1
+    if ($_submitted_card_token_ref !== null
+        && preg_match('/^[0-9]{8,18}$/', $_submitted_card_token_ref) === 1
     ) {
+        if ($retrieve_mode === 'mismatch') {
+            return [
+                'transport_ok' => true,
+                'http_status'  => 201,
+                'curl_errno'   => 0,
+                'body'         => wp_json_encode([
+                    'status' => true,
+                    'data'   => [
+                        'customerCards' => [
+                            [
+                                'token'  => '99999999',
+                                'number' => '****9999',
+                                'brand'  => 'Mastercard',
+                            ],
+                        ],
+                    ],
+                ]),
+            ];
+        }
         return [
             'transport_ok' => true,
             'http_status'  => 201,
@@ -351,8 +374,8 @@ $retrieve_callback = function($outbound_body) use ($submitted_card_token) {
                 'data'   => [
                     'customerCards' => [
                         [
-                            'token'  => $submitted_card_token,
-                            'number' => '****' . substr($submitted_card_token, -4),
+                            'token'  => $_submitted_card_token_ref,
+                            'number' => '****' . substr($_submitted_card_token_ref, -4),
                             'brand'  => 'Visa',
                         ],
                     ],
@@ -395,18 +418,55 @@ $state['transport_responses_per_route'] = [
 ];
 
 // --- Build a real WC_Upayments_InputTestable and override the body seam -
-$gateway = new WC_Upayments_InputTestable();
-$gateway->input_body = is_string($body_value) ? $body_value : '';
-// Configure gateway settings for save_card and payment method support.
-$gateway->apiKey = 'test_api_key';
-$gateway->testMode = 'no';
-$gateway->saveCardEnabled = 'yes';
-$gateway->autoDeduction = 'no';
-$gateway->multiMerchant = 'no';
-$gateway->debug = 'no';
-// Also set API key in options for production code that reads from options.
+// Set API key in state options BEFORE constructing gateway (constructor reads it).
 $state['options']['woocommerce_test_api_key'] = 'test_api_key';
 $state['options']['woocommerce_live_api_key'] = '';
+$state['options']['woocommerce_upayments_settings'] = [
+    'enable_save_card' => 'yes',
+    'enable_subscriptions' => 'no',
+    'testmode' => 'no',
+    'test_mode' => 'no',
+    'api_key' => 'test_api_key',
+];
+$gateway = new WC_Upayments_InputTestable();
+$gateway->input_body = is_string($body_value) ? $body_value : '';
+
+// --- establish_then_select mode: Call get_or_establish_token to create a
+// real token with correct scope/generation, then use it as the selected card.
+if (is_array($identity_setup_decoded) && ($identity_setup_decoded['setup_mode'] ?? '') === 'establish_then_select') {
+    $established = \UPayments\Token\CustomerTokenIdentity::get_or_establish_token(
+        $state['current_user_id'],
+        'test_api_key',
+        false,
+        function($candidate) use ($gateway) {
+            $params = wp_json_encode(array('customerUniqueToken' => $candidate));
+            return $gateway->execute_upayments_request('create-customer-unique-token', 'POST', $params);
+        }
+    );
+    if ($established['success']) {
+        $established_token = $established['token'];
+        $state['established_token'] = $established_token;
+        $state['established_scope'] = $established['scope'];
+        $state['established_generation'] = $established['secret_generation_id'];
+        // Rewrite the input body to use the established token as card_token.
+        $body_decoded = json_decode($gateway->input_body, true);
+        if (is_array($body_decoded) && isset($body_decoded['extensions']['upayments'])) {
+            $body_decoded['extensions']['upayments']['card_token'] = $established_token;
+            $gateway->input_body = wp_json_encode($body_decoded);
+            // Re-extract the submitted card token.
+            $submitted_card_token = $established_token;
+        }
+        // Reset transport and mutation counters for the actual process_payment run.
+        $state['create_token_calls'] = 0;
+        $state['retrieve_calls'] = 0;
+        $state['charge_calls'] = 0;
+        $state['transport_log'] = [];
+        $state['usermeta_writes'] = 0;
+        $state['order_meta_writes'] = 0;
+        $state['identity_writes'] = 0;
+        $state['provenance_writes'] = 0;
+    }
+}
 
 // DEBUG: observe is_store_api_checkout_request directly via reflection so
 // the harness can assert WHICH branch production entered. The classifier is
@@ -435,7 +495,7 @@ $final = $GLOBALS['__upay_test_state'];
 $charge_bodies = [];
 $create_token_bodies = [];
 $retrieve_bodies = [];
-$create_token_response_token = null;
+$create_token_response_token = $final['create_token_response_token'] ?? null;
 $retrieve_response_cards = null;
 foreach ($final['transport_log'] as $entry) {
     if ($entry['route'] === 'charge') {
@@ -498,6 +558,7 @@ $out = [
     'payload_decoded'                => $payload,
     'submitted_token_candidate'      => $submitted_token_candidate,
     'submitted_card_token'           => $submitted_card_token,
+    'established_token'              => $final['established_token'] ?? null,
     'create_token_response_token'    => $create_token_response_token,
     'retrieve_response_cards'        => $retrieve_response_cards,
     'retrieve_outbound_token'        => $final['retrieve_outbound_token'] ?? null,

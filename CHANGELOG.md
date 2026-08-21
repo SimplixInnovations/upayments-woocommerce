@@ -20,6 +20,24 @@ Added semantic assertions to HOSTILE section (CreateToken count) and SP-SUCCESS-
 
 Made Retrieve-cards transport stub dynamic like Create-token — now inspects actual outbound request body at dispatch time, captures `customerUniqueToken`, and returns scenario-specific `customerCards`.
 
+#### Store API security workflows (NEW)
+
+Implemented three genuine Store API subprocess scenarios:
+
+- **SP-SAVE-CARD**: Full save-card workflow with dynamic Create-token echo. Validates Create=1, Retrieve=0, Charge=1, result=success, exact redirect, 8-digit canonical token, Charge customerUniqueToken=established token, creditCard absent, paymentGateway.src=cc, hostile Classic exclusion.
+
+- **SP-SELECTED-CARD**: Selected-card path with Retrieve membership validation. Uses `establish_then_select` mode to create real token with correct scope/generation. Validates Create=0, Retrieve=1, Charge=1, result=success, outbound Retrieve customerUniqueToken=established token, Charge creditCard=established token.
+
+- **SP-CARD-MISMATCH**: Authorization gate test where Retrieve returns customerCards WITHOUT the submitted card. Validates Retrieve=1, Create=0, Charge=0, result=failure, zero identity/provenance/usermeta writes (no unauthorized mutation).
+
+#### Infrastructure fixes
+
+- Fixed `wpdb->prepare()` stub to substitute `%s` parameters — was causing `bootstrap_lock_contention` for all lock-based operations.
+- Added `wp_salt()` stub and `$wpdb->prefix` property to bootstrap.
+- Fixed `test_mode` key mismatch in child settings (`testmode` vs `test_mode`).
+- Fixed Retrieve callback to use reference capture for `establish_then_select` mode.
+- Fixed Create-token callback to store response token in state for parent assertions.
+
 #### Production code cleanup
 
 - Removed dead `$save_card_on` variable from Blocks PHP — returns `false` directly.
@@ -30,16 +48,23 @@ Made Retrieve-cards transport stub dynamic like Create-token — now inspects ac
 
 #### Final counts
 
-| Category | PASS |
-|----------|------|
-| semantic_runtime | 560 |
-| helper_unit_runtime | 677 |
-| static_source | 46 |
-| harness_self_test | 139 |
-| lint_tooling | 10 |
-| **Total** | **1432** |
+| Category | PASS | FAIL |
+|----------|------|------|
+| semantic_runtime | 634 | 0 |
+| helper_unit_runtime | 677 | 0 |
+| static_source | 46 | 0 |
+| harness_self_test | 144 | 0 |
+| lint_tooling | 10 | 0 |
+| **Total PHP** | **1511** | **0** |
 
-Semantic runtime gate: **560 ≥ 560** ✓
+| Category | PASS | FAIL |
+|----------|------|------|
+| runtime | 86 | 0 |
+| static | 15 | 0 |
+| harness | 41 | 0 |
+| **Total Blocks** | **142** | **0** |
+
+Semantic runtime gate: **634 ≥ 560** ✓
 
 ### Residual Correction #21 — Honest reclassification, unconditional PASS removal, Blocks hardening
 

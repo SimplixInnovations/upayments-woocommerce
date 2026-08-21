@@ -354,12 +354,21 @@ function do_action($hook, ...$args) {}
 function register_activation_hook($file, $callback) {}
 function register_deactivation_hook($file, $callback) {}
 function site_url() { return 'https://example.test'; }
+function wp_salt($scheme = 'auth') { return 'test_salt_value_for_hmac'; }
 
 class WpdbStub {
     public $usermeta = 'wp_usermeta';
+    public $prefix = 'wp_';
     public $locks = [];
     public function esc_like($s) { return addcslashes($s, '_%\\'); }
-    public function prepare($sql, ...$args) { return $sql; }
+    public function prepare($sql, ...$args) {
+        // Substitute %s with the provided arguments for lock queries to work.
+        $i = 0;
+        $result = preg_replace_callback('/%[sd]/', function() use (&$i, $args) {
+            return isset($args[$i]) ? "'" . $args[$i++] . "'" : "''";
+        }, $sql);
+        return $result;
+    }
     public function query($sql) {
         $state =& upay_test_state();
         if (is_string($sql) && stripos($sql, 'usermeta') !== false) {
@@ -392,7 +401,6 @@ class WpdbStub {
             if (preg_match("/'([^']+)'/", $sql, $m)) {
                 $name = $m[1];
                 $state =& upay_test_state();
-                // Lock-acquire failure injection (race tests).
                 if (!empty($state['force_lock_acquire_failure'])) {
                     return null;
                 }
@@ -401,7 +409,6 @@ class WpdbStub {
                     $state['lock_held_names'][] = $name;
                     return '1';
                 }
-                // Already held — contention.
                 return null;
             }
             return null;
@@ -667,6 +674,21 @@ class FakeWCOrder extends \WC_Order {
 }
 if (!class_exists('WC_Upayments_Testable', false)) {
 class WC_Upayments_Testable extends WC_Upayments {
+    public function get_option($key, $default = false) {
+        // Read from settings array if available, otherwise fall back to property map.
+        $state =& upay_test_state();
+        $settings = $state['options']['woocommerce_upayments_settings'] ?? [];
+        if (isset($settings[$key])) {
+            return $settings[$key];
+        }
+        $map = [
+            'enable_save_card' => $this->saveCardEnabled ?? 'no',
+            'enable_subscriptions' => 'no',
+            'testmode' => $this->testMode ?? 'no',
+            'api_key' => $this->apiKey ?? '',
+        ];
+        return isset($map[$key]) ? $map[$key] : $default;
+    }
     public function execute_upayments_request($route, $method, $body = null) {
         $state =& upay_test_state();
         $state['transport_log'][] = ['route' => $route, 'method' => $method, 'body' => $body];
