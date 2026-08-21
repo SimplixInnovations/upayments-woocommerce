@@ -2849,7 +2849,7 @@ function woocommerceUpaymentsInit() {
             $token_scope = null;
             $token_generation = null;
 
-            // Compute customer.uniqueId using pre-PR16 compatibility behavior.
+            // Compute customer.uniqueId using legacy compatibility behavior.
             $billing_phone_raw = $order->get_billing_phone();
             $customer_unique_id = '';
             if (is_scalar($billing_phone_raw)) {
@@ -3176,7 +3176,7 @@ function woocommerceUpaymentsInit() {
             // === PHASE B: TOKEN / SELECTED-CARD IDENTITY WORK ===
             // Only after Phase A passes.
 
-            // Clear stale PR16 attempt metadata before token work.
+            // Clear stale token-attempt metadata before token work.
             // Preserve legacy/unscoped evidence for Phase 9I migration.
             if (!CustomerTokenIdentity::clear_stale_attempt_metadata($order)) {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');

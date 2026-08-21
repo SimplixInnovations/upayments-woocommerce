@@ -4,6 +4,43 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #22 — Deep reclassification, dynamic Retrieve, production code cleanup
+
+**Parent**: `2ca148ada1583546b1e0c5332a3f2eea8c0dc92a` (the #21 commit)
+
+#### Assertion taxonomy deep audit
+
+Reclassified XCR/XCV/XSUB/XCUS/XFI/XAUTH from `semantic_runtime` to `helper_unit_runtime` or `harness_self_test` — these are direct helper/classifier invocations, not production workflow outcomes.
+
+Strengthened PE section with case-specific behavioral assertions for critical scenarios (PE-11 forbidden quantity, PE-13 non-terminating decimal).
+
+Added semantic assertions to HOSTILE section (CreateToken count) and SP-SUCCESS-1 (order metadata writes).
+
+#### Dynamic Retrieve stub
+
+Made Retrieve-cards transport stub dynamic like Create-token — now inspects actual outbound request body at dispatch time, captures `customerUniqueToken`, and returns scenario-specific `customerCards`.
+
+#### Production code cleanup
+
+- Removed dead `$save_card_on` variable from Blocks PHP — returns `false` directly.
+- Renamed `clear_stale_pr16_attempt_metadata()` → `clear_stale_attempt_metadata()` (no PR numbers in API).
+- Removed PR16 comments from production code — replaced with durable terminology.
+- Fixed `normalize_store_api_route()` docblock to match actual return type.
+- Fixed Blocks provider-card token validation: `is_scalar` → `is_string` for security identifiers.
+
+#### Final counts
+
+| Category | PASS |
+|----------|------|
+| semantic_runtime | 560 |
+| helper_unit_runtime | 677 |
+| static_source | 46 |
+| harness_self_test | 139 |
+| lint_tooling | 10 |
+| **Total** | **1432** |
+
+Semantic runtime gate: **560 ≥ 560** ✓
+
 ### Residual Correction #21 — Honest reclassification, unconditional PASS removal, Blocks hardening
 
 **Parent**: `a6b1854d1b6607599b903b7fdcf3a2179c826679` (the #20 commit)

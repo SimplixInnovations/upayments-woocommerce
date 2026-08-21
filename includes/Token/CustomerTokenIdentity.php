@@ -2188,7 +2188,7 @@ class CustomerTokenIdentity {
     }
 
     // ────────────────────────────────────────────────────────
-    // STALE PR16 CLEANUP (safe version)
+    // STALE TOKEN-ATTEMPT CLEANUP (safe version)
     // ────────────────────────────────────────────────────────
 
     public static function clear_stale_attempt_metadata($order) {
@@ -2265,7 +2265,7 @@ class CustomerTokenIdentity {
             return true; // different generation — preserve
         }
 
-        // Fully valid current-generation PR16 snapshot — safe to clear.
+        // Fully valid current-generation snapshot — safe to clear.
         try {
             foreach ($keys as $key) {
                 $order->delete_meta_data($key);

@@ -1992,6 +1992,15 @@ foreach ($pe_cases as $name => $case) {
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
     upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'semantic_runtime');
+    // Case-specific behavioral assertions for critical PE scenarios.
+    if ($name === 'PE-13') {
+        // 10.00 / 3 = impossible exact representation
+        upay_assert_eq($state['charge_calls'], 0, 'PE-13 Charge=0 (non-terminating decimal)', 'semantic_runtime');
+        upay_assert_eq($state['create_token_calls'], 0, 'PE-13 Create=0', 'semantic_runtime');
+    } elseif ($name === 'PE-11') {
+        // quantity 10,000,000 = forbidden
+        upay_assert_eq($state['charge_calls'], 0, 'PE-11 Charge=0 (forbidden quantity)', 'semantic_runtime');
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2159,6 +2168,7 @@ upay_assert(
     'HOSTILE-3 Store API did not consume hostile $_POST save_card=1',
     'semantic_runtime'
 );
+upay_assert_eq($state['create_token_calls'], 0, 'HOSTILE-4 no CreateToken (save_card=0 in Store body)', 'semantic_runtime');
 
 // ---------------------------------------------------------------------------
 // SECTION PARSE: Payment-source matrix through real checkout
@@ -2629,7 +2639,7 @@ foreach ($charge_response_shapes as $name => $shape) {
         $actual,
         $expected,
         $name . ' production redirect validator returns expected link or null for shape=' . substr(json_encode($shape['shape']), 0, 80),
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 }
 
@@ -2664,7 +2674,7 @@ foreach ($cv_scenarios as $name => $scenario) {
         $got,
         $scenario['expect_store_api'],
         $name . ' classify_checkout_request_context rest=' . var_export($scenario['is_rest'], true) . ' uri=' . $scenario['uri'] . ' method=' . $scenario['method'] . ' => Store API?=' . var_export($scenario['expect_store_api'], true),
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 }
 
@@ -2689,7 +2699,7 @@ foreach ($sub_states as $name => $state_def) {
         $got,
         $state_def['expect'],
         $name . ' is_valid_subscription_plan(' . var_export($state_def['plan'], true) . ') => ' . var_export($state_def['expect'], true),
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 }
 
@@ -2716,7 +2726,7 @@ foreach ($customer_constraints as $name => $cc) {
             $r,
             $cc['expect'],
             $name . ' canonicalize_provider_decimal_string(' . var_export($cc['value'], true) . ') => ' . var_export($cc['expect'], true),
-            'semantic_runtime'
+            'helper_unit_runtime'
         );
     } elseif ($cc['parser'] === 'name_len') {
         $r = strlen($cc['value']) <= 50;
@@ -2724,7 +2734,7 @@ foreach ($customer_constraints as $name => $cc) {
             $r,
             $cc['expect'],
             $name . ' customer.name length<=50 (' . strlen($cc['value']) . ' chars) => ' . var_export($cc['expect'], true),
-            'semantic_runtime'
+            'helper_unit_runtime'
         );
     }
 }
@@ -2749,7 +2759,7 @@ foreach ($field_lengths as $name => $field) {
         $r,
         $field[1],
         $name . ' get_max_length_for_sentinel(' . $field[0] . ') exact = ' . $field[1],
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 }
 
@@ -2774,7 +2784,7 @@ foreach ($auth_scenarios as $name => $scenario) {
         $got,
         $scenario['user_id'],
         $name . ' current_user_id observed (' . $scenario['label'] . ') = ' . $scenario['user_id'],
-        'semantic_runtime'
+        'harness_self_test'
     );
 }
 
@@ -5480,6 +5490,8 @@ upay_assert_eq(strpos($last_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') =
     'SP-SUCCESS-1 hostile Classic sentinel absent from Charge body', 'semantic_runtime');
 upay_assert_eq(strpos($last_charge_body_str, 'monthly') === false, true,
     'SP-SUCCESS-1 hostile Classic subscription plan absent from Charge body', 'semantic_runtime');
+upay_assert_eq((int) ($result_success['order_meta_writes'] ?? 0) > 0, true,
+    'SP-SUCCESS-1 order metadata written', 'semantic_runtime');
 
 
 // ===========================================================================

@@ -321,37 +321,52 @@ $create_token_callback = function($outbound_body) {
     ];
 };
 
-// --- Retrieve-cards envelope: use data.customerCards (NOT data.cards) ---
+// --- Retrieve-cards envelope: dynamically inspect actual outbound request body --
 //
-// Residual Correction #18 returned data.cards (empty array). Production's
-// getSavedCards() (UPayments.php:4343) explicitly requires
-//     array_key_exists('customerCards', $result['data'])
-// and rejects absent or non-array customerCards. Residual Correction
-// #19 uses the production key. Membership is computed by exact-string
-// comparison against the submitted card_token (when present):
-//   - If submitted_card_token is a non-empty string AND it satisfies
-//     the 8-18 digit regex, return customerCards = [{token: ...}];
-//     production's membership check then succeeds.
-//   - If submitted_card_token is null/empty/non-numeric, return
-//     customerCards = []; production's membership check fails closed
-//     with no provider mutation.
-$retrieve_body = ['status' => true, 'data' => ['customerCards' => []]];
-if ($submitted_card_token !== null
-    && preg_match('/^[0-9]{8,18}$/', $submitted_card_token) === 1
-) {
-    $retrieve_body = [
-        'status' => true,
-        'data'   => [
-            'customerCards' => [
-                [
-                    'token'  => $submitted_card_token,
-                    'number' => '****' . substr($submitted_card_token, -4),
-                    'brand'  => 'Visa',
+// Residual Correction #22: Make Retrieve dynamic like Create-token.
+// At dispatch time, decode the actual outbound body, capture the
+// customerUniqueToken, and return scenario-specific customerCards.
+$retrieve_callback = function($outbound_body) use ($submitted_card_token) {
+    $decoded = json_decode((string) $outbound_body, true);
+    $outbound_token = null;
+    if (is_array($decoded) && isset($decoded['customerUniqueToken'])
+        && is_string($decoded['customerUniqueToken'])
+    ) {
+        $outbound_token = $decoded['customerUniqueToken'];
+    }
+    // Store the outbound token for parent assertions.
+    $state =& upay_test_state();
+    $state['retrieve_outbound_token'] = $outbound_token;
+    // Membership: if submitted_card_token matches 8-18 digit regex,
+    // return it in customerCards. Otherwise empty.
+    if ($submitted_card_token !== null
+        && preg_match('/^[0-9]{8,18}$/', $submitted_card_token) === 1
+    ) {
+        return [
+            'transport_ok' => true,
+            'http_status'  => 201,
+            'curl_errno'   => 0,
+            'body'         => wp_json_encode([
+                'status' => true,
+                'data'   => [
+                    'customerCards' => [
+                        [
+                            'token'  => $submitted_card_token,
+                            'number' => '****' . substr($submitted_card_token, -4),
+                            'brand'  => 'Visa',
+                        ],
+                    ],
                 ],
-            ],
-        ],
+            ]),
+        ];
+    }
+    return [
+        'transport_ok' => true,
+        'http_status'  => 201,
+        'curl_errno'   => 0,
+        'body'         => wp_json_encode(['status' => true, 'data' => ['customerCards' => []]]),
     ];
-}
+};
 
 // --- check-payment-button-status envelope -------------------------------
 $check_status_body = wp_json_encode([
@@ -375,12 +390,7 @@ $state['transport_responses_per_route'] = [
         'body'         => $check_status_body,
     ],
     'create-customer-unique-token' => $create_token_callback,
-    'retrieve-customer-cards' => [
-        'transport_ok' => true,
-        'http_status'  => 201,
-        'curl_errno'   => 0,
-        'body'         => wp_json_encode($retrieve_body),
-    ],
+    'retrieve-customer-cards' => $retrieve_callback,
     'charge' => $charge_envelope,
 ];
 
@@ -490,6 +500,7 @@ $out = [
     'submitted_card_token'           => $submitted_card_token,
     'create_token_response_token'    => $create_token_response_token,
     'retrieve_response_cards'        => $retrieve_response_cards,
+    'retrieve_outbound_token'        => $final['retrieve_outbound_token'] ?? null,
     'process_payment_result'         => $result,
     'process_payment_exception'      => $process_exception,
     'selected_channel'               => $selected_channel,

@@ -75,7 +75,6 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
         $is_logged_in = false;
         $user_id = null;
         $product_details = null;
-        $save_card_on = false;
 
         // Safety check: ensure the gateway instance exists before calling methods
         $save_card_enabled = $this->gateway ? ($this->gateway->get_option('enable_save_card') === 'yes') : false;
@@ -171,8 +170,6 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
                 }
             }
 
-            $save_card_on = false;
-
         }
         if ( WC()->cart ) {
             foreach ( WC()->cart->get_cart() as $cart_item_key => $cart_item ) {
@@ -203,7 +200,7 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
             'saved_cards'               => $saved_cards,
             'is_logged_in'              => $is_logged_in,
             'save_card_enabled'         => $save_card_enabled,
-            'save_card_toggle_on'       => $save_card_on,
+            'save_card_toggle_on'       => false,
             'cart_total'                => $total,
             'currency_display'          => $currency_display,
             'is_subscription_enabled'   => $is_subscription_enabled,
