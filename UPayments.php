@@ -549,7 +549,7 @@ function woocommerceUpaymentsInit() {
          * and WordPress installed in a subdirectory (e.g. /shop/wp-json/wc/store/v1/checkout).
          *
          * @param string $uri Raw REQUEST_URI.
-         * @return string|null Canonical route (e.g. "/wc/store/v1/checkout") or null.
+         * @return string Canonical route (e.g. "/wc/store/v1/checkout") or empty string for invalid input.
          */
         private static function normalize_store_api_route($uri) {
             if (!is_string($uri) || $uri === '') {
@@ -3178,7 +3178,7 @@ function woocommerceUpaymentsInit() {
 
             // Clear stale PR16 attempt metadata before token work.
             // Preserve legacy/unscoped evidence for Phase 9I migration.
-            if (!CustomerTokenIdentity::clear_stale_pr16_attempt_metadata($order)) {
+            if (!CustomerTokenIdentity::clear_stale_attempt_metadata($order)) {
                 wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }

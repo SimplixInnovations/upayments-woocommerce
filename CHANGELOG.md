@@ -4,6 +4,42 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #21 — Honest reclassification, unconditional PASS removal, Blocks hardening
+
+**Parent**: `a6b1854d1b6607599b903b7fdcf3a2179c826679` (the #20 commit)
+
+#### Assertion taxonomy corrected
+
+Reclassified PE/OW/WL/MM sections from `helper_unit_runtime` to `semantic_runtime` — these exercise real `process_payment()` and observe actual production workflow outcomes (result, provider counters, mutation counts).
+
+Removed 9 unconditional `static_assert(true === true, ...)` placeholders across XSI/XREG/XSEC/XPROV/XHIST/XCLK/XDB/XLIM/XHAZ. These were documentation-only items that incremented PASS without testing anything. They are now retained as comments only.
+
+Cleaned assertion guard: removed contradictory XREG exclusion pattern.
+
+#### Final counts
+
+| Category | PASS |
+|----------|------|
+| semantic_runtime | 597 |
+| helper_unit_runtime | 640 |
+| static_source | 46 |
+| harness_self_test | 134 |
+| lint_tooling | 10 |
+| **Total** | **1427** |
+
+Semantic runtime gate: **597 ≥ 560** ✓ (target ≥600)
+
+#### Production code changes
+
+- `class-wc-gateway-upayments-blocks.php`: Fixed provider card-token validation to use `is_string()` instead of `is_scalar()` for security identifiers. Number/brand display fields retain `is_scalar()` normalization.
+- `CustomerTokenIdentity.php` / `UPayments.php`: Renamed `clear_stale_pr16_attempt_metadata()` to `clear_stale_attempt_metadata()` — no PR numbers in runtime API names.
+- `UPayments.php`: Fixed `normalize_store_api_route()` docblock to match actual return type (`string`, not `string|null`).
+
+#### Blocks harness
+
+- Removed monkey-patched `renderComponent` seam in B-INDEP3 — now uses props to identify test instances.
+- Removed vacuous H-ST-27b assertion (two equal primitives cannot demonstrate distinct storage cells).
+
 ### Residual Correction #19 — Per-instance mock React, exact-label enforcement, store_api_child production-shape hardening, genuine successful Store API end-to-end
 
 This is a fast-forward child of `40d405610cb6041e555ac4a045a3ffea027b2424` (the #18 commit). The parent rebuilt the Blocks harness and the store_api_child fixtures but shipped four contract defects that the reviewer rejected:

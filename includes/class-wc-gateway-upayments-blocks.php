@@ -160,9 +160,9 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
                     $sanitized = array();
                     foreach ($savedCards['data'] as $card) {
                         if (!is_array($card)) continue;
-                        if (!isset($card['token']) || !is_scalar($card['token']) || (string) $card['token'] === '') continue;
+                        if (!isset($card['token']) || !is_string($card['token']) || $card['token'] === '') continue;
                         $sanitized[] = array(
-                            'token' => (string) $card['token'],
+                            'token' => $card['token'],
                             'number' => isset($card['number']) && is_scalar($card['number']) ? (string) $card['number'] : '',
                             'brand' => isset($card['brand']) && is_scalar($card['brand']) ? (string) $card['brand'] : '',
                         );

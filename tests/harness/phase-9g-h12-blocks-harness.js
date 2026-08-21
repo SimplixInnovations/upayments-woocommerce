@@ -728,8 +728,6 @@ record(true, 'H-ST-1 harness initializes', 'harness');
         'H-ST-27 content slot 0 starts at initial', 'harness');
     record(slotEditValue === 'initial',
         'H-ST-28 edit slot 0 starts at initial', 'harness');
-    record(slotContentValue !== slotEditValue || m.getInstanceCount() === 2,
-        'H-ST-27b content and edit are stored in distinct slot cells', 'harness');
 }
 {
     // H-ST-29: same componentFn + same instanceKey across re-renders reuses the SAME slot.
@@ -1646,41 +1644,31 @@ record(true, 'H-ST-1 harness initializes', 'harness');
 }
 {
     // B-INDEP3: A/B setter isolation self-test — same function F, two instances.
-    // Mutate A's state via setter, rerender both, prove B unchanged.
+    // Use props to identify instance, not monkey-patching.
     const m = createMockReact();
     let setterA = null;
     let setterB = null;
     let valueA = null;
     let valueB = null;
-    const F = function () {
+    const F = function (props) {
         const s = m.useState('initial');
-        // Capture setter and value based on current instance key
-        if (m._currentKey === 'A') { setterA = s[1]; valueA = s[0]; }
-        if (m._currentKey === 'B') { setterB = s[1]; valueB = s[0]; }
+        if (props.id === 'A') { setterA = s[1]; valueA = s[0]; }
+        if (props.id === 'B') { setterB = s[1]; valueB = s[0]; }
         return null;
     };
-    // Monkey-patch to expose current key during render
-    const origRender = m.renderComponent;
-    m.renderComponent = function (fn, key, props) {
-        m._currentKey = key;
-        return origRender.call(m, fn, key, props);
-    };
-    m.renderComponent(F, 'A', {});
-    m.renderComponent(F, 'B', {});
+    m.renderComponent(F, 'A', { id: 'A' });
+    m.renderComponent(F, 'B', { id: 'B' });
     record(m.getInstanceCount() === 2, 'B-INDEP3-1 two instances of same function', 'harness');
     record(valueA === 'initial', 'B-INDEP3-2 A starts at initial', 'harness');
     record(valueB === 'initial', 'B-INDEP3-3 B starts at initial', 'harness');
-    // Mutate A only
     setterA('mutated_A');
-    // Rerender both
-    m.renderComponent(F, 'A', {});
-    m.renderComponent(F, 'B', {});
+    m.renderComponent(F, 'A', { id: 'A' });
+    m.renderComponent(F, 'B', { id: 'B' });
     record(valueA === 'mutated_A', 'B-INDEP3-4 A reflects mutation', 'harness');
     record(valueB === 'initial', 'B-INDEP3-5 B unchanged after A mutation', 'harness');
-    // Mutate B only
     setterB('mutated_B');
-    m.renderComponent(F, 'A', {});
-    m.renderComponent(F, 'B', {});
+    m.renderComponent(F, 'A', { id: 'A' });
+    m.renderComponent(F, 'B', { id: 'B' });
     record(valueA === 'mutated_A', 'B-INDEP3-6 A unchanged after B mutation', 'harness');
     record(valueB === 'mutated_B', 'B-INDEP3-7 B reflects mutation', 'harness');
 }

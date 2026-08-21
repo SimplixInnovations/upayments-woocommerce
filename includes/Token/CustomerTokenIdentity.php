@@ -2191,7 +2191,7 @@ class CustomerTokenIdentity {
     // STALE PR16 CLEANUP (safe version)
     // ────────────────────────────────────────────────────────
 
-    public static function clear_stale_pr16_attempt_metadata($order) {
+    public static function clear_stale_attempt_metadata($order) {
         if (!$order) {
             return false;
         }

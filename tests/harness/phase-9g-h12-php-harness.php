@@ -127,13 +127,11 @@ function _upay_dispatch($condition, $description, $kind) {
                 }
             }
         }
-        if (preg_match('/^(XART|XHAZ|XDB|XLIM|XCFG|XMETA|XEND|XREG)-/', $description)) {
-            if (!preg_match('/^XREG-/', $description)) {
-                $fail++;
-                $_fail_semantic_runtime++;
-                $log[] = "FAIL: [guard] semantic_runtime category wrong for $description (should be static_source / lint_tooling)";
-                return;
-            }
+        if (preg_match('/^(XART|XHAZ|XDB|XLIM|XCFG|XMETA|XEND)-/', $description)) {
+            $fail++;
+            $_fail_semantic_runtime++;
+            $log[] = "FAIL: [guard] semantic_runtime category wrong for $description (should be static_source / lint_tooling)";
+            return;
         }
     }
 
@@ -1993,7 +1991,7 @@ foreach ($pe_cases as $name => $case) {
     $gateway = upay_make_gateway();
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
-    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'helper_unit_runtime');
+    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'semantic_runtime');
 }
 
 // ---------------------------------------------------------------------------
@@ -2016,13 +2014,13 @@ $state['transport_response'] = [
 $order = upay_make_order(9001, '5.00');
 $gateway = upay_make_gateway();
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
-upay_assert(is_array($res), 'OW-1 ordinary non-Whitelabel process_payment returned array', 'helper_unit_runtime');
-upay_assert_eq($state['create_token_calls'], 0, 'OW-2 ordinary checkout: zero Create Token calls', 'helper_unit_runtime');
-upay_assert_eq($state['retrieve_calls'], 0, 'OW-3 ordinary checkout: zero Retrieve calls', 'helper_unit_runtime');
-upay_assert_eq($state['identity_writes'], 0, 'OW-4 ordinary checkout: zero identity writes', 'helper_unit_runtime');
-upay_assert_eq($state['provenance_writes'], 0, 'OW-5 ordinary checkout: zero provenance writes', 'helper_unit_runtime');
-upay_assert_eq($state['secret_creates'], 0, 'OW-6 ordinary checkout: zero secret creates', 'helper_unit_runtime');
-upay_assert_eq($state['charge_calls'], 0, 'OW-7 ordinary checkout: zero Charge calls (non-Whitelabel skips Charge)', 'helper_unit_runtime');
+upay_assert(is_array($res), 'OW-1 ordinary non-Whitelabel process_payment returned array', 'semantic_runtime');
+upay_assert_eq($state['create_token_calls'], 0, 'OW-2 ordinary checkout: zero Create Token calls', 'semantic_runtime');
+upay_assert_eq($state['retrieve_calls'], 0, 'OW-3 ordinary checkout: zero Retrieve calls', 'semantic_runtime');
+upay_assert_eq($state['identity_writes'], 0, 'OW-4 ordinary checkout: zero identity writes', 'semantic_runtime');
+upay_assert_eq($state['provenance_writes'], 0, 'OW-5 ordinary checkout: zero provenance writes', 'semantic_runtime');
+upay_assert_eq($state['secret_creates'], 0, 'OW-6 ordinary checkout: zero secret creates', 'semantic_runtime');
+upay_assert_eq($state['charge_calls'], 0, 'OW-7 ordinary checkout: zero Charge calls (non-Whitelabel skips Charge)', 'semantic_runtime');
 
 // ---------------------------------------------------------------------------
 // SECTION WL: Whitelabel methods individually
@@ -2058,7 +2056,7 @@ foreach ($wl_scenarios as $name => $scenario) {
     $order = upay_make_order(10000 + $_pass_semantic_runtime + $_pass_static_source, '5.00');
     $gateway = upay_make_gateway();
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
-    upay_assert(is_array($res), $name . ' Whitelabel process_payment returned array', 'helper_unit_runtime');
+    upay_assert(is_array($res), $name . ' Whitelabel process_payment returned array', 'semantic_runtime');
 }
 
 // ---------------------------------------------------------------------------
@@ -2096,12 +2094,12 @@ foreach ($mm_scenarios as $name => $scenario) {
     $order = upay_make_order(20000 + $_pass_semantic_runtime + $_pass_static_source, '5.00');
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
-    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $expected_outcome . ')', 'helper_unit_runtime');
+    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $expected_outcome . ')', 'semantic_runtime');
     if ($expected_outcome === 'invalid_zero' || $expected_outcome === 'invalid_type' || $expected_outcome === 'invalid_iban' || strpos($expected_outcome, 'invalid') === 0) {
-        upay_assert_eq($state['create_token_calls'], 0, $name . ' invalid MM: zero Create Token', 'helper_unit_runtime');
-        upay_assert_eq($state['retrieve_calls'], 0, $name . ' invalid MM: zero Retrieve', 'helper_unit_runtime');
-        upay_assert_eq($state['charge_calls'], 0, $name . ' invalid MM: zero Charge', 'helper_unit_runtime');
-        upay_assert_eq($state['provenance_writes'], 0, $name . ' invalid MM: zero provenance writes', 'helper_unit_runtime');
+        upay_assert_eq($state['create_token_calls'], 0, $name . ' invalid MM: zero Create Token', 'semantic_runtime');
+        upay_assert_eq($state['retrieve_calls'], 0, $name . ' invalid MM: zero Retrieve', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 0, $name . ' invalid MM: zero Charge', 'semantic_runtime');
+        upay_assert_eq($state['provenance_writes'], 0, $name . ' invalid MM: zero provenance writes', 'semantic_runtime');
     }
 }
 
@@ -2568,9 +2566,8 @@ $xs_names = [
 
 $xs_pending = 0;
 foreach ($xs_names as $n => $d) {
-    // Each item is a manifest assertion that the production contract exists.
-    // Residual Correction #15: these were reclassified to static_source.
-    static_assert(true === true, $n . ' documented contract: ' . $d);
+    // Documented contract item — not an executable assertion.
+    // $n . ': ' . $d
 }
 
 // ---------------------------------------------------------------------------
@@ -2877,7 +2874,8 @@ $regressions = [
     'XREG-37' => 'validate_provider_nonnegative_decimal accepts 0',
 ];
 foreach ($regressions as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented regression item — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $security_neg = [
@@ -2893,7 +2891,8 @@ $security_neg = [
     'XSEC-10' => 'No public torn-read scope/generation helper',
 ];
 foreach ($security_neg as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented security contract item — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $prov_paths = [
@@ -2919,7 +2918,8 @@ $prov_paths = [
     'XPROV-20' => 'logging limiter caps log entries',
 ];
 foreach ($prov_paths as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented provider path item — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $artifact_paths = [
@@ -2960,7 +2960,8 @@ $hist_contract = [
     'XHIST-13' => 'malformed/missing secret',
 ];
 foreach ($hist_contract as $name => $desc) {
-    static_assert(true === true, $name . ' documented Phase 9I blocker: ' . $desc);
+    // Documented Phase 9I blocker — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $clock_free = [
@@ -2973,7 +2974,8 @@ $clock_free = [
     'XCLK-7' => 'Retrieve cards does not call time()',
 ];
 foreach ($clock_free as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented clock-free contract — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $db_free = [
@@ -2984,7 +2986,8 @@ $db_free = [
     'XDB-5' => 'Charge response validated against in-memory',
 ];
 foreach ($db_free as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented DB-free contract — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $limit_boundaries = [
@@ -3008,7 +3011,8 @@ $limit_boundaries = [
     'XLIM-18' => 'language exactly 2 chars',
 ];
 foreach ($limit_boundaries as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented limit boundary — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $hardening = [
@@ -3023,7 +3027,8 @@ $hardening = [
     'XHAZ-9' => 'No preg_replace with /e',
 ];
 foreach ($hardening as $name => $desc) {
-    static_assert(true === true, $name . ' documented contract: ' . $desc);
+    // Documented hardening item — not an executable assertion.
+    // $name . ': ' . $desc
 }
 
 $end_diversity = [
