@@ -496,9 +496,14 @@ if (function_exists('woocommerceUpaymentsInit')) {
     woocommerceUpaymentsInit();
 }
 
-if (!class_exists('WC_Upayments')) {
-    fwrite(STDERR, "FATAL: WC_Upayments class missing\n");
-    exit(1);
+if (!class_exists('Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType', false)) {
+    eval('namespace Automattic\\WooCommerce\\Blocks\\Payments\\Integrations; class AbstractPaymentMethodType {
+        protected $name = "";
+        protected $settings = [];
+        public function get_name() { return $this->name; }
+        public function initialize() {}
+        public function get_payment_method_data() { return []; }
+    }');
 }
 
 if (!class_exists('WC_Upayments')) {

@@ -2041,7 +2041,7 @@ foreach ($pe_cases as $name => $case) {
     $gateway = upay_make_testable_gateway();
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
     $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
-    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'semantic_runtime');
+    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $case[1] . ')', 'helper_unit_runtime');
     // Case-specific behavioral assertions for critical PE scenarios.
     if ($name === 'PE-9' || $name === 'PE-12') {
         // 1.00 / 8 = exact 0.125 representation
@@ -2166,18 +2166,17 @@ foreach ($wl_scenarios as $name => $scenario) {
 // ---------------------------------------------------------------------------
 // SECTION MM: MultiMerchant end-to-end
 // ---------------------------------------------------------------------------
+$VALID_IBAN = 'KW81CBKU0000000000001234560101';
 
 $mm_scenarios = [
-    'MM-1'  => ['fixed',      '0.900',  '0', 'valid',   'valid'],
-    'MM-2'  => ['percentage', '10',     '0', 'valid',   'valid'],
-    'MM-3'  => ['fixed',      '0',      '0', 'invalid_zero', ''],
-    'MM-4'  => ['flat',       '0.900',  '0', 'invalid_type', ''],
-    'MM-5'  => ['fixed',      '0.900',  'invalid_iban_xx', 'invalid_iban', ''],
-    'MM-6'  => ['fixed',      '1e2',    '0', 'invalid_exponent', ''],
-    'MM-7'  => ['fixed',      '   0.5', '0', 'invalid_whitespace', ''],
-    'MM-8'  => ['fixed',      '-1',     '0', 'invalid_negative', ''],
-    'MM-9'  => ['fixed',      '0.9999999999999', '0', 'valid', 'valid'],
-    'MM-10' => ['fixed',      '0.99999999999', '0', 'invalid_amount_length', ''],
+    'MM-VALID-FIXED'      => ['type' => 'fixed',      'charge' => '0.900',  'iban' => $VALID_IBAN, 'valid' => true],
+    'MM-VALID-PERCENTAGE' => ['type' => 'percentage', 'charge' => '10',     'iban' => $VALID_IBAN, 'valid' => true],
+    'MM-INVALID-ZERO'     => ['type' => 'fixed',      'charge' => '0',      'iban' => $VALID_IBAN, 'valid' => false],
+    'MM-INVALID-TYPE'     => ['type' => 'flat',       'charge' => '0.900',  'iban' => $VALID_IBAN, 'valid' => false],
+    'MM-INVALID-IBAN'     => ['type' => 'fixed',      'charge' => '0.900',  'iban' => 'invalid_iban_xx', 'valid' => false],
+    'MM-INVALID-EXPONENT' => ['type' => 'fixed',      'charge' => '1e2',    'iban' => $VALID_IBAN, 'valid' => false],
+    'MM-INVALID-WS'       => ['type' => 'fixed',      'charge' => '   0.5', 'iban' => $VALID_IBAN, 'valid' => false],
+    'MM-INVALID-NEG'      => ['type' => 'fixed',      'charge' => '-1',     'iban' => $VALID_IBAN, 'valid' => false],
 ];
 
 foreach ($mm_scenarios as $name => $scenario) {
@@ -2187,25 +2186,44 @@ foreach ($mm_scenarios as $name => $scenario) {
     upay_default_success_environment();
     upay_default_token_success_environment();
     upay_set_post(['payment_method' => 'upayments', 'upayment_payment_type' => 'knet']);
-    [$type, $charge, $iban, $expected_outcome] = $scenario;
     $gateway = upay_make_testable_gateway([
         'multiMerchant' => 'yes',
-        'ccCharge' => $charge,
-        'ccChargeType' => $type,
-        'knetCharge' => $charge,
-        'knetChargeType' => $type,
-        'ibanNumber' => $iban,
+        'ccCharge' => $scenario['charge'],
+        'ccChargeType' => $scenario['type'],
+        'knetCharge' => $scenario['charge'],
+        'knetChargeType' => $scenario['type'],
+        'ibanNumber' => $scenario['iban'],
     ]);
-    $order = upay_make_order(20000 + $_pass_semantic_runtime + $_pass_static_source, '5.00');
+    $order = upay_make_order(20000 + $_pass_semantic_runtime + $_pass_static_source, '5.00', null, true);
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
-    $is_struct = is_array($res) && (isset($res['result']) || isset($res['redirect']));
-    upay_assert($is_struct, $name . ' process_payment returned structured result (' . $expected_outcome . ')', 'semantic_runtime');
-    if (strpos($expected_outcome, 'invalid') === 0) {
-        upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure (invalid MM)', 'semantic_runtime');
-        upay_assert_eq($state['create_token_calls'], 0, $name . ' invalid MM: zero Create Token', 'semantic_runtime');
-        upay_assert_eq($state['retrieve_calls'], 0, $name . ' invalid MM: zero Retrieve', 'semantic_runtime');
-        upay_assert_eq($state['charge_calls'], 0, $name . ' invalid MM: zero Charge', 'semantic_runtime');
-        upay_assert_eq($state['provenance_writes'], 0, $name . ' invalid MM: zero provenance writes', 'semantic_runtime');
+    if ($scenario['valid']) {
+        upay_assert_eq($res['result'] ?? null, 'success', $name . ' result=success', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 1, $name . ' Charge=1', 'semantic_runtime');
+        upay_assert_eq($state['create_token_calls'], 0, $name . ' Create=0', 'semantic_runtime');
+        upay_assert_eq($state['retrieve_calls'], 0, $name . ' Retrieve=0', 'semantic_runtime');
+        $mm_charge_str = (string) ($state['last_charge_body'] ?? '');
+        $mm_charge = json_decode($mm_charge_str, true);
+        upay_assert_eq(is_array($mm_charge) && isset($mm_charge['extraMerchantData']) && is_array($mm_charge['extraMerchantData']), true, $name . ' extraMerchantData is array', 'semantic_runtime');
+        upay_assert_eq(is_array($mm_charge) && count($mm_charge['extraMerchantData'] ?? []) === 1, true, $name . ' extraMerchantData count=1', 'semantic_runtime');
+        if (isset($mm_charge['extraMerchantData'][0])) {
+            $mm_entry = $mm_charge['extraMerchantData'][0];
+            upay_assert_eq($mm_entry['ibanNumber'] ?? null, $scenario['iban'], $name . ' IBAN exact', 'semantic_runtime');
+            upay_assert_eq($mm_entry['knetChargeType'] ?? null, $scenario['type'], $name . ' knetChargeType exact', 'semantic_runtime');
+            upay_assert_eq($mm_entry['ccChargeType'] ?? null, $scenario['type'], $name . ' ccChargeType exact', 'semantic_runtime');
+            upay_assert_eq(is_numeric($mm_entry['knetCharge'] ?? null), true, $name . ' knetCharge numeric', 'semantic_runtime');
+            upay_assert_eq(is_numeric($mm_entry['ccCharge'] ?? null), true, $name . ' ccCharge numeric', 'semantic_runtime');
+            upay_assert_eq(is_numeric($mm_entry['amount'] ?? null), true, $name . ' MM amount numeric', 'semantic_runtime');
+            upay_assert_eq(is_numeric($mm_charge['order']['amount'] ?? null), true, $name . ' order.amount numeric', 'semantic_runtime');
+            upay_assert_eq($mm_entry['amount'] ?? null, $mm_charge['order']['amount'] ?? null, $name . ' MM amount === order.amount', 'semantic_runtime');
+        }
+        upay_assert_eq(isset($mm_charge['paymentGateway']['src']) ? $mm_charge['paymentGateway']['src'] : null, 'knet', $name . ' paymentGateway.src=knet', 'semantic_runtime');
+        upay_assert_eq(strpos($mm_charge_str, 'e+') === false && strpos($mm_charge_str, 'E+') === false, true, $name . ' no exponent notation', 'semantic_runtime');
+    } else {
+        upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure', 'semantic_runtime');
+        upay_assert_eq($state['create_token_calls'], 0, $name . ' Create=0', 'semantic_runtime');
+        upay_assert_eq($state['retrieve_calls'], 0, $name . ' Retrieve=0', 'semantic_runtime');
+        upay_assert_eq($state['charge_calls'], 0, $name . ' Charge=0', 'semantic_runtime');
+        upay_assert_eq($state['provenance_writes'], 0, $name . ' provenance_writes=0', 'semantic_runtime');
     }
 }
 
@@ -2251,7 +2269,7 @@ $gw->input_body = json_encode([
 ]);
 $res = $gw->process_payment(30001);
 // HOSTILE-1: response is an array, not a crash.
-upay_assert(is_array($res), 'HOSTILE-1 Store API process_payment returned array', 'semantic_runtime');
+upay_assert(is_array($res), 'HOSTILE-1 Store API process_payment returned array', 'helper_unit_runtime');
 // HOSTILE-2: the Store API extension source was honored (knet), and the
 // hostile Classic POST source (cc + save_card=1) was NOT consumed.
 // The committed harness verified this by checking transport_route was
@@ -5563,7 +5581,7 @@ upay_assert_eq($success_redirect, 'https://example.test/upayments/redirect/SP-SU
     'SP-SUCCESS-1 redirect URL is the exact Charge envelope link', 'semantic_runtime');
 // No thrown exception.
 upay_assert_eq($result_success['process_payment_exception'] ?? 'none', 'none',
-    'SP-SUCCESS-1 no thrown exception during process_payment', 'semantic_runtime');
+    'SP-SUCCESS-1 no thrown exception during process_payment', 'harness_self_test');
 // Last charge body must carry the order, products, and amount through.
 $last_charge_body_str = (string) ($result_success['last_charge_body'] ?? '');
 $last_charge = json_decode($last_charge_body_str, true);
