@@ -39,26 +39,29 @@ $log = [];
 
 // Five honest counter categories — Section #14.
 //
-//   1. semantic_runtime:     assertions that exercise actual production
-//                            control flow with non-constant conditions
-//                            (e.g. provider transport counters, exact
-//                            payload strings, history classifications,
-//                            secret-state transitions, etc.).
-//   2. helper_unit_runtime:  assertions that exercise private helper math
-//                            (digit_long_divide, parse_strict_*,
-//                            canonicalize_provider_decimal_string,
-//                            compute_provider_unit_price_decimal).
+//   1. semantic_runtime:     Assertions reached through a real production
+//                            workflow/entrypoint (e.g. process_payment(),
+//                            actual Blocks get_payment_method_data(),
+//                            actual Create/Retrieve/Charge token workflow)
+//                            and proving an externally meaningful
+//                            payment/security outcome.
+//   2. helper_unit_runtime:  Direct parser, validator, classifier, arithmetic,
+//                            identity-context, history-inspector,
+//                            reflection/private-method, or other helper
+//                            invocation.
 //   3. static_source:        assertions that grep the source tree for
 //                            forbidden callers / patterns / invariants
 //                            that the production code must not regress.
-//   4. harness_self_test:    assertions that the harness stubs persist
-//                            state correctly (synthetic failures of
-//                            get_user_meta, force_user_cache_refresh,
-//                            wc_get_orders, etc.) so we never trust a
-//                            counter that is itself broken.
+//   4. harness_self_test:    Child-process plumbing, fixtures, emitters,
+//                            fake-object behavior, output shapes/types,
+//                            PID/constant isolation, state echoing.
 //   5. lint_tooling:         assertions produced by static-only frozen
 //                            lint checks (forbidden blob SHA256,
 //                            scheduled-task fingerprint, etc.).
+//
+// The rule: DIRECT HELPER/PARSER/CLASSIFIER/INSPECTOR CALL
+//           != semantic_runtime
+// No exceptions based merely on the helper being security-sensitive.
 //
 // The category names are part of the public test contract: the README
 // and CHANGELOG report category counts verbatim.
@@ -76,6 +79,48 @@ $_semantic_runtime_assert_calls = 0;
 // 'semantic_runtime'/'harness'/'static' string aliases were withdrawn; the
 // upay_assert() function still accepts a category string for the five
 // honest categories only, and refuses anything else.
+
+// Residual Correction #28: runtime semantic-family attribution.
+//
+// Every PASS tagged semantic_runtime is attributed to exactly one ledger
+// family by its description prefix. The mapping covers only genuine
+// end-to-end production workflows driven through process_payment(),
+// Store process_payment() or get_payment_method_data(). Anything that
+// does not match a known E2E family falls into OTHER and is surfaced,
+// never silently absorbed.
+function upay_ledger_family_for($description) {
+    static $rules = array(
+        // Most specific first.
+        array('BLOCKS-SAN',       'BLOCKS-SAN'),
+        array('MALFORMED-CARD',   'MALFORMED-CARD'),
+        array('MM-VALID-FIXED',   'MM'),
+        array('MM-VALID-PERCENTAGE', 'MM'),
+        array('MM-INVALID',       'MM'),
+        array('MM-',              'MM'),
+        array('MM ',              'MM'),
+        array('SP-SUCCESS',       'SP-SUCCESS'),
+        array('SP-SAVE-CARD',     'SP-SAVE-CARD'),
+        array('SP-SAVE',          'SP-SAVE-CARD'),
+        array('SP-SELECTED-CARD', 'SP-SELECTED'),
+        array('SP-SELECT',        'SP-SELECTED'),
+        array('SP-CARD-MISMATCH', 'SP-MISMATCH'),
+        array('SP-MISMATCH',      'SP-MISMATCH'),
+        array('HOSTILE',          'HOSTILE'),
+        array('PE-',              'PE'),
+        array('PE ',              'PE'),
+        array('WL-',              'WL'),
+        array('WL ',              'WL'),
+        array('OW-',              'OW'),
+        array('OW ',              'OW'),
+    );
+    foreach ($rules as $rule) {
+        if (strpos($description, $rule[0]) === 0) {
+            return $rule[1];
+        }
+    }
+    return 'OTHER';
+}
+
 function _upay_dispatch($condition, $description, $kind) {
     global $pass, $fail, $log;
     global $_pass_semantic_runtime, $_pass_helper_unit_runtime,
@@ -148,7 +193,25 @@ function _upay_dispatch($condition, $description, $kind) {
             return;
         }
         $log[] = "PASS: [$kind] $description";
-        if ($kind === 'semantic_runtime') $_semantic_runtime_assert_calls++;
+        if ($kind === 'semantic_runtime') {
+            $_semantic_runtime_assert_calls++;
+            // Residual Correction #28: attribute every semantic PASS to its
+            // ledger family at runtime so the printed ledger sums to the
+            // printed semantic_runtime count by construction.
+            $_ledger_family = upay_ledger_family_for($description);
+            if (!isset($GLOBALS['_upay_semantic_family_counts'][$_ledger_family])) {
+                $GLOBALS['_upay_semantic_family_counts'][$_ledger_family] = 0;
+            }
+            $GLOBALS['_upay_semantic_family_counts'][$_ledger_family]++;
+            if ($_ledger_family === 'OTHER') {
+                if (!isset($GLOBALS['_upay_semantic_other_samples'])) {
+                    $GLOBALS['_upay_semantic_other_samples'] = array();
+                }
+                if (count($GLOBALS['_upay_semantic_other_samples']) < 15) {
+                    $GLOBALS['_upay_semantic_other_samples'][] = $description;
+                }
+            }
+        }
     } else {
         $fail++;
         if ($kind === 'semantic_runtime') $_fail_semantic_runtime++;
@@ -2210,26 +2273,50 @@ foreach ($mm_scenarios as $name => $scenario) {
             upay_assert_eq($mm_entry['ibanNumber'] ?? null, $scenario['iban'], $name . ' IBAN exact', 'semantic_runtime');
             upay_assert_eq($mm_entry['knetChargeType'] ?? null, $scenario['type'], $name . ' knetChargeType exact', 'semantic_runtime');
             upay_assert_eq($mm_entry['ccChargeType'] ?? null, $scenario['type'], $name . ' ccChargeType exact', 'semantic_runtime');
-            upay_assert_eq(is_numeric($mm_entry['knetCharge'] ?? null), true, $name . ' knetCharge numeric', 'semantic_runtime');
-            upay_assert_eq(is_numeric($mm_entry['ccCharge'] ?? null), true, $name . ' ccCharge numeric', 'semantic_runtime');
-            upay_assert_eq(is_numeric($mm_entry['amount'] ?? null), true, $name . ' MM amount numeric', 'semantic_runtime');
-            upay_assert_eq(is_numeric($mm_charge['order']['amount'] ?? null), true, $name . ' order.amount numeric', 'semantic_runtime');
-            upay_assert_eq($mm_entry['amount'] ?? null, $mm_charge['order']['amount'] ?? null, $name . ' MM amount === order.amount', 'semantic_runtime');
+            // Raw JSON primitive proof: all 4 monetary fields must be unquoted JSON numbers.
+            // Use regex with delimiter boundaries to avoid prefix matches (e.g., 10 inside 100).
+            $charge_val = $scenario['charge'];
+            $order_val = '5.00'; // order total
+            // order.amount === "5.00"
+            $order_amount_match = [];
+            $order_amount_ok = preg_match('/"order"\s*:\s*\{[^{}]*"amount"\s*:\s*(' . preg_quote($order_val, '/') . ')(?=\s*[,}])/', $mm_charge_str, $order_amount_match);
+            upay_assert_eq($order_amount_ok, 1, $name . ' order.amount raw token === ' . $order_val, 'semantic_runtime');
+            // MM amount === "5.00"
+            $mm_amount_match = [];
+            $mm_amount_ok = preg_match('/"extraMerchantData"\s*:\s*\[\s*\{[^{}]*"amount"\s*:\s*(' . preg_quote($order_val, '/') . ')(?=\s*[,}])/', $mm_charge_str, $mm_amount_match);
+            upay_assert_eq($mm_amount_ok, 1, $name . ' MM amount raw token === ' . $order_val, 'semantic_runtime');
+            // knetCharge === charge value
+            $knet_match = [];
+            $knet_ok = preg_match('/"knetCharge"\s*:\s*(' . preg_quote($charge_val, '/') . ')(?=\s*[,}])/', $mm_charge_str, $knet_match);
+            upay_assert_eq($knet_ok, 1, $name . ' knetCharge raw token === ' . $charge_val, 'semantic_runtime');
+            // ccCharge === charge value
+            $cc_match = [];
+            $cc_ok = preg_match('/"ccCharge"\s*:\s*(' . preg_quote($charge_val, '/') . ')(?=\s*[,}])/', $mm_charge_str, $cc_match);
+            upay_assert_eq($cc_ok, 1, $name . ' ccCharge raw token === ' . $charge_val, 'semantic_runtime');
+            // MM amount === order.amount
+            upay_assert_eq($order_amount_ok === 1 && $mm_amount_ok === 1 && $order_amount_match[1] === $mm_amount_match[1], true, $name . ' MM amount === order.amount', 'semantic_runtime');
+            // Decoded PHP types must be numeric primitives (int or float), not just numeric strings.
+            upay_assert_eq(is_int($mm_entry['knetCharge'] ?? null) || is_float($mm_entry['knetCharge'] ?? null), true, $name . ' knetCharge is int|float', 'semantic_runtime');
+            upay_assert_eq(is_int($mm_entry['ccCharge'] ?? null) || is_float($mm_entry['ccCharge'] ?? null), true, $name . ' ccCharge is int|float', 'semantic_runtime');
+            upay_assert_eq(is_int($mm_entry['amount'] ?? null) || is_float($mm_entry['amount'] ?? null), true, $name . ' MM amount is int|float', 'semantic_runtime');
+            upay_assert_eq(is_int($mm_charge['order']['amount'] ?? null) || is_float($mm_charge['order']['amount'] ?? null), true, $name . ' order.amount is int|float', 'semantic_runtime');
+            // Explicitly reject quoted forms for all four.
+            upay_assert_eq(strpos($mm_charge_str, '"knetCharge":"' . $charge_val . '"') === false, true, $name . ' knetCharge NOT quoted', 'semantic_runtime');
+            upay_assert_eq(strpos($mm_charge_str, '"ccCharge":"' . $charge_val . '"') === false, true, $name . ' ccCharge NOT quoted', 'semantic_runtime');
+            upay_assert_eq(strpos($mm_charge_str, '"amount":"' . $order_val . '"') === false, true, $name . ' amount NOT quoted', 'semantic_runtime');
         }
         upay_assert_eq(isset($mm_charge['paymentGateway']['src']) ? $mm_charge['paymentGateway']['src'] : null, 'knet', $name . ' paymentGateway.src=knet', 'semantic_runtime');
         upay_assert_eq(strpos($mm_charge_str, 'e+') === false && strpos($mm_charge_str, 'E+') === false, true, $name . ' no exponent notation', 'semantic_runtime');
-        // Raw JSON primitive proof: monetary fields must be unquoted numbers.
-        $charge_val = $scenario['charge'];
-        upay_assert_eq(strpos($mm_charge_str, '"knetCharge":' . $charge_val) !== false || strpos($mm_charge_str, '"knetCharge": ' . $charge_val) !== false, true, $name . ' knetCharge is unquoted JSON number', 'semantic_runtime');
-        upay_assert_eq(strpos($mm_charge_str, '"knetCharge":"' . $charge_val . '"') === false, true, $name . ' knetCharge is NOT quoted string', 'semantic_runtime');
-        upay_assert_eq(strpos($mm_charge_str, '"ccCharge":' . $charge_val) !== false || strpos($mm_charge_str, '"ccCharge": ' . $charge_val) !== false, true, $name . ' ccCharge is unquoted JSON number', 'semantic_runtime');
-        upay_assert_eq(strpos($mm_charge_str, '"ccCharge":"' . $charge_val . '"') === false, true, $name . ' ccCharge is NOT quoted string', 'semantic_runtime');
     } else {
         upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure', 'semantic_runtime');
         upay_assert_eq($state['create_token_calls'], 0, $name . ' Create=0', 'semantic_runtime');
         upay_assert_eq($state['retrieve_calls'], 0, $name . ' Retrieve=0', 'semantic_runtime');
         upay_assert_eq($state['charge_calls'], 0, $name . ' Charge=0', 'semantic_runtime');
+        upay_assert_eq($state['secret_creates'], 0, $name . ' secret_creates=0', 'semantic_runtime');
+        upay_assert_eq($state['identity_writes'], 0, $name . ' identity_writes=0', 'semantic_runtime');
         upay_assert_eq($state['provenance_writes'], 0, $name . ' provenance_writes=0', 'semantic_runtime');
+        upay_assert_eq($state['usermeta_writes'], 0, $name . ' usermeta_writes=0', 'semantic_runtime');
+        upay_assert_eq($state['order_meta_writes'], 0, $name . ' order_meta_writes=0', 'semantic_runtime');
     }
 }
 
@@ -2320,7 +2407,7 @@ foreach ($ps_cases as $name => $val) {
         'PS-sp-ac' => null, 'PS-t-ab-cc' => null, 'PS-invalid' => 'invalid-method',
     ];
     $exp = $expected_norm[$name];
-    upay_assert_eq($r, $exp, $name . ' parse_payment_source_strict(' . var_export($val, true) . ')', 'semantic_runtime');
+    upay_assert_eq($r, $exp, $name . ' parse_payment_source_strict(' . var_export($val, true) . ')', 'helper_unit_runtime');
 }
 
 // ---------------------------------------------------------------------------
@@ -2361,9 +2448,9 @@ foreach (['pre-lock', 'post-lock'] as $phase) {
         (isset($bclass['reason']) && strpos((string) $bclass['reason'], 'prior') !== false) ||
         (isset($bclass['reason']) && strpos((string) $bclass['reason'], 'history') !== false)
     );
-    upay_assert($is_prior, 'PRSCOPE-' . $phase . ' inspector blocks prior-scope history (indeterminate or prior_scope_only)', 'semantic_runtime');
+    upay_assert($is_prior, 'PRSCOPE-' . $phase . ' inspector blocks prior-scope history (indeterminate or prior_scope_only)', 'helper_unit_runtime');
     // PRIOR_SCOPE must not create a fresh canonical identity (no writes beyond baseline).
-    upay_assert_eq($state['identity_writes'], $writes_before, 'PRSCOPE-' . $phase . ' zero identity writes delta for prior-scope', 'semantic_runtime');
+    upay_assert_eq($state['identity_writes'], $writes_before, 'PRSCOPE-' . $phase . ' zero identity writes delta for prior-scope', 'helper_unit_runtime');
 }
 
 // ---------------------------------------------------------------------------
@@ -2503,18 +2590,18 @@ upay_assert_eq(
     $child_rest_request_observed,
     '1',
     'ISOLATION-1 subprocess observes REST_REQUEST=true (child set its own constant)',
-    'semantic_runtime'
+    'harness_self_test'
 );
 upay_assert_eq(
     $parent_rest_request_observed,
     '0',
     'ISOLATION-2 parent observes REST_REQUEST=false in its own process',
-    'semantic_runtime'
+    'harness_self_test'
 );
 upay_assert(
     $child_rest_request_observed !== $parent_rest_request_observed,
     'ISOLATION-3 child and parent observe independent REST_REQUEST values',
-    'semantic_runtime'
+    'harness_self_test'
 );
 
 // ===========================================================================
@@ -2641,13 +2728,13 @@ foreach ($xbm_expectations as $name => $scenario) {
         isset($res['classification']) ? $res['classification'] : null,
         $scenario['classification'],
         $name . ' (' . $scenario['kind'] . ') classification',
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
     upay_assert_eq(
         isset($res['reason']) ? $res['reason'] : null,
         $scenario['reason'],
         $name . ' (' . $scenario['kind'] . ') reason',
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 }
 
@@ -2938,13 +3025,13 @@ upay_assert_eq(
     isset($res['classification']) ? $res['classification'] : null,
     'indeterminate',
     'XPGT-1 inspect_bootstrap_history 200 orders classification',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 upay_assert_eq(
     isset($res['reason']) ? $res['reason'] : null,
     'oversized_page',
     'XPGT-1 inspect_bootstrap_history 200 orders reason',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 $state['history_total'] = 21;
@@ -2954,13 +3041,13 @@ upay_assert_eq(
     isset($res2['classification']) ? $res2['classification'] : null,
     'indeterminate',
     'XPGT-2 inspect_bootstrap_history 21 orders classification',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 upay_assert_eq(
     isset($res2['reason']) ? $res2['reason'] : null,
     'oversized_page',
     'XPGT-2 inspect_bootstrap_history 21 orders reason',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 // ---------------------------------------------------------------------------
@@ -3240,22 +3327,6 @@ $order = upay_make_order(70007, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
 upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-7 whitespace card_token rejected', 'helper_unit_runtime');
 
-// --- SEM14-B: Strict order-ID parsing (negative floats, scientific, etc.) ---
-foreach (['1.0', '1e2', '+1', '-1', ' 1', '1 ', '01', '0005', '0x1', '0b1', '0o1', '1.5', 'inf', 'nan', 'null', 'true'] as $i => $bad) {
-    $post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc'];
-    $order = upay_make_order(70100 + $i, '5.00');
-    $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $post);
-    upay_assert_eq($res['result'], 'failure', "SEM14-B-$i order_id=" . var_export($bad, true) . " rejected (strict)", 'semantic_runtime');
-}
-
-// --- SEM14-C: Pagination count strings canonical ("00", "01", "0005") ---
-foreach (['00', '01', '0005', '+5', '-5', ' 5', '5 ', '5.0', '5e1', '0x5', '0b101', ''] as $i => $bad) {
-    $post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayments_per_page' => $bad];
-    $order = upay_make_order(70200 + $i, '5.00');
-    $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $post);
-    upay_assert_eq($res['result'], 'failure', "SEM14-C-$i per_page=" . var_export($bad, true) . " rejected (canonical)", 'semantic_runtime');
-}
-
 // --- SEM14-D: Product unit-price exact division via process_payment ---
 foreach ([
     [['line_total' => '1.00', 'qty' => 8], '0.125'],
@@ -3266,7 +3337,7 @@ foreach ([
     [['line_total' => '7.00', 'qty' => 8], '0.875'],
 ] as $i => $case) {
     $actual = WC_Upayments::compute_provider_unit_price_decimal($case[0]['line_total'], $case[0]['qty']);
-    upay_assert_eq($actual, $case[1], "SEM14-D-$i exact division: {$case[0]['line_total']}/{$case[0]['qty']}={$case[1]}", 'semantic_runtime');
+    upay_assert_eq($actual, $case[1], "SEM14-D-$i exact division: {$case[0]['line_total']}/{$case[0]['qty']}={$case[1]}", 'helper_unit_runtime');
 }
 
 // --- SEM14-E: Non-terminating division fails closed ---
@@ -3277,13 +3348,13 @@ foreach ([
     ['line_total' => '2.00', 'qty' => 6],
 ] as $i => $case) {
     $actual = WC_Upayments::compute_provider_unit_price_decimal($case['line_total'], $case['qty']);
-    upay_assert_eq($actual, null, "SEM14-E-$i {$case['line_total']}/{$case['qty']} fail closed", 'semantic_runtime');
+    upay_assert_eq($actual, null, "SEM14-E-$i {$case['line_total']}/{$case['qty']} fail closed", 'helper_unit_runtime');
 }
 
 // --- SEM14-F: Float line_total rejected outright ---
 foreach ([0.5, 1.0, 1.5, 2.0, 10.0] as $i => $bad) {
     $actual = WC_Upayments::compute_provider_unit_price_decimal($bad, 1);
-    upay_assert_eq($actual, null, "SEM14-F-$i float line_total rejected", 'semantic_runtime');
+    upay_assert_eq($actual, null, "SEM14-F-$i float line_total rejected", 'helper_unit_runtime');
 }
 
 // --- SEM14-G: Forbidden callers are gone (static_source grep) ---
@@ -3381,7 +3452,7 @@ foreach ([
     ['input' => '9999999999999999999', 'expect' => false, 'desc' => 'overflow'],
 ] as $i => $case) {
     @$r = $parse_method->invoke(null, $case['input'], $out);
-    upay_assert_eq($r, $case['expect'], "SEM14-O-$i parse_strict_positive_int({$case['desc']})", 'semantic_runtime');
+    upay_assert_eq($r, $case['expect'], "SEM14-O-$i parse_strict_positive_int({$case['desc']})", 'helper_unit_runtime');
 }
 
 // --- SEM14-P: Identity context strict input typing ---
@@ -3396,7 +3467,7 @@ foreach ([
     ['api_key' => 'abc', 'is_test_mode' => [], 'desc' => 'array is_test_mode'],
 ] as $i => $case) {
     $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context($case['api_key'], $case['is_test_mode']);
-    upay_assert_eq($ctx['state'], 'invalid_input', "SEM14-P-$i read_existing_identity_context({$case['desc']}) -> invalid_input", 'semantic_runtime');
+    upay_assert_eq($ctx['state'], 'invalid_input', "SEM14-P-$i read_existing_identity_context({$case['desc']}) -> invalid_input", 'helper_unit_runtime');
 }
 
 // --- SEM14-Q: derive_scope_fingerprint strict input typing ---
@@ -3413,7 +3484,7 @@ foreach ([
     ['api_key' => 'abc', 'is_test_mode' => true, 'secret' => 'not-array', 'desc' => 'string secret'],
 ] as $i => $case) {
     $r = $dsf_method->invoke(null, $case['api_key'], $case['is_test_mode'], $case['secret']);
-    upay_assert_eq($r, null, "SEM14-Q-$i derive_scope_fingerprint({$case['desc']}) -> null", 'semantic_runtime');
+    upay_assert_eq($r, null, "SEM14-Q-$i derive_scope_fingerprint({$case['desc']}) -> null", 'helper_unit_runtime');
 }
 
 // --- SEM14-R: inspect_* requires explicit generation ---
@@ -3448,9 +3519,9 @@ foreach ([
     try {
         $r = $ich_method->invoke(null, ...$args);
         if (is_array($r)) {
-            upay_assert_eq($r['reason'], 'missing_generation', "SEM14-R-$i inspect_customer_history($kind) -> missing_generation", 'semantic_runtime');
+            upay_assert_eq($r['reason'], 'missing_generation', "SEM14-R-$i inspect_customer_history($kind) -> missing_generation", 'helper_unit_runtime');
         } else {
-            upay_assert_eq($r, null, "SEM14-R-$i inspect_customer_history($kind) -> null", 'semantic_runtime');
+            upay_assert_eq($r, null, "SEM14-R-$i inspect_customer_history($kind) -> null", 'helper_unit_runtime');
         }
     } catch (\Throwable $e) {
         // Residual Correction #15: unexpected exception is an immediate FAIL.
@@ -3460,7 +3531,7 @@ foreach ([
         upay_assert(
             false,
             "SEM14-R-$i inspect_customer_history($kind) threw unexpectedly: " . get_class($e) . ' / ' . $e->getMessage(),
-            'semantic_runtime'
+            'helper_unit_runtime'
         );
     }
 }
@@ -3486,9 +3557,9 @@ foreach ([
     try {
         $r = $icp_method->invoke(null, ...$args);
         if (is_array($r)) {
-            upay_assert_eq($r['reason'], 'missing_generation', "SEM14-S-$i inspect_current_user_prior_provenance($kind) -> missing_generation", 'semantic_runtime');
+            upay_assert_eq($r['reason'], 'missing_generation', "SEM14-S-$i inspect_current_user_prior_provenance($kind) -> missing_generation", 'helper_unit_runtime');
         } else {
-            upay_assert_eq($r, null, "SEM14-S-$i inspect_current_user_prior_provenance($kind) -> null", 'semantic_runtime');
+            upay_assert_eq($r, null, "SEM14-S-$i inspect_current_user_prior_provenance($kind) -> null", 'helper_unit_runtime');
         }
     } catch (\Throwable $e) {
         // Residual Correction #15: unexpected exception is an immediate FAIL.
@@ -4010,7 +4081,7 @@ foreach ($invalid_sources as $i => $src) {
 // --- SEM14-U: 10,000,000 qty boundary proof ---
 foreach ([10000001, 100000000, PHP_INT_MAX, 9999999] as $i => $qty) {
     $actual = WC_Upayments::compute_provider_unit_price_decimal('1.00', $qty);
-    upay_assert_eq($actual, null, "SEM14-U-$i qty=$qty fail closed", 'semantic_runtime');
+    upay_assert_eq($actual, null, "SEM14-U-$i qty=$qty fail closed", 'helper_unit_runtime');
 }
 // 1.00/10000000 = 0.0000001 exact (7 digits), valid
 $actual = WC_Upayments::compute_provider_unit_price_decimal('1.00', 10000000);
@@ -4050,12 +4121,12 @@ $psni_method->setAccessible(true);
 foreach ([0, 5, '0', '5'] as $i => $v) {
     $out_y = 0;
     @$r = $psni_method->invoke(null, $v, $out_y);
-    upay_assert_eq($r, true, "SEM14-Y-$i parse_strict_nonneg_int(" . var_export($v, true) . ") -> true", 'semantic_runtime');
+    upay_assert_eq($r, true, "SEM14-Y-$i parse_strict_nonneg_int(" . var_export($v, true) . ") -> true", 'helper_unit_runtime');
 }
 foreach ([-1, '00', '01', '0005', '1.0', '1e2', '+1', '-1', '', ' 1', '1 ', null, [], true, 1.5] as $i => $v) {
     $out_y = 0;
     @$r = $psni_method->invoke(null, $v, $out_y);
-    upay_assert_eq($r, false, "SEM14-Y-N$i parse_strict_nonneg_int(" . var_export($v, true) . ") -> false", 'semantic_runtime');
+    upay_assert_eq($r, false, "SEM14-Y-N$i parse_strict_nonneg_int(" . var_export($v, true) . ") -> false", 'helper_unit_runtime');
 }
 
 // --- SEM14-Z: lint_tooling category — frozen set of binary invariants ---
@@ -4979,9 +5050,9 @@ $subdir_body = wp_json_encode([
     ],
 ]);
 $result_subdir = upay_run_store_api_child('SP-X1', true, '/shop/wc/store/v1/checkout', 'POST', $subdir_body);
-upay_assert(isset($result_subdir['path']) && $result_subdir['path'] !== 'store_api', 'SP-X1 subdir /shop/wc/store/v1/checkout (no /wp-json/) -> NOT store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_subdir['body_consumed_count'] ?? 0), 0, 'SP-X1 subdir (no /wp-json/) -> body NOT consumed', 'semantic_runtime');
-upay_assert_eq($result_subdir['rest_request_observed'] ?? null, true, 'SP-X1 subdir -> REST_REQUEST observed true', 'semantic_runtime');
+upay_assert(isset($result_subdir['path']) && $result_subdir['path'] !== 'store_api', 'SP-X1 subdir /shop/wc/store/v1/checkout (no /wp-json/) -> NOT store_api', 'harness_self_test');
+upay_assert_eq((int) ($result_subdir['body_consumed_count'] ?? 0), 0, 'SP-X1 subdir (no /wp-json/) -> body NOT consumed', 'harness_self_test');
+upay_assert_eq($result_subdir['rest_request_observed'] ?? null, true, 'SP-X1 subdir -> REST_REQUEST observed true', 'harness_self_test');
 
 // --- SP-X2: Pretty-permalink /wp-json/wc/store/v1/checkout --------------
 $pretty_body = wp_json_encode([
@@ -4991,44 +5062,44 @@ $pretty_body = wp_json_encode([
     ],
 ]);
 $result_pretty = upay_run_store_api_child('SP-X2', true, '/wp-json/wc/store/v1/checkout', 'POST', $pretty_body);
-upay_assert_eq($result_pretty['path'] ?? null, 'store_api', 'SP-X2 /wp-json/wc/store/v1/checkout -> store_api path', 'semantic_runtime');
-upay_assert_eq((int) ($result_pretty['body_consumed_count'] ?? 0), 1, 'SP-X2 pretty -> body consumed', 'semantic_runtime');
+upay_assert_eq($result_pretty['path'] ?? null, 'store_api', 'SP-X2 /wp-json/wc/store/v1/checkout -> store_api path', 'harness_self_test');
+upay_assert_eq((int) ($result_pretty['body_consumed_count'] ?? 0), 1, 'SP-X2 pretty -> body consumed', 'harness_self_test');
 
 // --- SP-X3: Plain-permalink ?rest_route=/wc/store/v1/checkout ------------
 $plain_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_plain = upay_run_store_api_child('SP-X3', true, '/index.php?rest_route=/wc/store/v1/checkout', 'POST', $plain_body);
-upay_assert_eq($result_plain['path'] ?? null, 'store_api', 'SP-X3 plain-permalink -> store_api path', 'semantic_runtime');
-upay_assert_eq((int) ($result_plain['body_consumed_count'] ?? 0), 1, 'SP-X3 plain-permalink -> body consumed', 'semantic_runtime');
+upay_assert_eq($result_plain['path'] ?? null, 'store_api', 'SP-X3 plain-permalink -> store_api path', 'harness_self_test');
+upay_assert_eq((int) ($result_plain['body_consumed_count'] ?? 0), 1, 'SP-X3 plain-permalink -> body consumed', 'harness_self_test');
 
 // --- SP-X4: Trailing slash on Store URI ---------------------------------
 $trail_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_trail = upay_run_store_api_child('SP-X4', true, '/wc/store/v1/checkout/', 'POST', $trail_body);
-upay_assert_eq($result_trail['path'] ?? null, 'store_api', 'SP-X4 trailing-slash URI -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_trail['path'] ?? null, 'store_api', 'SP-X4 trailing-slash URI -> store_api path', 'harness_self_test');
 
 // --- SP-X5: GET on Store URI (not POST) -> not Store API ---------------
 $result_get = upay_run_store_api_child('SP-X5', true, '/wc/store/v1/checkout', 'GET', $store_body);
-upay_assert(isset($result_get['path']) && $result_get['path'] !== 'store_api', 'SP-X5 GET on Store URI -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_get['body_consumed_count'] ?? 0), 0, 'SP-X5 GET -> body NOT consumed (Store API not entered)', 'semantic_runtime');
+upay_assert(isset($result_get['path']) && $result_get['path'] !== 'store_api', 'SP-X5 GET on Store URI -> not store_api', 'harness_self_test');
+upay_assert_eq((int) ($result_get['body_consumed_count'] ?? 0), 0, 'SP-X5 GET -> body NOT consumed (Store API not entered)', 'harness_self_test');
 
 // --- SP-X6: REST_REQUEST=false on Store URI -> not Store API ------------
 $result_norest = upay_run_store_api_child('SP-X6', false, '/wc/store/v1/checkout', 'POST', $store_body);
-upay_assert(isset($result_norest['path']) && $result_norest['path'] !== 'store_api', 'SP-X6 REST_REQUEST=false -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_norest['body_consumed_count'] ?? 0), 0, 'SP-X6 REST_REQUEST=false -> body NOT consumed', 'semantic_runtime');
+upay_assert(isset($result_norest['path']) && $result_norest['path'] !== 'store_api', 'SP-X6 REST_REQUEST=false -> not store_api', 'harness_self_test');
+upay_assert_eq((int) ($result_norest['body_consumed_count'] ?? 0), 0, 'SP-X6 REST_REQUEST=false -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X7: PUT on Store URI (not POST) -> not Store API ---------------
 $result_put = upay_run_store_api_child('SP-X7', true, '/wc/store/v1/checkout', 'PUT', $store_body);
-upay_assert(isset($result_put['path']) && $result_put['path'] !== 'store_api', 'SP-X7 PUT on Store URI -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_put['body_consumed_count'] ?? 0), 0, 'SP-X7 PUT -> body NOT consumed', 'semantic_runtime');
+upay_assert(isset($result_put['path']) && $result_put['path'] !== 'store_api', 'SP-X7 PUT on Store URI -> not store_api', 'harness_self_test');
+upay_assert_eq((int) ($result_put['body_consumed_count'] ?? 0), 0, 'SP-X7 PUT -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X8: REST_REQUEST=true on unrelated REST route -> not Store API -
 $result_wpusers = upay_run_store_api_child('SP-X8', true, '/wp/v2/users', 'POST', $store_body);
-upay_assert(isset($result_wpusers['path']) && $result_wpusers['path'] !== 'store_api', 'SP-X8 /wp/v2/users -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_wpusers['body_consumed_count'] ?? 0), 0, 'SP-X8 /wp/v2/users -> body NOT consumed', 'semantic_runtime');
+upay_assert(isset($result_wpusers['path']) && $result_wpusers['path'] !== 'store_api', 'SP-X8 /wp/v2/users -> not store_api', 'harness_self_test');
+upay_assert_eq((int) ($result_wpusers['body_consumed_count'] ?? 0), 0, 'SP-X8 /wp/v2/users -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X9: Empty body on Store URI --------------------------------------
 $result_empty = upay_run_store_api_child('SP-X9', true, '/wc/store/v1/checkout', 'POST', '');
-upay_assert_eq($result_empty['path'] ?? null, 'store_api', 'SP-X9 empty body -> store_api path (production enters and fails)', 'semantic_runtime');
-upay_assert_eq((int) ($result_empty['body_consumed_count'] ?? 0), 1, 'SP-X9 empty body -> body consumed (production entered Store API)', 'semantic_runtime');
+upay_assert_eq($result_empty['path'] ?? null, 'store_api', 'SP-X9 empty body -> store_api path (production enters and fails)', 'harness_self_test');
+upay_assert_eq((int) ($result_empty['body_consumed_count'] ?? 0), 1, 'SP-X9 empty body -> body consumed (production entered Store API)', 'harness_self_test');
 upay_assert(is_array($result_empty['process_payment_result'] ?? null), 'SP-X9 empty body -> process_payment returned array', 'harness_self_test');
 upay_assert_eq($result_empty['process_payment_result']['result'] ?? null, 'failure', 'SP-X9 empty body -> result=failure', 'semantic_runtime');
 
@@ -5068,9 +5139,9 @@ $valid_ext_body = wp_json_encode([
     ],
 ]);
 $result_valid_ext = upay_run_store_api_child('SP-X10', true, '/wc/store/v1/checkout', 'POST', $valid_ext_body);
-upay_assert_eq($result_valid_ext['path'] ?? null, 'store_api', 'SP-X10 valid extensions body -> store_api path', 'semantic_runtime');
-upay_assert_eq((int) ($result_valid_ext['body_consumed_count'] ?? 0), 1, 'SP-X10 valid extensions -> body consumed', 'semantic_runtime');
-upay_assert(is_array($result_valid_ext['payload_decoded'] ?? null), 'SP-X10 valid extensions -> payload decoded', 'semantic_runtime');
+upay_assert_eq($result_valid_ext['path'] ?? null, 'store_api', 'SP-X10 valid extensions body -> store_api path', 'harness_self_test');
+upay_assert_eq((int) ($result_valid_ext['body_consumed_count'] ?? 0), 1, 'SP-X10 valid extensions -> body consumed', 'harness_self_test');
+upay_assert(is_array($result_valid_ext['payload_decoded'] ?? null), 'SP-X10 valid extensions -> payload decoded', 'harness_self_test');
 upay_assert_eq($result_valid_ext['payload_decoded']['extensions']['upayments']['upayment_payment_type'] ?? null, 'knet', 'SP-X10 valid extensions -> upayment_payment_type=knet preserved', 'semantic_runtime');
 
 // --- SP-X11: Non-empty extensions upayments dict -----------------------
@@ -5083,28 +5154,28 @@ $nonempty_ext_body = wp_json_encode([
     ],
 ]);
 $result_nonempty_ext = upay_run_store_api_child('SP-X11', true, '/wc/store/v1/checkout', 'POST', $nonempty_ext_body);
-upay_assert_eq($result_nonempty_ext['path'] ?? null, 'store_api', 'SP-X11 nonempty extensions -> store_api path', 'semantic_runtime');
-upay_assert_eq((int) ($result_nonempty_ext['body_consumed_count'] ?? 0), 1, 'SP-X11 nonempty extensions -> body consumed', 'semantic_runtime');
+upay_assert_eq($result_nonempty_ext['path'] ?? null, 'store_api', 'SP-X11 nonempty extensions -> store_api path', 'harness_self_test');
+upay_assert_eq((int) ($result_nonempty_ext['body_consumed_count'] ?? 0), 1, 'SP-X11 nonempty extensions -> body consumed', 'harness_self_test');
 
 // --- SP-X12: Subdirectory-installed plain permalink ---------------------
 $subdir_plain_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_subdir_plain = upay_run_store_api_child('SP-X12', true, '/shop/index.php?rest_route=/wc/store/v1/checkout', 'POST', $subdir_plain_body);
-upay_assert_eq($result_subdir_plain['path'] ?? null, 'store_api', 'SP-X12 subdir plain-permalink -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_subdir_plain['path'] ?? null, 'store_api', 'SP-X12 subdir plain-permalink -> store_api path', 'harness_self_test');
 
 // --- SP-X13: Index.php prefix without subdir ----------------------------
 $index_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_index = upay_run_store_api_child('SP-X13', true, '/index.php/wc/store/v1/checkout', 'POST', $index_body);
-upay_assert_eq($result_index['path'] ?? null, 'store_api', 'SP-X13 /index.php prefix -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_index['path'] ?? null, 'store_api', 'SP-X13 /index.php prefix -> store_api path', 'harness_self_test');
 
 // --- SP-X14: Empty request URI -> not Store API ------------------------
 $result_empty_uri = upay_run_store_api_child('SP-X14', true, '', 'POST', $store_body);
 upay_assert(isset($result_empty_uri['path']) && $result_empty_uri['path'] !== 'store_api', 'SP-X14 empty URI -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_empty_uri['body_consumed_count'] ?? 0), 0, 'SP-X14 empty URI -> body NOT consumed', 'semantic_runtime');
+upay_assert_eq((int) ($result_empty_uri['body_consumed_count'] ?? 0), 0, 'SP-X14 empty URI -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X15: JSON array (not object) at top level ----------------------
 $array_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_array = upay_run_store_api_child('SP-X15', true, '/wc/store/v1/checkout', 'POST', $array_body);
-upay_assert_eq($result_array['path'] ?? null, 'store_api', 'SP-X15 array top level -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_array['path'] ?? null, 'store_api', 'SP-X15 array top level -> store_api path', 'harness_self_test');
 
 // --- SP-X16: Hostile body with payment_data containing card_token = '0' -
 $zero_card_body = wp_json_encode([
@@ -5115,8 +5186,8 @@ $zero_card_body = wp_json_encode([
     ],
 ]);
 $result_zero_card = upay_run_store_api_child('SP-X16', true, '/wc/store/v1/checkout', 'POST', $zero_card_body);
-upay_assert_eq($result_zero_card['path'] ?? null, 'store_api', 'SP-X16 card_token=0 -> store_api path', 'semantic_runtime');
-upay_assert_eq((int) ($result_zero_card['body_consumed_count'] ?? 0), 1, 'SP-X16 card_token=0 -> body consumed', 'semantic_runtime');
+upay_assert_eq($result_zero_card['path'] ?? null, 'store_api', 'SP-X16 card_token=0 -> store_api path', 'harness_self_test');
+upay_assert_eq((int) ($result_zero_card['body_consumed_count'] ?? 0), 1, 'SP-X16 card_token=0 -> body consumed', 'harness_self_test');
 
 // --- SP-X17: Whitespace-only URI ---------------------------------------
 $ws_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
@@ -5126,35 +5197,35 @@ upay_assert(isset($result_ws['path']) && $result_ws['path'] !== 'store_api', 'SP
 // --- SP-X18: Method=PATCH on Store URI -> not Store API ----------------
 $result_patch = upay_run_store_api_child('SP-X18', true, '/wc/store/v1/checkout', 'PATCH', $store_body);
 upay_assert(isset($result_patch['path']) && $result_patch['path'] !== 'store_api', 'SP-X18 PATCH on Store URI -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_patch['body_consumed_count'] ?? 0), 0, 'SP-X18 PATCH -> body NOT consumed', 'semantic_runtime');
+upay_assert_eq((int) ($result_patch['body_consumed_count'] ?? 0), 0, 'SP-X18 PATCH -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X19: Method=DELETE on Store URI -> not Store API --------------
 $result_delete = upay_run_store_api_child('SP-X19', true, '/wc/store/v1/checkout', 'DELETE', $store_body);
 upay_assert(isset($result_delete['path']) && $result_delete['path'] !== 'store_api', 'SP-X19 DELETE on Store URI -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_delete['body_consumed_count'] ?? 0), 0, 'SP-X19 DELETE -> body NOT consumed', 'semantic_runtime');
+upay_assert_eq((int) ($result_delete['body_consumed_count'] ?? 0), 0, 'SP-X19 DELETE -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X20: Non-Store REST route /wc/store/v1/cart -> not Store API ---
 $cart_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_cart = upay_run_store_api_child('SP-X20', true, '/wc/store/v1/cart', 'POST', $cart_body);
 upay_assert(isset($result_cart['path']) && $result_cart['path'] !== 'store_api', 'SP-X20 /wc/store/v1/cart -> not store_api (exact-match gate)', 'semantic_runtime');
-upay_assert_eq((int) ($result_cart['body_consumed_count'] ?? 0), 0, 'SP-X20 cart -> body NOT consumed', 'semantic_runtime');
+upay_assert_eq((int) ($result_cart['body_consumed_count'] ?? 0), 0, 'SP-X20 cart -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X21: Non-Store REST route /wc/store/v1/products -> not Store API
 $prod_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_prod = upay_run_store_api_child('SP-X21', true, '/wc/store/v1/products', 'POST', $prod_body);
 upay_assert(isset($result_prod['path']) && $result_prod['path'] !== 'store_api', 'SP-X21 /wc/store/v1/products -> not store_api', 'semantic_runtime');
-upay_assert_eq((int) ($result_prod['body_consumed_count'] ?? 0), 0, 'SP-X21 products -> body NOT consumed', 'semantic_runtime');
+upay_assert_eq((int) ($result_prod['body_consumed_count'] ?? 0), 0, 'SP-X21 products -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X22: Subdirectory + pretty permalink ----------------------------
 $subdir_pretty_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_subdir_pretty = upay_run_store_api_child('SP-X22', true, '/shop/wp-json/wc/store/v1/checkout', 'POST', $subdir_pretty_body);
-upay_assert_eq($result_subdir_pretty['path'] ?? null, 'store_api', 'SP-X22 subdir pretty permalink -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_subdir_pretty['path'] ?? null, 'store_api', 'SP-X22 subdir pretty permalink -> store_api path', 'harness_self_test');
 
 // --- SP-X23: Malformed JSON body ----------------------------------------
 $bad_json = '{not valid json';
 $result_bad_json = upay_run_store_api_child('SP-X23', true, '/wc/store/v1/checkout', 'POST', $bad_json);
-upay_assert_eq($result_bad_json['path'] ?? null, 'store_api', 'SP-X23 malformed JSON -> store_api path (no classic fallback)', 'semantic_runtime');
-upay_assert_eq((int) ($result_bad_json['body_consumed_count'] ?? 0), 1, 'SP-X23 malformed JSON -> body consumed', 'semantic_runtime');
+upay_assert_eq($result_bad_json['path'] ?? null, 'store_api', 'SP-X23 malformed JSON -> store_api path (no classic fallback)', 'harness_self_test');
+upay_assert_eq((int) ($result_bad_json['body_consumed_count'] ?? 0), 1, 'SP-X23 malformed JSON -> body consumed', 'harness_self_test');
 
 // --- SP-X24: extensions.upayments is null ------------------------------
 $null_ext_body = wp_json_encode([
@@ -5164,7 +5235,7 @@ $null_ext_body = wp_json_encode([
     ],
 ]);
 $result_null_ext = upay_run_store_api_child('SP-X24', true, '/wc/store/v1/checkout', 'POST', $null_ext_body);
-upay_assert_eq($result_null_ext['path'] ?? null, 'store_api', 'SP-X24 null upayments extension -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_null_ext['path'] ?? null, 'store_api', 'SP-X24 null upayments extension -> store_api path', 'harness_self_test');
 
 // --- SP-X25: extensions is not array ------------------------------------
 $str_ext_body = wp_json_encode([
@@ -5174,7 +5245,7 @@ $str_ext_body = wp_json_encode([
     ],
 ]);
 $result_str_ext = upay_run_store_api_child('SP-X25', true, '/wc/store/v1/checkout', 'POST', $str_ext_body);
-upay_assert_eq($result_str_ext['path'] ?? null, 'store_api', 'SP-X25 string extensions -> store_api path', 'semantic_runtime');
+upay_assert_eq($result_str_ext['path'] ?? null, 'store_api', 'SP-X25 string extensions -> store_api path', 'harness_self_test');
 
 // --- SP-X26: Charge dispatched exactly once for valid extensions body --
 //             Genuine semantic_runtime: each counter reflects a real
@@ -5185,12 +5256,14 @@ upay_assert_eq((int) ($result_init['retrieve_calls'] ?? 0), 0, 'SP-X26 retrieve_
 upay_assert_eq((int) ($result_init['availability_calls'] ?? 0), 0, 'SP-X26 availability_calls=0 (no whitelabel gate hit)', 'semantic_runtime');
 upay_assert_eq((int) ($result_init['charge_calls'] ?? 0), 1, 'SP-X26 charge_calls=1 (one Charge dispatched per process_payment)', 'semantic_runtime');
 
-// --- SP-X27: process_payment_result shape is the production WC_Payment_Gateway
-//             contract (array of {result, redirect}). The keys are
-//             production contract, not harness infrastructure.
-upay_assert(is_array($result_init['process_payment_result'] ?? null), 'SP-X27 process_payment_result is array', 'semantic_runtime');
+// --- SP-X27: process_payment_result shape checks -------------------------
+//             Shape/key-existence assertions are harness evidence of the
+//             production return contract, not externally meaningful payment
+//             outcomes: classified harness_self_test per the #28 taxonomy
+//             (same treatment as pid/wc_loaded plumbing below).
+upay_assert(is_array($result_init['process_payment_result'] ?? null), 'SP-X27 process_payment_result is array', 'harness_self_test');
 upay_assert(array_key_exists('result', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has result key', 'harness_self_test');
-upay_assert(array_key_exists('redirect', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has redirect key', 'semantic_runtime');
+upay_assert(array_key_exists('redirect', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has redirect key', 'harness_self_test');
 
 // --- SP-X28: pid isolation ----------------------------------------------
 //             HARNESS self-test (subprocess isolation plumbing), not
@@ -5254,7 +5327,7 @@ upay_assert_eq($result_norest['rest_request_value'] ?? '', '', 'SP-X34 REST_REQU
 //             hostile $_POST proves production entered Store API path.
 $result_sp5_again = upay_run_store_api_child('SP-X35', true, '/wc/store/v1/checkout', 'POST', $store_body);
 upay_assert_eq($result_sp5_again['path'] ?? null, 'store_api', 'SP-X35 hostile Classic POST cannot override Store API body', 'semantic_runtime');
-upay_assert_eq((int) ($result_sp5_again['body_consumed_count'] ?? 0), 1, 'SP-X35 Store API body consumed despite hostile POST', 'semantic_runtime');
+upay_assert_eq((int) ($result_sp5_again['body_consumed_count'] ?? 0), 1, 'SP-X35 Store API body consumed despite hostile POST', 'harness_self_test');
 
 // --- SP-X36: production observed zero secret/provenance writes -------
 //             Genuine semantic: a successful charge would normally have
@@ -5873,7 +5946,7 @@ $blocks = new WCGatewayUPaymentsBlocks_Testable('', $blocks_gw);
 $blocks_data = $blocks->get_payment_method_data();
 $blocks_saved_cards = $blocks_data['saved_cards'] ?? [];
 
-upay_assert_eq($blocks_gw->saved_cards_calls > 0, true, 'BLOCKS-SAN-0 getSavedCardsForCurrentUser called by real Blocks method', 'semantic_runtime');
+upay_assert_eq($blocks_gw->saved_cards_calls, 1, 'BLOCKS-SAN-0 getSavedCardsForCurrentUser called exactly once by real Blocks method', 'semantic_runtime');
 upay_assert_eq(count($blocks_saved_cards), 1, 'BLOCKS-SAN-1 exactly 1 saved card after real Blocks sanitization', 'semantic_runtime');
 upay_assert_eq(count($blocks_saved_cards) >= 1 ? $blocks_saved_cards[0]['token'] : null, '1234567890123456', 'BLOCKS-SAN-2 token is strict string', 'semantic_runtime');
 upay_assert_eq(count($blocks_saved_cards) >= 1 ? is_string($blocks_saved_cards[0]['token']) : false, true, 'BLOCKS-SAN-2b token remains string type', 'semantic_runtime');
@@ -6127,7 +6200,99 @@ $boot_b = \UPayments\Token\CustomerTokenIdentity::get_bootstrap_lock_name();
 upay_assert_eq(is_string($boot_a) && strlen($boot_a) > 0, true, 'PHP-R19-BLN-1 bootstrap lock name is non-empty string', 'helper_unit_runtime');
 upay_assert_eq($boot_a === $boot_b, true, 'PHP-R19-BLN-2 bootstrap lock name is deterministic', 'helper_unit_runtime');
 
+// ---------------------------------------------------------------------------
+// SECTION MALFORMED-CARD: Classic malformed saved-card security identifiers
+// ---------------------------------------------------------------------------
+// Drive each through actual process_payment() for: int, float, bool, array,
+// object, empty string, whitespace string.
+// For each scenario prove: result=failure, Charge=0, Create=0, Retrieve=0,
+// secret_creates=0, identity_writes=0, provenance_writes=0, usermeta_writes=0.
 
+$malformed_card_tokens = [
+    'int' => 1234567890123456,
+    'float' => 123.5,
+    'bool-true' => true,
+    'bool-false' => false,
+    'array' => [1, 2, 3],
+    'object' => (object) ['token' => '1234567890123456'],
+    'empty-string' => '',
+    'whitespace' => '  ',
+    'null' => null,
+    'numeric-with-spaces' => ' 1234567890123456 ',
+    'very-long' => str_repeat('1', 100),
+];
+
+foreach ($malformed_card_tokens as $label => $bad_token) {
+    upay_reset_state();
+    $state =& upay_test_state();
+    $state['current_user_id'] = 42;
+    upay_set_secret('test_key', 'test_secret_' . str_repeat('a', 20), 'test', $gen);
+    $post = [
+        'payment_method' => 'upayments',
+        'upayment_payment_type' => 'cc',
+        'card_token' => $bad_token,
+        'save_card' => '0',
+    ];
+    $order = upay_make_order(80000 + $i, '5.00');
+    $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $post);
+    upay_assert_eq($res['result'], 'failure', "MALFORMED-CARD-$label result=failure", 'semantic_runtime');
+    upay_assert_eq($state['charge_calls'], 0, "MALFORMED-CARD-$label Charge=0", 'semantic_runtime');
+    upay_assert_eq($state['create_token_calls'], 0, "MALFORMED-CARD-$label Create=0", 'semantic_runtime');
+    upay_assert_eq($state['retrieve_calls'], 0, "MALFORMED-CARD-$label Retrieve=0", 'semantic_runtime');
+    upay_assert_eq($state['secret_creates'], 0, "MALFORMED-CARD-$label secret_creates=0", 'semantic_runtime');
+    upay_assert_eq($state['identity_writes'], 0, "MALFORMED-CARD-$label identity_writes=0", 'semantic_runtime');
+    upay_assert_eq($state['provenance_writes'], 0, "MALFORMED-CARD-$label provenance_writes=0", 'semantic_runtime');
+    upay_assert_eq($state['usermeta_writes'], 0, "MALFORMED-CARD-$label usermeta_writes=0", 'semantic_runtime');
+}
+
+// ---------------------------------------------------------------------------
+// SEMANTIC LEDGER — exact family breakdown for auditability
+// ---------------------------------------------------------------------------
+// Residual Correction #28: this ledger is populated automatically at runtime
+// by upay_ledger_family_for() attribution inside _upay_dispatch(). It must
+// sum EXACTLY to the printed semantic_runtime count; any mismatch is a
+// contract break and aborts the run. No family consists solely of direct
+// helpers, reflection, fixture mechanics or output shape.
+$_semantic_ledger = [
+    'PE'             => ['entrypoint' => 'process_payment',        'outcome' => 'economic/preflight result'],
+    'WL'             => ['entrypoint' => 'process_payment',        'outcome' => 'exact source/provider result'],
+    'MM'             => ['entrypoint' => 'process_payment',        'outcome' => 'exact MM provider payload'],
+    'OW'             => ['entrypoint' => 'process_payment',        'outcome' => 'hosted non-WL result'],
+    'SP-SUCCESS'     => ['entrypoint' => 'Store process_payment',  'outcome' => 'exact successful Charge'],
+    'SP-SAVE-CARD'   => ['entrypoint' => 'Store process_payment',  'outcome' => 'Create/provenance/Charge'],
+    'SP-SELECTED'    => ['entrypoint' => 'Store process_payment',  'outcome' => 'Retrieve authorization/Charge'],
+    'SP-MISMATCH'    => ['entrypoint' => 'Store process_payment',  'outcome' => 'Retrieve rejection/no Charge'],
+    'BLOCKS-SAN'     => ['entrypoint' => 'get_payment_method_data','outcome' => 'real sanitizer'],
+    'MALFORMED-CARD' => ['entrypoint' => 'process_payment',        'outcome' => 'strict failure/no mutation'],
+    'HOSTILE'        => ['entrypoint' => 'Store process_payment',  'outcome' => 'hostile Classic POST isolation'],
+    'OTHER'          => ['entrypoint' => 'various',                'outcome' => 'various production workflows'],
+];
+
+echo "\n--- Semantic Ledger ---\n";
+echo "Family | Count | Entrypoint | Outcome\n";
+echo "-------|-------|------------|--------\n";
+$_family_counts = isset($GLOBALS['_upay_semantic_family_counts']) ? $GLOBALS['_upay_semantic_family_counts'] : array();
+$_ledger_total = 0;
+foreach ($_semantic_ledger as $family => $info) {
+    $_family_count = isset($_family_counts[$family]) ? $_family_counts[$family] : 0;
+    echo "$family | $_family_count | {$info['entrypoint']} | {$info['outcome']}\n";
+    $_ledger_total += $_family_count;
+}
+echo "-------|-------|------------|--------\n";
+echo "TOTAL | $_ledger_total | | (must equal semantic_runtime)\n";
+if (isset($GLOBALS['_upay_semantic_other_samples']) && count($GLOBALS['_upay_semantic_other_samples']) > 0) {
+    echo "OTHER samples:\n";
+    foreach ($GLOBALS['_upay_semantic_other_samples'] as $_other_sample) {
+        echo "  - $_other_sample\n";
+    }
+}
+// Residual Correction #28: ledger arithmetic is a contract. If the runtime
+// attribution does not sum exactly to semantic_runtime, the run fails.
+if ($_ledger_total !== $_pass_semantic_runtime) {
+    $fail++;
+    $log[] = "FAIL: [ledger] semantic ledger total $_ledger_total != printed semantic_runtime {$_pass_semantic_runtime} (difference " . ($_pass_semantic_runtime - $_ledger_total) . ")";
+    echo "\n--- ABORT: semantic ledger arithmetic mismatch ---\n";
+}
 
 echo "\n--- Final Report ---\n";
 echo "PASS: $pass\n";
@@ -6142,6 +6307,60 @@ echo "  helper_unit_runtime:   $_fail_helper_unit_runtime\n";
 echo "  static_source:         $_fail_static_source\n";
 echo "  harness_self_test:     $_fail_harness_self_test\n";
 echo "  lint_tooling:          $_fail_lint_tooling\n";
+
+// ---------------------------------------------------------------------------
+// TAXONOMY REGRESSION GUARD — prevent future misclassification
+// ---------------------------------------------------------------------------
+// This guard scans the harness source and rejects known non-semantic
+// families if they are tagged semantic_runtime. This itself is a
+// harness_self_test, not semantic.
+
+$_harness_source = file_get_contents(__FILE__);
+$_forbidden_semantic_prefixes = [
+    'PS-', 'PRSCOPE-', 'ISOLATION-', 'XBM-', 'XPGT-',
+    'SEM14-B-', 'SEM14-C-', 'SEM14-D-', 'SEM14-E-', 'SEM14-F-',
+    'SEM14-O-', 'SEM14-P-', 'SEM14-Q-', 'SEM14-R-', 'SEM14-S-',
+    'SEM14-U-', 'SEM14-Y-',
+];
+$_taxonomy_violations = 0;
+foreach ($_forbidden_semantic_prefixes as $prefix) {
+    // Check if any assertion with this prefix is tagged semantic_runtime
+    if (preg_match('/' . preg_quote($prefix, '/') . '[^\']*\',\s*\'semantic_runtime\'/', $_harness_source)) {
+        echo "TAXONOMY VIOLATION: $prefix found tagged as semantic_runtime\n";
+        $_taxonomy_violations++;
+    }
+}
+
+// Residual Correction #28: also reject known shape/plumbing descriptions
+// tagged as semantic_runtime. These describe harness mechanics or response
+// shape rather than externally meaningful payment outcomes.
+$_forbidden_shape_phrases = array(
+    'process_payment_result is array',
+    'has result key',
+    'has redirect key',
+    'payload_decoded',
+    'body_consumed_count type',
+    'scenario preserved',
+    'shape deterministic',
+);
+foreach ($_forbidden_shape_phrases as $_shape_phrase) {
+    if (preg_match('/\'[^\']*' . preg_quote($_shape_phrase, '/') . '[^\']*\',\s*\'semantic_runtime\'/', $_harness_source)) {
+        echo "TAXONOMY VIOLATION: shape description \"$_shape_phrase\" found tagged as semantic_runtime\n";
+        $_taxonomy_violations++;
+    }
+}
+// Short plumbing tokens require word boundaries to avoid false positives.
+foreach (array('pid', 'wc_loaded') as $_plumbing_token) {
+    if (preg_match('/\'[^\']*\b' . preg_quote($_plumbing_token, '/') . '\b[^\']*\',\s*\'semantic_runtime\'/', $_harness_source)) {
+        echo "TAXONOMY VIOLATION: plumbing token \"$_plumbing_token\" found tagged as semantic_runtime\n";
+        $_taxonomy_violations++;
+    }
+}
+if ($_taxonomy_violations > 0) {
+    $fail++;
+    $log[] = "FAIL: [taxonomy] $_taxonomy_violations forbidden families tagged as semantic_runtime";
+    echo "\n--- ABORT: taxonomy regression detected ---\n";
+}
 
 // Section #14: A failed semantic_runtime assertion is a contract break;
 // we exit with non-zero so CI cannot accidentally accept a regressed build.

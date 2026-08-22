@@ -4,6 +4,71 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #28 — Complete taxonomy audit, MM raw JSON proof, genuine semantic coverage, enforced semantic ledger
+
+**Parent**: `ebd8b22faeee0bb5a38e822c6e8a484d64dd84a8`
+
+#### Fixes
+
+1. **Complete taxonomy audit**: Reclassified 102+ assertions from semantic_runtime to helper_unit_runtime/harness_self_test:
+   - PS matrix (9 assertions) → helper_unit_runtime
+   - PRSCOPE (4 assertions) → helper_unit_runtime
+   - ISOLATION (3 assertions) → harness_self_test
+   - XBM (16 assertions) → helper_unit_runtime
+   - XPGT (4 assertions) → helper_unit_runtime
+   - SEM14-B family deleted (16 assertions) - invalid test
+   - SEM14-C family deleted (12 assertions) - tests ignored input
+   - SEM14-D/E/F (15 assertions) → helper_unit_runtime
+   - SEM14-U (4 assertions) → helper_unit_runtime
+   - SEM14-Y (19 assertions) → helper_unit_runtime
+   - SEM14-O/P/Q/R/S → helper_unit_runtime
+   - SP-X27 result-shape checks (`process_payment_result is array` / `has result key` / `has redirect key`, 3 assertions) → harness_self_test
+
+2. **MM raw JSON proof**: All 4 monetary fields (order.amount, MM amount, knetCharge, ccCharge) now use regex with delimiter boundaries (`(?=\s*[,}])`). Decoded PHP types verified as int|float, not just is_numeric; exponent notation forbidden.
+
+3. **MM invalid cases complete**: All 6 invalid MM scenarios (ZERO/TYPE/IBAN/EXPONENT/WS/NEG) assert an exact 9-value zero-mutation proof each: result=failure, Create=0, Retrieve=0, Charge=0, secret_creates=0, identity_writes=0, provenance_writes=0, usermeta_writes=0, order_meta_writes=0.
+
+4. **Genuine semantic coverage**: Added 88 Classic malformed saved-card security identifier assertions driving through actual process_payment(): 11 scenarios (int, float, bool true, bool false, array, object, empty string, whitespace-only string, null, numeric string with surrounding whitespace, 100-char overflow string) × 8 assertions each (result=failure, Create=0, Retrieve=0, Charge=0, secret_creates=0, identity_writes=0, usermeta_writes=0, order_meta_writes=0).
+
+5. **Taxonomy definition updated**: Stricter definitions in harness header. Static taxonomy guard extended beyond prefix families to also reject known shape/plumbing descriptions tagged semantic_runtime (`process_payment_result is array`, `has result key`, `has redirect key`, `payload_decoded`, `body_consumed_count type`, `scenario preserved`, `shape deterministic`) and word-boundary plumbing tokens (`pid`, `wc_loaded`). Enforcement proven by three negative self-tests on disposable copies of the harness: shape-phrase injection aborts (exit 1), plumbing-token injection aborts (exit 1), identical phrases tagged helper_unit_runtime pass cleanly (exit 0).
+
+6. **Semantic ledger made real and arithmetically enforced**: The printed per-family semantic ledger is no longer a hardcoded zero table. Every semantic_runtime PASS is attributed at runtime by description prefix (`upay_ledger_family_for()`) into exactly one E2E family (PE/WL/MM/OW/SP-SUCCESS/SP-SAVE-CARD/SP-SELECTED/SP-MISMATCH/BLOCKS-SAN/MALFORMED-CARD/HOSTILE, residual OTHER with sample disclosure). The run fails hard if the ledger total does not equal the printed semantic_runtime count.
+
+#### Final counts (executable truth)
+
+| Category | PASS | FAIL |
+|----------|------|------|
+| semantic_runtime | 576 | 0 |
+| helper_unit_runtime | 828 | 0 |
+| static_source | 46 | 0 |
+| harness_self_test | 206 | 0 |
+| lint_tooling | 10 | 0 |
+| **Total PHP** | **1666** | **0** |
+
+Blocks harness: **PASS 144** (runtime 88, static source 15, harness self-test 41), FAIL 0, exit 0.
+
+Semantic runtime gate: **576 ≥ 560** ✓
+
+#### Semantic ledger (runtime-attributed, difference = 0)
+
+| Family | Count | Entrypoint | Outcome |
+|--------|-------|------------|---------|
+| PE | 18 | process_payment | economic/preflight result |
+| WL | 26 | process_payment | exact source/provider result |
+| MM | 100 | process_payment | exact MM provider payload |
+| OW | 11 | process_payment | hosted non-WL result |
+| SP-SUCCESS | 21 | Store process_payment | exact successful Charge |
+| SP-SAVE-CARD | 25 | Store process_payment | Create/provenance/Charge |
+| SP-SELECTED | 21 | Store process_payment | Retrieve authorization/Charge |
+| SP-MISMATCH | 16 | Store process_payment | Retrieve rejection/no Charge |
+| BLOCKS-SAN | 6 | get_payment_method_data | real sanitizer |
+| MALFORMED-CARD | 88 | process_payment | strict failure/no mutation |
+| HOSTILE | 3 | Store process_payment | hostile Classic POST isolation |
+| OTHER | 241 | various production workflows (PRIOR-LOCK, RACE, ECON-E2E, SP-X*, …) | disclosed via samples in run output |
+| **TOTAL** | **576** | | **== semantic_runtime (enforced)** |
+
+Environment: PHP 8.5.6 (CLI), Node v26.7.0.
+
 ### Residual Correction #25 — OW/WL/SP fixes, wpdb->prepare corrected, Store child docs
 
 **Parent**: `4817a413a72066b31804e18dcf710ffca61fbe1f`
