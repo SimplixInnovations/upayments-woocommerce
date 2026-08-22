@@ -4,9 +4,42 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
-### Residual Correction #24 — SP token-role fixes, hostile Classic per-scenario, wpdb->prepare type-sensitive
+### Residual Correction #25 — OW/WL/SP fixes, wpdb->prepare corrected, Store child docs
 
-**Parent**: `ab8e19970f16d753248c20296e366f08db6294f5`
+**Parent**: `4817a413a72066b31804e18dcf710ffca61fbe1f`
+
+#### Fixes
+
+1. **wpdb->prepare $m[0]→$m[1]**: Fixed missing-argument fallback to use captured group, not full match.
+
+2. **SP-SUCCESS-1 redundant assertions removed**: Deleted weak `isset()===false` assertions, kept only exact `array_key_exists()===null`.
+
+3. **SP-SELECTED-CARD writes**: Added usermeta_writes=0, identity_writes>0, provenance_writes>0 (order snapshot).
+
+4. **SP-CARD-MISMATCH Retrieve proof**: Added outbound===A, customerCards contains C, no B, secret_creates=0.
+
+5. **SP-SAVE-CARD persistence**: Added provenance.source=create_201, scope/generation===identity, writes>0.
+
+6. **Store child header**: Updated to reflect actual implementation (outbound inspection, not inbound echo).
+
+7. **OW real hosted success**: Replaced with testable gateway, proves Charge=1, paymentGateway ABSENT, is_whitelabled=false.
+
+8. **WL named fixtures**: Replaced positional matrix with named source/success contract. All 9 scenarios now have exact paymentGateway.src assertions.
+
+#### Final counts
+
+| Category | PASS | FAIL |
+|----------|------|------|
+| semantic_runtime | 666 | 0 |
+| helper_unit_runtime | 677 | 0 |
+| static_source | 46 | 0 |
+| harness_self_test | 146 | 0 |
+| lint_tooling | 10 | 0 |
+| **Total PHP** | **1545** | **0** |
+
+Semantic runtime gate: **666 ≥ 560** ✓
+
+### Residual Correction #24 — SP token-role fixes, hostile Classic per-scenario, wpdb->prepare type-sensitive
 
 #### Fixes
 

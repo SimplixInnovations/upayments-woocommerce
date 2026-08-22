@@ -1,70 +1,42 @@
 <?php
 /**
- * Phase 9G-H12 — Residual Correction #19 — real production-execution
- * subprocess harness for Store API isolation scenarios.
+ * Phase 9G-H12 — Store API subprocess harness.
  *
- * This script is a separate PHP entrypoint. The PARENT harness shells
- * out to it with --scenario / --rest / --uri / --method / --order
- * arguments and the JSON body via the UPAY_BODY env var (Windows
- * escapeshellarg corrupts JSON via colon-padding).
+ * Separate PHP entrypoint for Store API isolation scenarios. The parent
+ * harness shells out with --scenario / --rest / --uri / --method / --order
+ * arguments and the JSON body via UPAY_BODY env var.
  *
- * Architecture (current):
- *   1. Define REST_REQUEST = true|false BEFORE production loads.
+ * Architecture:
+ *   1. Define REST_REQUEST before production loads.
  *   2. Set REQUEST_URI / REQUEST_METHOD on $_SERVER.
- *   3. Build deliberately contradictory hostile Classic $_POST that
- *      must NEVER win over a valid Store API body when both paths
- *      are present. Classic values are chosen to disagree with the
- *      Store body on every security-sensitive field, so a successful
- *      Store path proves the Store body actually won.
- *   4. Load shared bootstrap (tests/harness/_bootstrap.php), which
- *      provides canonical WP / Woo stubs + FakeWC* + WC_Upayments_*
- *      testable classes used by both the parent harness and this
- *      child. The bootstrap uses class_exists / function_exists
- *      guards so it can be required multiple times safely.
- *   5. Configure a real WC_Upayments_InputTestable whose
- *      get_request_body_raw() returns the supplied Store API body
- *      verbatim; consumption count is tracked so the parent can
- *      distinguish the path that entered production.
- *   6. Decode the supplied body once, extract the submitted
- *      customerUniqueToken candidate and the submitted card_token
- *      (when present) so the transport stubs can dynamically echo
- *      the exact candidate / exact membership back to production
- *      without hard-coding unrelated tokens or membership arrays.
- *   7. Build the production transport envelope for the four routes
- *      (charge, create-customer-unique-token, retrieve-customer-cards,
- *      check-payment-button-status) with transport_ok=true,
- *      http_status=201, curl_errno=0, body=scalar JSON string. The
- *      Charge route uses a deterministic redirect link derived from
- *      the scenario label. The Create-token route echoes the exact
- *      submitted candidate (so production's
- *      token===submitted_candidate equality check passes) inside
- *      data.customerUniqueToken. The Retrieve-cards route uses
- *      data.customerCards (NOT data.cards — production's classifier
- *      at UPayments.php:4343 requires customerCards). Membership is
- *      set by exact-string comparison against the submitted
- *      card_token.
- *   8. Call real process_payment() on a registered FakeWCOrder with
- *      FakeWCOrderItem_Product (extends WC_Order_Item_Product) so
- *      production's instanceof gate passes.
- *   9. Emit machine-readable JSON with: scenario, REST_REQUEST
- *      observed, REQUEST_URI, REQUEST_METHOD, payload_decoded,
- *      process_payment result, notice, transport counters,
- *      transport_log, mutation counters, captured Create / Retrieve
- *      / Charge request bodies, selected_channel.
- *
- * The wrapper upay_run_store_api_child() in the parent harness
- * requires exit === 0 before parsing the JSON. Non-zero exits are
- * returned as a child_error result rather than being parsed as a
- * valid test outcome.
+ *   3. Build hostile Classic $_POST (configurable via UPAY_HOSTILE_CLASSIC
+ *      env var) that must never win over a valid Store API body.
+ *   4. Load shared bootstrap (_bootstrap.php) for WP/Woo stubs.
+ *   5. Configure WC_Upayments_InputTestable with the supplied body.
+ *   6. For 'establish_then_select' mode (UPAY_IDENTITY_SETUP):
+ *      - Call get_or_establish_token() to create real customer token A
+ *      - Rewrite Store body card_token to distinct saved-card token B
+ *      - Reset transport/mutation counters before process_payment()
+ *   7. Build transport envelopes for four routes:
+ *      - charge: deterministic redirect link from scenario label
+ *      - create-customer-unique-token: inspects outbound request body,
+ *        captures production-generated candidate, echoes it back
+ *      - retrieve-customer-cards: inspects outbound customerUniqueToken,
+ *        returns scenario-specific customerCards (match/mismatch mode)
+ *      - check-payment-button-status: availability response
+ *   8. Call real process_payment() on FakeWCOrder with
+ *      FakeWCOrderItem_Product (extends WC_Order_Item_Product).
+ *   9. Read identity context and provenance for persistence proof.
+ *  10. Emit machine-readable JSON with all counters, bodies, and
+ *      persistence proof fields.
  *
  * Usage:
- *   UPAY_BODY='{"payment_data":{...}}' \
- *   php store_api_child.php --scenario=SP-1 --rest=true \
- *       --uri=/wc/store/v1/checkout --method=POST --order=99999
- *
- * Exit codes:
- *   0   success
- *   1   malformed arguments
+ *   UPAY_BODY='{"extensions":{...}}' \
+ *   UPAY_IDENTITY_SETUP='{"setup_mode":"establish_then_select",...}' \
+ *   UPAY_RETRIEVE_MODE=match|'mismatch' \
+ *   UPAY_HOSTILE_CLASSIC='{"upayment_payment_type":"knet",...}' \
+ *   php store_api_child.php --scenario=SP-SAVE-CARD --rest=true \
+ *       --uri=/wc/store/v1/checkout --method=POST
  *
  * @package UPayments
  */
@@ -530,18 +502,28 @@ if (is_array($result) && isset($result['redirect'])) {
 
 // --- Read identity context and provenance for persistence proof ---------
 $identity_context_state = null;
+$identity_scope = null;
+$identity_generation = null;
 $provenance_state = null;
 $provenance_token = null;
 $provenance_kind = null;
+$provenance_source = null;
+$provenance_scope = null;
+$provenance_generation = null;
 try {
     $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('test_api_key', false);
     $identity_context_state = $ctx['state'] ?? null;
+    $identity_scope = $ctx['scope'] ?? null;
+    $identity_generation = $ctx['generation_id'] ?? null;
     if (($ctx['state'] ?? null) === 'valid' && ($ctx['scope'] ?? null) !== null && ($ctx['generation_id'] ?? null) !== null) {
         $prov = \UPayments\Token\CustomerTokenIdentity::read_provenance($state['current_user_id'], $ctx['scope'], $ctx['generation_id']);
         $provenance_state = $prov['state'] ?? null;
         if (($prov['state'] ?? null) === 'valid' && is_array($prov['record'] ?? null)) {
             $provenance_token = $prov['record']['token'] ?? null;
             $provenance_kind = $prov['record']['kind'] ?? null;
+            $provenance_source = $prov['record']['source'] ?? null;
+            $provenance_scope = $prov['record']['scope'] ?? null;
+            $provenance_generation = $prov['record']['secret_generation_id'] ?? null;
         }
     }
 } catch (Throwable $e) {
@@ -584,9 +566,14 @@ $out = [
     'provenance_writes'              => $final['provenance_writes'],
     'secret_creates'                 => $final['secret_creates'],
     'identity_context_state'         => $identity_context_state,
+    'identity_scope'                 => $identity_scope,
+    'identity_generation'            => $identity_generation,
     'provenance_state'               => $provenance_state,
     'provenance_token'               => $provenance_token,
     'provenance_kind'                => $provenance_kind,
+    'provenance_source'              => $provenance_source,
+    'provenance_scope'               => $provenance_scope,
+    'provenance_generation'          => $provenance_generation,
     'notices'                        => $final['notices'],
     'pid'                            => getmypid(),
     'wc_loaded'                      => class_exists('WC_Upayments'),

@@ -364,7 +364,7 @@ class WpdbStub {
     public function prepare($sql, ...$args) {
         $i = 0;
         $result = preg_replace_callback('/%([sd])/', function($m) use (&$i, $args) {
-            if (!isset($args[$i])) return $m[0] === 's' ? "''" : '0';
+            if (!isset($args[$i])) return $m[1] === 's' ? "''" : '0';
             $val = $args[$i++];
             if ($m[1] === 'd') {
                 return (string) ((int) $val);
