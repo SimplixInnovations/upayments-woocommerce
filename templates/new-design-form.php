@@ -97,29 +97,62 @@ defined( 'ABSPATH' ) || exit;
     ?>
         <div class="payment-buttons">
             <?php
-            $loggedInUser = $gateway->get_logged_in_user_phone_number();
-            $logged_in_user_phone = '';
-            $logged_in_user_ok = (
-                is_array($loggedInUser)
-                && isset($loggedInUser['success'])
-                && $loggedInUser['success'] === true
-                && isset($loggedInUser['phone'])
-                && is_scalar($loggedInUser['phone'])
-            );
-            if ($logged_in_user_ok) {
-                $logged_in_user_phone = (string) $loggedInUser['phone'];
-                if (trim($logged_in_user_phone) === '') {
-                    $logged_in_user_ok = false;
-                    $logged_in_user_phone = '';
+            $user_id = get_current_user_id();
+            $is_logged_in = $user_id > 0;
+            // Classic Retrieve gating:
+            //   - valid normalized availability (already validated above)
+            //   - Whitelabel exact true
+            //   - CC explicitly enabled
+            //   - logged in
+            //   - Save Card feature enabled
+            //   - existing read-only identity secret/scope/generation
+            //   - valid current provenance
+            // Otherwise ZERO Retrieve call. The gateway helper now requires the
+            // exact already-normalized state and refuses null defaults.
+            $can_retrieve_saved_cards_classic = false;
+            if ($is_logged_in && $save_card_enabled && $payment_data_valid) {
+                $cc_enabled_classic = (
+                    isset($payment_data['payment'])
+                    && is_array($payment_data['payment'])
+                    && array_key_exists('cc', $payment_data['payment'])
+                    && is_scalar($payment_data['payment']['cc'])
+                    && (string) $payment_data['payment']['cc'] !== ''
+                );
+                if ($whitelabled === true && $cc_enabled_classic) {
+                    // Residual Correction #15: single atomic read of the canonical
+                    // identity context (api_key + is_test_mode), then pass the
+                    // captured generation into read_provenance(). The previous
+                    // implementation observed scope and generation via two
+                    // separate reads of the secret option, which enabled torn
+                    // scope(A)+generation(B) snapshots.
+                    $api_key_classic = isset($gateway->apiKey) && is_string($gateway->apiKey) ? $gateway->apiKey : '';
+                    $is_test_mode_classic = (bool) $gateway->getMode();
+                    $ctx_classic = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context(
+                        $api_key_classic,
+                        $is_test_mode_classic
+                    );
+                    if (is_array($ctx_classic)
+                        && isset($ctx_classic['state']) && $ctx_classic['state'] === 'valid'
+                        && is_string($ctx_classic['scope']) && $ctx_classic['scope'] !== ''
+                        && is_string($ctx_classic['generation_id']) && $ctx_classic['generation_id'] !== ''
+                    ) {
+                        $provenance_classic = \UPayments\Token\CustomerTokenIdentity::read_provenance(
+                            $user_id,
+                            $ctx_classic['scope'],
+                            $ctx_classic['generation_id']
+                        );
+                        if (is_array($provenance_classic) && isset($provenance_classic['state']) && $provenance_classic['state'] === 'valid') {
+                            $can_retrieve_saved_cards_classic = true;
+                        }
+                    }
                 }
             }
-            $user_id = get_current_user_id();
-            if ($logged_in_user_ok && $save_card_enabled && $user_id) {
+            if ($can_retrieve_saved_cards_classic) {
             ?>
-                <input id="save_card" type="hidden" name="save_card" value="1"/>
+                <input id="save_card" type="hidden" name="save_card" value="0"/>
                 <?php
-                $savedCards = $gateway->getSavedCards($logged_in_user_phone . $user_id);
-                
+                $savedCards = $gateway->getSavedCardsForCurrentUser($payment_data);
+
                 if (is_array($savedCards) && isset($savedCards['result']) && $savedCards['result'] === 'success' && isset($savedCards['data']) && is_array($savedCards['data']))
                 {
                     $cardList = $savedCards['data'];
@@ -194,18 +227,16 @@ defined( 'ABSPATH' ) || exit;
                     <span class="payment-method-icon2"><i class="fa fa-chevron-right"></i></span>
                 </button>
             
-            <?php if ($key_string == 'cc' && $save_card_enabled) { ?>
+            <?php if ($key_string == 'cc' && $save_card_enabled && $is_logged_in) { ?>
                 <label class="switch-border">For faster and more secure checkout. Save your card details.
                     <label class="switch">
                         <?php
-                            $hasPhone = $logged_in_user_ok && $logged_in_user_phone !== '';
-                            $checked  = ($hasPhone || ($isSubscriptionEnabled && $hasPhone)) ? true : false;
+                            $checked = false;
                         ?>
                         <input
                             type="checkbox"
                             id="chkSaveCard"
-                            onclick="toggleSaveCard(<?php echo $checked ? 'true' : 'false'; ?>);"
-                            <?php echo $checked ? 'checked' : ''; ?>
+                            onclick="toggleSaveCard(<?php echo $is_logged_in ? 'true' : 'false'; ?>);"
                         >
                         <span class="slider round"></span>
                     </label>

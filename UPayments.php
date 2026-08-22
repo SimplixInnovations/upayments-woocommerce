@@ -23,10 +23,12 @@ define("UP_PLUGIN_PATH", plugin_dir_path(__FILE__));
 define('UPAYMENTS_PLUGIN_FILE', __FILE__ );
 
 require_once __DIR__ . '/vendor/plugin-update-checker/plugin-update-checker.php';
+require_once __DIR__ . '/includes/Token/CustomerTokenIdentity.php';
 
 use UPayments\Subscription\Cron\Scheduler;
 use UPayments\Subscription\Checkout\Fields;
 use UPayments\Subscription\Manager;
+use UPayments\Token\CustomerTokenIdentity;
 use YahnisElsts\PluginUpdateChecker\v5\PucFactory;
 
 $updateChecker = PucFactory::buildUpdateChecker(
@@ -104,16 +106,331 @@ function woocommerceUpaymentsInit() {
         );
 
         /**
-         * Normalize save-card request value to strict boolean.
+         * Determine whether a security-sensitive field is present in the request.
          *
-         * Only '1' or integer 1 are treated as true.
-         * All other values (including 'true', 'yes', '2', arrays) => false.
+         * Presence uses array_key_exists semantics so an explicit JSON null
+         * cannot masquerade as absence.
          *
-         * @param mixed $value Raw request value.
+         * @param mixed $source Source array (request body, $_POST, extension map, etc.).
+         * @param string|int $key Field key.
          * @return bool
          */
-        private function normalize_save_card($value): bool {
-            return $value === 1 || $value === '1';
+        private static function field_present($source, $key) {
+            if (!is_array($source)) {
+                return false;
+            }
+            return array_key_exists($key, $source);
+        }
+
+        /**
+         * Parse a save-card request value strictly.
+         *
+         * This parser itself ONLY accepts:
+         *   - integer 0
+         *   - string '0'
+         *   - integer 1
+         *   - string '1'
+         * Any other explicitly supplied value (null, '', bool, float,
+         * whitespace string, 'yes', 'true', 2, arrays, objects, ...) is
+         * INVALID.
+         *
+         * Field presence is the responsibility of the caller: callers must
+         * check field_present($source, $key) before invoking this parser, so
+         * that "field absent" can never be confused with "field supplied as
+         * null or ''".
+         *
+         * @param mixed $value Raw request value (only when present).
+         * @return bool|null true/false for valid, null for invalid.
+         */
+        private static function parse_save_card_strict($value) {
+            // Strict acceptance: integer 0, string '0' => false; integer 1, string '1' => true.
+            if ($value === 0 || $value === '0') {
+                return false;
+            }
+            if ($value === 1 || $value === '1') {
+                return true;
+            }
+            // Anything else (null, '', bool, float, 'yes', 'true', 2, arrays, objects, etc.) is invalid.
+            return null;
+        }
+
+        /**
+         * Parse a Whitelabel source value strictly.
+         *
+         * Strict contract (no trim, no silent coercion):
+         *  - Only raw string values are accepted. Arrays/objects/null/floats/booleans/ints
+         *    are explicitly invalid (no silent default to null).
+         *  - Empty strings are invalid because an explicit empty source is not a
+         *    meaningful payment-source choice.
+         *  - The string is NOT trimmed: any leading/trailing whitespace is treated as
+         *    an explicit malformed value and rejected.
+         *  - Whitespace *anywhere* in the value is rejected.
+         *
+         * @param mixed $value Raw source value (only when present).
+         * @return string|null Exact scalar string or null for invalid.
+         */
+        private static function parse_payment_source_strict($value) {
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '') {
+                return null;
+            }
+            if (preg_match('/\s/', $value)) {
+                return null;
+            }
+            return $value;
+        }
+
+        /**
+         * Build a safe JSON number token for provider amount fields.
+         *
+         * Returns the validated plain decimal string when it is a valid JSON
+         * number token (digits + optional '.') that:
+         *  - contains no exponent
+         *  - contains no leading sign
+         *  - has at least one non-zero integer digit (rejects all-zero values)
+         *  - contains no whitespace
+         *  - fits in 22 characters
+         *
+         * No float conversion is performed. The validated string IS the JSON
+         * number token. Returns null when the input cannot be represented as a
+         * safe JSON number. The caller MUST fail closed on null.
+         *
+         * @param string $amount_str Validated plain decimal input.
+         * @return string|null JSON-safe number token or null.
+         */
+        /**
+         * Pure-PHP comparison of canonical nonnegative-decimal strings.
+         *
+         * Both $a and $b are validated canonical plain-decimal strings
+         * (canonical form per build_amount_json_token: no exponent, no sign,
+         * no leading-zero integer part except for "0", no whitespace, no comma).
+         *
+         * Does not require BCMath, GMP, or any optional extension. Does not
+         * cast to int or float for provider-bound monetary comparison.
+         *
+         * Returns:
+         *   -1 if $a < $b
+         *    0 if $a == $b
+         *   +1 if $a > $b
+         */
+        private static function compare_nonnegative_decimal_strings($a, $b) {
+            if (!is_string($a) || !is_string($b)) {
+                return 0;
+            }
+            $strip = function ($s) {
+                $dot = strpos($s, '.');
+                if ($dot === false) {
+                    $int = $s; $frac = '';
+                } else {
+                    $int = substr($s, 0, $dot);
+                    $frac = substr($s, $dot + 1);
+                }
+                $int = ltrim($int, '0');
+                if ($int === '') $int = '0';
+                $frac = rtrim($frac, '0');
+                return array($int, $frac);
+            };
+            list($ai, $af) = $strip($a);
+            list($bi, $bf) = $strip($b);
+            $ai_len = strlen($ai);
+            $bi_len = strlen($bi);
+            if ($ai_len !== $bi_len) {
+                return $ai_len > $bi_len ? 1 : -1;
+            }
+            if (strcmp($ai, $bi) !== 0) {
+                return strcmp($ai, $bi) > 0 ? 1 : -1;
+            }
+            $max_frac = max(strlen($af), strlen($bf));
+            $af_p = str_pad($af, $max_frac, '0');
+            $bf_p = str_pad($bf, $max_frac, '0');
+            $cmp = strcmp($af_p, $bf_p);
+            if ($cmp === 0) return 0;
+            return $cmp > 0 ? 1 : -1;
+        }
+
+        private static function build_amount_json_token($amount_str) {
+            if (!is_string($amount_str)) {
+                return null;
+            }
+            // Strict JSON-canonical grammar: positive plain-decimal, no leading-zero
+            // integer part (except for "0" itself), no exponent, no sign, no whitespace,
+            // no comma. Accepts "0.900", "0.750", "10.000", "25", "1", "1.0", etc.
+            if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $amount_str)) {
+                return null;
+            }
+            if (preg_match('/\s/', $amount_str)) {
+                return null;
+            }
+            if (strlen($amount_str) === 0 || strlen($amount_str) > 22) {
+                return null;
+            }
+            // Reject all-zero numerics (must be strictly positive).
+            if (self::compare_nonnegative_decimal_strings($amount_str, '0') <= 0) {
+                return null;
+            }
+            return $amount_str;
+        }
+
+        /**
+         * Inject pre-validated JSON number tokens for provider amount fields.
+         *
+         * Map-driven implementation: each numeric field has an associated
+         * sentinel placeholder, max-length, and (optional) max-occurrences.
+         * The payload is rewritten exactly once for each placeholder, with
+         * the pre-validated token substituted verbatim. Final structural
+         * + lexical verification confirms every replacement landed as a JSON
+         * NUMBER (not quoted).
+         *
+         * Sentinel → field mapping:
+         *   "__UPAY_ORDER_AMOUNT_SENTINEL__"      → order.amount          (max 1, max 22 chars)
+         *   "__UPAY_PRODUCT_PRICE_SENTINEL_<i>__"  → products[i].price     (>=0, max 7 chars each)
+         *   "__UPAY_MM_AMOUNT_SENTINEL__"         → extraMerchantData[0].amount (max 1, max 10 chars)
+         *   "__UPAY_MM_KNET_CHARGE_SENTINEL__"    → extraMerchantData[0].knetCharge (max 1)
+         *   "__UPAY_MM_CC_CHARGE_SENTINEL__"      → extraMerchantData[0].ccCharge  (max 1)
+         *
+         * Returns null on any verification failure (no fallback, no silent coerce).
+         *
+         * @param string $payload_json   Encoded payload with sentinels.
+         * @param array<string,string|null> $token_map  Map of sentinel → token (or null to skip).
+         * @param array $extra_sentinels Optional indexed sentinels for per-product prices.
+         *                                   Keys: 'product_price_sent_substring',
+         *                                         'product_price_tokens' (array of strings).
+         * @return string|null Final JSON or null on any verification failure.
+         */
+        private static function inject_amount_token_into_payload_json($payload_json, array $token_map, array $extra_sentinels = array()) {
+            if (!is_string($payload_json) || $payload_json === '') {
+                return null;
+            }
+
+            $result = $payload_json;
+
+            // === Per-product price sentinels (indexed) ===
+            $product_price_tokens = isset($extra_sentinels['product_price_tokens']) && is_array($extra_sentinels['product_price_tokens'])
+                ? $extra_sentinels['product_price_tokens']
+                : array();
+            $product_price_substring = isset($extra_sentinels['product_price_sent_substring']) && is_string($extra_sentinels['product_price_sent_substring'])
+                ? $extra_sentinels['product_price_sent_substring']
+                : '';
+            if ($product_price_substring !== '' && count($product_price_tokens) > 0) {
+                foreach ($product_price_tokens as $idx => $ptoken) {
+                    if (!is_string($ptoken) || $ptoken === '') {
+                        return null;
+                    }
+                    if (strlen($ptoken) > 7) {
+                        return null;
+                    }
+                    $sentinel = $product_price_substring . $idx . '__';
+                    $q_sentinel = '"' . $sentinel . '"';
+                    $actual = substr_count($result, $q_sentinel);
+                    if ($actual !== 1) {
+                        return null;
+                    }
+                    $new_result = str_replace($q_sentinel, $ptoken, $result);
+                    if ($new_result === $result) {
+                        return null;
+                    }
+                    $result = $new_result;
+                }
+            }
+
+            // === Map-driven substitution (single-occurrence sentinels) ===
+            foreach ($token_map as $placeholder => $token) {
+                if (!is_string($placeholder) || $placeholder === '') {
+                    return null;
+                }
+                $q_placeholder = '"' . $placeholder . '"';
+                $actual_count = substr_count($result, $q_placeholder);
+                $expected_count = ($token !== null) ? 1 : 0;
+                if ($actual_count !== $expected_count) {
+                    return null;
+                }
+                if ($token === null) {
+                    continue;
+                }
+                $max_len = self::get_max_length_for_sentinel($placeholder);
+                if ($max_len > 0 && strlen($token) > $max_len) {
+                    return null;
+                }
+                $new_result = str_replace($q_placeholder, $token, $result);
+                if ($new_result === $result) {
+                    return null;
+                }
+                $result = $new_result;
+            }
+
+            // === Final structural + lexical verification ===
+            // 1. Structural decode must succeed.
+            $decoded = json_decode($result, true);
+            if (!is_array($decoded)) {
+                return null;
+            }
+
+            // 2. Lexical verification: each substituted token must appear as a
+            //    JSON NUMBER (with terminator/lookahead so "1" doesn't match "10").
+            //    Verification collects all tokens (per-product + map) and verifies
+            //    each one appears as a JSON number in the final payload.
+            $all_tokens = array();
+            foreach ($product_price_tokens as $pt) {
+                if (is_string($pt) && $pt !== '') {
+                    $all_tokens[] = $pt;
+                }
+            }
+            foreach ($token_map as $token) {
+                if (is_string($token) && $token !== '') {
+                    $all_tokens[] = $token;
+                }
+            }
+            // Verify each substituted token appears in the result JSON as a JSON value.
+            // Each token is a positive plain decimal (per build_amount_json_token /
+            // compute_provider_unit_price_decimal canonicalization). It must NOT be
+            // quoted (i.e., it must be a number, not a string) and it must be
+            // surrounded on both sides by JSON-syntax characters or whitespace, so
+            // that no sub-fragment of a longer number could match.
+            foreach ($all_tokens as $token) {
+                if (!is_string($token) || $token === '') {
+                    continue;
+                }
+                $literal = preg_quote($token, '/');
+                $json_value_re = '/(?P<pre>[\\{\\,\\:])\\s*(?:' . $literal . ')\\s*(?P<post>[\\,\\}\\]]|\\z)/m';
+                if (!preg_match($json_value_re, $result)) {
+                    return null;
+                }
+            }
+
+            // 3. No leftover sentinels.
+            foreach (array_keys($token_map) as $s) {
+                if (strpos($result, (string) $s) !== false) {
+                    return null;
+                }
+            }
+            if ($product_price_substring !== '') {
+                if (strpos($result, $product_price_substring) !== false) {
+                    return null;
+                }
+            }
+
+            return $result;
+        }
+
+        /**
+         * Per-field max length for tokens substituted into the payload.
+         * Provider contract varies per field. Returns 0 for "no ceiling".
+         */
+        private static function get_max_length_for_sentinel($placeholder) {
+            switch ($placeholder) {
+                case '__UPAY_ORDER_AMOUNT_SENTINEL__':
+                    return 22; // order.amount: provider contract ceiling
+                case '__UPAY_PRODUCT_PRICE_SENTINEL__':
+                    return 7;  // products[].price: 1.00..9999.99 / 10.000..99999.99
+                case '__UPAY_MM_AMOUNT_SENTINEL__':
+                    return 10; // MM allocation amount
+                case '__UPAY_MM_KNET_CHARGE_SENTINEL__':
+                case '__UPAY_MM_CC_CHARGE_SENTINEL__':
+                    return 0;  // No invented ceiling — value validated by build_amount_json_token
+            }
+            return 0;
         }
 
         /**
@@ -127,16 +444,46 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Parse a subscription plan value strictly.
+         *
+         * Only scalar string values matching the static allowlist are accepted.
+         * Booleans, ints, floats, arrays, objects, null, and whitespace strings
+         * are explicitly invalid (no silent default to 'one_time'). The string
+         * is NOT trimmed: any leading/trailing whitespace is treated as an
+         * explicit malformed value.
+         *
+         * @param mixed $value Raw plan value (only when present).
+         * @return string|null Canonical plan name or null for invalid.
+         */
+        private static function parse_subscription_plan_strict($value) {
+            if (!is_scalar($value)) {
+                return null;
+            }
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '' || preg_match('/\s/', $value)) {
+                return null;
+            }
+            return $value;
+        }
+
+        /**
          * Parse an interval value strictly.
          *
-         * Accepts only exact integer values 0, 1, 2, 3 or their string equivalents.
-         * Returns -1 for any malformed input.
+         * Accepts ONLY exact integer values 0, 1, 2, 3 or their string
+         * equivalents '0', '1', '2', '3'. Anything else (null, '', bool,
+         * float, '4', 4, arrays, objects, ...) returns -1.
          *
-         * @param mixed $value Raw interval value.
+         * Field presence is the responsibility of the caller. Callers must
+         * use field_present() before invoking this parser so an absent
+         * interval does NOT silently default to 0.
+         *
+         * @param mixed $value Raw interval value (only when present).
          * @return int Parsed interval or -1 if invalid.
          */
         private static function parse_interval($value): int {
-            if ($value === null || $value === '' || $value === 0 || $value === '0') {
+            if ($value === 0 || $value === '0') {
                 return 0;
             }
             if ($value === 1 || $value === '1') {
@@ -168,11 +515,19 @@ function woocommerceUpaymentsInit() {
          * @return string|null Normalized URL or null if invalid.
          */
         private function normalize_upayments_redirect_url($value) {
-            if (!is_scalar($value)) {
+            if (!is_string($value)) {
                 return null;
             }
-            $url = trim((string) $value);
+            $url = trim($value);
             if ($url === '') {
+                return null;
+            }
+            // CR/LF guard — header injection defense.
+            if (strpos($url, "\n") !== false || strpos($url, "\r") !== false) {
+                return null;
+            }
+            // Length guard — production caps at 250 chars.
+            if (strlen($url) > 250) {
                 return null;
             }
             $parts = parse_url($url);
@@ -187,9 +542,487 @@ function woocommerceUpaymentsInit() {
         }
 
         /**
+         * Normalize a request URI/path into a canonical REST route for the Store API.
+         *
+         * Supports pretty permalinks (e.g. /wp-json/wc/store/v1/checkout),
+         * plain-permalink rest_route form (?rest_route=/wc/store/v1/checkout),
+         * and WordPress installed in a subdirectory (e.g. /shop/wp-json/wc/store/v1/checkout).
+         *
+         * @param string $uri Raw REQUEST_URI.
+         * @return string Canonical route (e.g. "/wc/store/v1/checkout") or empty string for invalid input.
+         */
+        private static function normalize_store_api_route($uri) {
+            if (!is_string($uri) || $uri === '') {
+                return '';
+            }
+            $path = $uri;
+            $qpos = strpos($path, '?');
+            if ($qpos !== false) {
+                $query = substr($path, $qpos + 1);
+                $path = substr($path, 0, $qpos);
+                if (preg_match('/(?:^|&)rest_route=([^&]+)/', $query, $m)) {
+                    $rest_route = rawurldecode($m[1]);
+                    if (strpos($rest_route, '/') !== 0) {
+                        $rest_route = '/' . $rest_route;
+                    }
+                    return $rest_route;
+                }
+            }
+            // Strip /index.php prefix if present.
+            if (strpos($path, '/index.php') === 0) {
+                $path = substr($path, strlen('/index.php'));
+                if ($path === '' || $path[0] !== '/') {
+                    $path = '/' . $path;
+                }
+                return $path;
+            }
+            // Strip everything up to and including the /wp-json/ segment, preserving
+            // any preceding subdirectory prefix.
+            $wj = strpos($path, '/wp-json/');
+            if ($wj !== false) {
+                $path = substr($path, $wj + strlen('/wp-json/') - 1);
+                if ($path === '' || $path[0] !== '/') {
+                    $path = '/' . $path;
+                }
+                return $path;
+            }
+            // Already a route-like path.
+            return $path;
+        }
+
+        /**
+         * Pure classifier used to identify a real WooCommerce Store API
+         * checkout request. The wrapper is_store_api_checkout_request() gathers
+         * the runtime context and delegates here.
+         *
+         * @param bool   $is_rest_request REST_REQUEST state.
+         * @param string $normalized_route Route normalized via normalize_store_api_route().
+         * @param string $method Uppercase HTTP method.
+         * @return bool
+         */
+        public static function classify_checkout_request_context($is_rest_request, $normalized_route, $method) {
+            if ($is_rest_request !== true) {
+                return false;
+            }
+            if (!is_string($method) || strtoupper($method) !== 'POST') {
+                return false;
+            }
+            if (!is_string($normalized_route) || $normalized_route === '') {
+                return false;
+            }
+            // Exact endpoint match: must be the checkout route, not just the namespace.
+            // Trailing slash is normalized to no-slash.
+            $route = rtrim($normalized_route, '/');
+            if ($route === '') {
+                return false;
+            }
+            // Reject other Store API endpoints (cart, products, etc.) by exact match.
+            return ($route === '/wc/store/v1/checkout');
+        }
+
+        /**
+         * Single canonical redirect-URL allowlist used by the actual Charge dispatch.
+         * Test seams must reach this via reflection — there is no public surface
+         * added solely for test convenience.
+         *//**
+         * Instance seam for reading the raw HTTP request body.
+         *
+         * Production code reads php://input ONLY through this method. The harness
+         * subclasses UPayments and overrides this method to inject deterministic
+         * bodies for testing without depending on a real PHP request. This is the
+         * single canonical inlet for raw-body access in production.
+         *
+         * Declared as `@property-style` instance method so any subclass (in
+         * particular the harness adapter) can override without dispatching
+         * through static binding.
+         *
+         * @return string Raw request body, or empty string on failure.
+         */
+        protected function get_request_body_raw() {
+            $raw = file_get_contents('php://input');
+            return (is_string($raw)) ? $raw : '';
+        }
+
+        /**
+         * Validate a provider decimal monetary value as a positive-decimal lexical string.
+         * Pure-PHP validation — does not use BCMath, GMP, is_numeric, float, round().
+         *
+         * Allowed: digits, at most one '.', leading digits (not optional).
+         * Rejected: exponent (e/E), sign (+/-), commas, whitespace, INF, NAN,
+         * empty string, leading/trailing '.', multiple '.', leading zeros beyond '0.x'.
+         * Positive sub-units ('0.01', '0.50') are accepted. Pure zero ('0', '0.00')
+         * is rejected because the provider contract is strictly positive.
+         *
+         * Section D2: deterministic preflight failure when the provider
+         * representation cannot preserve the line.
+         *
+         * @param mixed  $value Candidate decimal value.
+         * @param string $field_name Field label for error context (not used in return).
+         * @return string|null Canonical positive-decimal string, or null on rejection.
+         */
+        public static function validate_provider_positive_decimal($value, $field_name = '') {
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '') {
+                return null;
+            }
+            // Reject exponent/sign/comma/whitespace/INF/NAN.
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $value)) {
+                return null;
+            }
+            // Must contain only digits and at most one '.'.
+            if (preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $value) !== 1) {
+                return null;
+            }
+            // No leading '.' allowed.
+            $dot = strpos($value, '.');
+            if ($dot === 0) {
+                return null;
+            }
+            // Reject trailing '.'.
+            $last = strlen($value) - 1;
+            if ($value[$last] === '.') {
+                return null;
+            }
+            // Reject NaN/INF literal strings (defensive — already filtered above).
+            if (strcasecmp($value, 'NAN') === 0 || strcasecmp($value, 'INF') === 0) {
+                return null;
+            }
+            // Reject zero as a non-positive monetary line. Pattern matches
+            // '0', '0.0', '0.00', '00.000', etc. — any all-zero representation.
+            // Positive sub-units like '0.01', '0.50', '0.1' are accepted.
+            if (preg_match('/^0+(?:\.0+)?$/', $value)) {
+                return null;
+            }
+            return $value;
+        }
+
+        /**
+         * Validate a provider decimal monetary value as a nonnegative-decimal
+         * lexical string. Same lexical rules as the positive variant, but
+         * accepts exactly zero. Used for product line totals that may be
+         * zero (e.g. $0.00 promotional lines) while the overall order amount
+         * still must be strictly positive.
+         *
+         * @param mixed  $value Candidate decimal value.
+         * @param string $field_name Field label for error context (not used in return).
+         * @return string|null Canonical nonnegative-decimal string, or null on rejection.
+         */
+        public static function validate_provider_nonnegative_decimal($value, $field_name = '') {
+            if (!is_string($value)) {
+                return null;
+            }
+            if ($value === '') {
+                return null;
+            }
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $value)) {
+                return null;
+            }
+            if (preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $value) !== 1) {
+                return null;
+            }
+            $dot = strpos($value, '.');
+            if ($dot === 0) {
+                return null;
+            }
+            $last = strlen($value) - 1;
+            if ($value[$last] === '.') {
+                return null;
+            }
+            if (strcasecmp($value, 'NAN') === 0 || strcasecmp($value, 'INF') === 0) {
+                return null;
+            }
+            // Anything matching /^[0-9]+(\.[0-9]+)?$/ is >= 0. Return as-is.
+            return $value;
+        }
+
+        /**
+         * Compute the provider-compatible unit price as a decimal string.
+         * Division: (line_total / qty) using exact decimal long division.
+         *
+         * Section #14 behavior:
+         *  - Accepts a nonnegative-decimal lexical string for line_total.
+         *    A zero line_total ("0", "0.00") is accepted and yields "0" (or
+         *    "0.<n>" once the fractional scale is matched) — zero-price
+         *    promotional lines remain in products[] with numeric price 0.
+         *  - Integer qty is preserved raw (no rounding at the boundary).
+         *  - Float input for line_total is REJECTED — we cannot claim exact
+         *    lexical product economics while accepting float line totals.
+         *  - Digit long division extends fractional digits one at a time
+         *    (remainder*10 / qty) until remainder=0, capping at
+         *    UNIT_PRICE_MAX_FRACTIONAL_DIGITS. If the remainder never
+         *    becomes zero inside the cap, return null deterministically —
+         *    no truncation, no rounding, no float, no BCMath, no GMP.
+         *  - Examples:
+         *      1.00 / 8  -> 0.125   (exact)
+         *      10.00 / 3 -> null    (non-terminating within cap)
+         *      0.00 / 5  -> 0       (zero-price line preserved)
+         *
+         * @param mixed $line_total Canonical nonnegative-decimal string.
+         * @param int   $qty        Strict positive integer quantity.
+         * @return string|null Decimal string unit price, or null on impossibility.
+         */
+        public static function compute_provider_unit_price_decimal($line_total, $qty) {
+            // Reject float line totals outright — we cannot claim exact lexical
+            // economics while accepting a float that may have been produced by
+            // arithmetic on an inexact binary representation.
+            if (is_float($line_total)) {
+                return null;
+            }
+            $validated_line = self::validate_provider_nonnegative_decimal($line_total, 'line_total');
+            if ($validated_line === null) {
+                return null;
+            }
+            // Defensive: reject line totals with leading zeros on the integer
+            // part (e.g. "01.00"). The lexical canonical form for payment
+            // gateways is "1.00". Without this filter a crafted "01.00" would
+            // pass the validator regex but bypass canonicalization.
+            $dot = strpos($validated_line, '.');
+            $int_part = ($dot !== false) ? substr($validated_line, 0, $dot) : $validated_line;
+            if ($int_part !== '' && $int_part !== '0' && $int_part[0] === '0') {
+                return null;
+            }
+            if (!is_int($qty) || $qty <= 0) {
+                return null;
+            }
+
+            // Split the line into integer and fractional parts.
+            $frac_part = ($dot !== false) ? substr($validated_line, $dot + 1) : '';
+            $line_decimals = strlen($frac_part);
+
+            // Integer numerator = int_part concatenated with frac_part (no decimal).
+            $numer_str = $int_part . $frac_part;
+            // Numerator is a nonnegative integer digit string. qty is a positive int.
+            // We digit-divide by qty using ordinary long division semantics.
+            $unit_int = self::digit_long_divide($numer_str, $qty);
+            if ($unit_int === null) {
+                return null;
+            }
+            // unit_int is the integer quotient (no fractional digits yet).
+
+            // Exact long division with remainder extension.
+            // Multiply the remainder by 10, divide by qty, repeat until
+            // remainder=0 or we hit the cap. Each step appends one digit
+            // to the fractional portion.
+            $remainder = self::digit_long_divide_remainder($numer_str, $qty);
+            if ($remainder === null) {
+                return null;
+            }
+            // The cap is on TOTAL fractional digits in the FINAL result,
+            // which equals k (extended frac digits) + line_decimals (scale
+            // shift back to the original unit). For line_decimals = 2 and
+            // max_frac = 7, F can extend at most 5 digits.
+            $max_frac = self::$UNIT_PRICE_MAX_FRACTIONAL_DIGITS;
+            $frac_cap = max(0, $max_frac - $line_decimals);
+            $unit_frac = '';
+            while ($remainder !== 0 && strlen($unit_frac) < $frac_cap) {
+                $remainder *= 10;
+                $digit = intdiv($remainder, $qty);
+                $remainder = $remainder - $digit * $qty;
+                $unit_frac .= (string) $digit;
+            }
+            if ($remainder !== 0) {
+                // Non-terminating within the provider-compatible boundary.
+                return null;
+            }
+            $k = strlen($unit_frac);
+
+            // Scale back: the quotient was computed in 10^line_decimals
+            // subunits (cents for line_decimals = 2). Combine the integer
+            // quotient and extended fraction as one digit string N2, then
+            // express as N2 / 10^(k + line_decimals) in the original unit.
+            $combined = ($unit_int === '') ? '0' : $unit_int;
+            $combined .= $unit_frac;
+            $total_shift = $k + $line_decimals;
+            $len_combined = strlen($combined);
+            if ($len_combined <= $total_shift) {
+                // Result is < 1: prepend "0." and pad with leading zeros.
+                $pad = $total_shift - $len_combined;
+                $unit_str = '0.' . str_repeat('0', $pad) . $combined;
+            } else {
+                $int_out = substr($combined, 0, $len_combined - $total_shift);
+                $frac_out = substr($combined, $len_combined - $total_shift);
+                $unit_str = $int_out . '.' . $frac_out;
+            }
+
+            // Drop trailing zeros from the fraction so the result is the
+            // shortest exact representation. 0.50 -> 0.5, 0.125 stays.
+            if (strpos($unit_str, '.') !== false) {
+                $unit_str = rtrim($unit_str, '0');
+                if (substr($unit_str, -1) === '.') {
+                    $unit_str = substr($unit_str, 0, -1);
+                }
+            }
+
+            // The unit price for a zero-price line must validate as the
+            // nonnegative decimal string "0". For any other unit price, the
+            // positive validator guarantees >0 and the lexical shape.
+            if ($unit_str === '0' || $unit_str === '0.0' || $unit_str === '0.00' || $unit_str === '0.000') {
+                return self::validate_provider_nonnegative_decimal($unit_str, 'unit_price');
+            }
+            return self::validate_provider_positive_decimal($unit_str, 'unit_price');
+        }
+
+        /**
+         * Digit long division of a positive integer digit string by a positive int.
+         * Returns the exact quotient digit string, or null if the input string is
+         * not a valid positive integer digit string. Detects digit-string overflow
+         * (length > PHP_INT_MAX decimal digits) and returns null deterministically.
+         *
+         * @param string $numer_str Strict positive integer digit string.
+         * @param int    $denom     Strict positive int divisor.
+         * @return string|null Quotient digit string, or null on invalid input.
+         */
+        private static function digit_long_divide($numer_str, $denom) {
+            if (!is_string($numer_str) || !preg_match('/^[0-9]+$/', $numer_str)) {
+                return null;
+            }
+            if (!is_int($denom) || $denom <= 0) {
+                return null;
+            }
+            // 9,223,372,036,854,775,807 ≈ 19 decimal digits. Above this, PHP int
+            // arithmetic on cumulative remainders is fine (remainder is bounded by
+            // denominator), but the quotient string may exceed int width. We allow
+            // up to a hard ceiling and beyond that we still operate digit-by-digit
+            // (no overflow in the remainder).
+            $quotient = '';
+            $carry = 0;
+            $len = strlen($numer_str);
+            for ($i = 0; $i < $len; $i++) {
+                $digit = ord($numer_str[$i]) - 48;
+                $carry = $carry * 10 + $digit;
+                $q = intdiv($carry, $denom);
+                $carry = $carry - $q * $denom;
+                // Skip leading zeros until we have written something.
+                if ($q !== 0 || $quotient !== '') {
+                    $quotient .= (string) $q;
+                }
+            }
+            if ($quotient === '') {
+                $quotient = '0';
+            }
+            return $quotient;
+        }
+
+        /**
+         * Compute the integer remainder of (numer_str / denom) using
+         * digit long division. Returns the final carry (remainder) or null
+         * on invalid input. The remainder is guaranteed to be in [0, denom)
+         * for valid input.
+         *
+         * @param string $numer_str Strict positive integer digit string.
+         * @param int    $denom     Strict positive int divisor.
+         * @return int|null Final remainder, or null on invalid input.
+         */
+        private static function digit_long_divide_remainder($numer_str, $denom) {
+            if (!is_string($numer_str) || !preg_match('/^[0-9]+$/', $numer_str)) {
+                return null;
+            }
+            if (!is_int($denom) || $denom <= 0) {
+                return null;
+            }
+            $carry = 0;
+            $len = strlen($numer_str);
+            for ($i = 0; $i < $len; $i++) {
+                $digit = ord($numer_str[$i]) - 48;
+                $carry = $carry * 10 + $digit;
+                $q = intdiv($carry, $denom);
+                $carry = $carry - $q * $denom;
+            }
+            return $carry;
+        }
+
+        /**
+         * Convert a numeric or string value into the canonical lexical decimal
+         * accepted by validate_provider_positive_decimal() / validate_provider_nonnegative_decimal().
+         *
+         * No silent type coercion on malformed lexical forms. The following are
+         * explicitly rejected with a null return:
+         *   - Leading '+' (e.g. "+1", "+1.50") — never accepted; the provider
+         *     contract uses unsigned decimal strings.
+         *   - Leading zeros on positive integers (e.g. "01", "01.00") — never
+         *     accepted; prevents lexical ambiguity ("01.00" vs "1.00").
+         *   - Exponent notation (e.g. "1e3", "1.5E-2") — never accepted.
+         *   - NaN / INF literals — never accepted.
+         * Floats are accepted only as a deterministic conversion step (rejecting
+         * non-finite values), and the resulting string is re-validated lexically.
+         *
+         * @param mixed $value Numeric value or string.
+         * @return string|null Canonical decimal string, or null on rejection.
+         */
+        public static function canonicalize_provider_decimal_string($value) {
+            if (is_int($value)) {
+                return (string) $value;
+            }
+            if (is_float($value)) {
+                if (!is_finite($value)) {
+                    return null;
+                }
+                $candidate = (string) $value;
+            } elseif (is_string($value)) {
+                $candidate = $value;
+            } else {
+                return null;
+            }
+            // Reject malformed lexical forms explicitly. We do NOT strip '+' / '0'-prefixes.
+            if (preg_match('/[eE+\-,]|[ \t\n\r\f\v]/', $candidate)) {
+                return null;
+            }
+            if (strcasecmp($candidate, 'NAN') === 0 || strcasecmp($candidate, 'INF') === 0) {
+                return null;
+            }
+            // Reject leading zeros on integer part (e.g. "01", "00.5", "007"). Lexically
+            // canonical for payment gateways is "1", "0.5", "7". Without this filter, a
+            // crafted "01.00" would otherwise pass the digit/dot regex in the validator.
+            $dot = strpos($candidate, '.');
+            $int_part = ($dot !== false) ? substr($candidate, 0, $dot) : $candidate;
+            if ($int_part !== '' && $int_part !== '0' && $int_part[0] === '0') {
+                return null;
+            }
+            return $candidate;
+        }
+
+        /**
+         * Detect the actual WooCommerce Store API checkout request.
+         *
+         * REST_REQUEST alone is too broad: any WP/Woo REST traffic (admin REST,
+         * custom REST endpoints, third-party plugins) sets REST_REQUEST and
+         * would be misclassified as Blocks/Store API. Resolve the actual
+         * canonical REST route and require it to match the Store API checkout
+         * endpoint.
+         *
+         * @return bool true only when the request targets /wc/store/v1/checkout under REST_REQUEST + POST.
+         */
+        private static function is_store_api_checkout_request() {
+            if (!defined('REST_REQUEST') || !REST_REQUEST) {
+                return false;
+            }
+            $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+            if ($uri === '') {
+                return false;
+            }
+            $route = self::normalize_store_api_route($uri);
+            if ($route === null) {
+                return false;
+            }
+            $method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper((string) $_SERVER['REQUEST_METHOD']) : '';
+            return self::classify_checkout_request_context(true, $route, $method);
+        }
+
+        /**
          * Payment-method availability rate-gate constants.
          */
         private static $RATE_GATE_COOLDOWN = 65;
+
+        /**
+         * Maximum fractional digits tolerated for an exact provider unit
+         * price. Provider product prices are bounded to a small number of
+         * fractional digits; anything beyond this boundary is treated as a
+         * non-terminating division and the unit-price computation fails
+         * closed (null) so the request is rejected at preflight.
+         */
+        private static $UNIT_PRICE_MAX_FRACTIONAL_DIGITS = 7;
 
         /**
          * Get the mode-specific durable rate-gate option name.
@@ -217,7 +1050,7 @@ function woocommerceUpaymentsInit() {
             $mode = $this->getMode() ? 'test' : 'live';
             $fingerprint = hash_hmac('sha256', $mode . '|' . $this->apiKey, wp_salt('auth'));
             $short_hash = substr($fingerprint, 0, 16);
-            return 'upay_pm_' . $short_hash;
+            return 'upay_pm_v3_' . $short_hash;
         }
 
         /**
@@ -312,6 +1145,77 @@ function woocommerceUpaymentsInit() {
                 return $cached;
             }
             return null;
+        }
+
+        /**
+         * Section Z: Canonical availability cache schema validator.
+         *
+         * Strict canonical schema3 success/failure shapes only. Rejects any
+         * additional top-level keys, additional payButtons keys, or
+         * incorrectly-shaped values. Fresh provider responses may include
+         * unknown provider buttons, but cached data MUST be the canonical
+         * normalized representation only.
+         *
+         * @param mixed $cached Cached value.
+         * @return string|bool 'success' | 'failure' | false (malformed)
+         */
+        private function is_valid_cached_availability($cached) {
+            if (!is_array($cached)) {
+                return false;
+            }
+            // Failure sentinel: exactly { schema: 3, state: 'failure' }
+            if (count($cached) === 2
+                && array_key_exists('schema', $cached) && $cached['schema'] === 3
+                && array_key_exists('state', $cached) && $cached['state'] === 'failure'
+            ) {
+                return 'failure';
+            }
+            // Success: exactly four top-level keys.
+            $success_top_keys = array('schema', 'result', 'isWhiteLabel', 'payButtons');
+            $cached_keys = array_keys($cached);
+            sort($cached_keys);
+            $expected_keys = $success_top_keys;
+            sort($expected_keys);
+            if ($cached_keys !== $expected_keys) {
+                return false;
+            }
+            if (!isset($cached['schema']) || $cached['schema'] !== 3) {
+                return false;
+            }
+            if (!isset($cached['result']) || $cached['result'] !== 'success') {
+                return false;
+            }
+            if (!isset($cached['isWhiteLabel']) || !is_bool($cached['isWhiteLabel'])) {
+                return false;
+            }
+            if (!isset($cached['payButtons']) || !is_array($cached['payButtons'])) {
+                return false;
+            }
+            $known = array('knet', 'credit_card', 'apple_pay_knet', 'apple_pay', 'samsung_pay', 'google_pay');
+            // payButtons must contain EXACTLY the six known keys (no extras).
+            $pb_keys = array_keys($cached['payButtons']);
+            sort($pb_keys);
+            $expected_pb_keys = $known;
+            sort($expected_pb_keys);
+            if ($pb_keys !== $expected_pb_keys) {
+                return false;
+            }
+            foreach ($known as $btn) {
+                if (!array_key_exists($btn, $cached['payButtons'])
+                    || !is_int($cached['payButtons'][$btn])
+                ) {
+                    return false;
+                }
+                $v = $cached['payButtons'][$btn];
+                if ($v !== 0 && $v !== 1) {
+                    return false;
+                }
+            }
+            return 'success';
+        }
+
+        private function get_failure_sentinel() {
+            return array('schema' => 3, 'state' => 'failure');
         }
 
         /**
@@ -796,7 +1700,7 @@ function woocommerceUpaymentsInit() {
          * @param string|null $body    JSON-encoded request body, or null for GET.
          * @return array{transport_ok: bool, body: string|null, http_status: int, curl_errno: int}
          */
-        private function execute_upayments_request($route, $method, $body = null)
+        protected function execute_upayments_request($route, $method, $body = null)
         {
             $outcome = array(
                 'transport_ok' => false,
@@ -1423,9 +2327,20 @@ function woocommerceUpaymentsInit() {
         // Process payment (must use feature flags to route API calls)
         public function process_payment( $order_id ) {
             global $woocommerce;
-            $whitelabled = false;
 
-            $order = wc_get_order($order_id);
+            // Section Y: Defensive order boundary.
+            if (!is_numeric($order_id) || (int) $order_id <= 0) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $order = wc_get_order((int) $order_id);
+            if (!$order || !($order instanceof \WC_Order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $whitelabled = false;
             $order_data = $order->get_data();
             $order_total = $order->get_total();
 
@@ -1440,32 +2355,113 @@ function woocommerceUpaymentsInit() {
             $product_type = [];
 
             $productArrayNew = [];
+            $product_price_tokens = [];
             $cart_has_custom_product = false;
+            $order_has_subscription_product = false;
+            $order_has_normal_product = false;
 
             $i=0;
 
             foreach ($order->get_items('line_item') as $item)
             {
+                // Section J: Product boundary — fail, do not skip.
+                if (!$item || !($item instanceof \WC_Order_Item_Product)) {
+                    $this->log('Invalid line item in order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
                 /** @var WC_Order_Item_Product $item */
                 $product = $item->get_product();
-                $sale_price = $product->get_regular_price();
-                $sale_price = !empty($sale_price) ? $sale_price : 0;
+                if (!$product || !($product instanceof \WC_Product)) {
+                    $this->log('Unloadable product in order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Section D: Use order-line values, not current catalog price.
+                // Strict integer quantity validation: reject fractional, negative, zero,
+                // or out-of-range integer values. Pure integer preservation, no
+                // rounding/float math — the wire format requires an int.
+                $qty = $item->get_quantity();
+                if (!is_int($qty) || $qty <= 0 || $qty > 9999999) {
+                    $this->log('Invalid product quantity.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Section D2: Pure deterministic decimal handling.
+                // Provider requires a positive-decimal string for the line price.
+                // WC_Order_Item_Product::get_total() returns a numeric value (often
+                // a float). Section #14: we REJECT float input outright for product
+                // economics — claiming exact lexical economics while accepting a
+                // float contradicts itself. The order-line total MUST be a
+                // canonical decimal string. If WC returns a float we look up the
+                // canonical stored string value via the meta or refuse the line.
+                //
+                // Product line totals may be zero (e.g. $0.00 promotional lines);
+                // use the *nonnegative* lexical validator here. The unit_price
+                // down-stream uses the *positive* validator for provider contract.
+                $raw_line_total = $item->get_total();
+                if (is_float($raw_line_total)) {
+                    $this->log('Rejecting float line total for product economics.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $line_total_canonical = self::canonicalize_provider_decimal_string($raw_line_total);
+                $line_total_validation = self::validate_provider_nonnegative_decimal($line_total_canonical, 'line_total');
+                if ($line_total_validation === null) {
+                    $this->log('Invalid line total.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $line_total = $line_total_validation;
+
+                // Derive provider-compatible unit price from order line as a
+                // deterministic decimal string. No round()/float math. Quantization
+                // uses string-based decimal division by the integer quantity.
+                $unit_price = self::compute_provider_unit_price_decimal($line_total, $qty);
+                if ($unit_price === null) {
+                    // Unit price cannot be expressed as a stable provider decimal
+                    // (e.g. line_total/qty is not a clean fraction at the captured
+                    // precision). Fail closed rather than silently truncating.
+                    $this->log('Invalid unit price derivation.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Section F: UTF-8 safe truncation.
+                $normalized_name = $this->truncate_provider_text($item->get_name(), 255);
+                $normalized_description = $this->truncate_provider_text($item->get_name(), 255);
+
                 if($product->get_type() === 'custom_type'){
                     $cart_has_custom_product = true;
+                    $order_has_subscription_product = true;
+                } else {
+                    $order_has_normal_product = true;
                 }
-                
-                $item_data = $item->get_data();
-                $product_name[] = $item->get_name();
-                $product_price[] = $sale_price;
-                $product_qty[] = $item_data["quantity"];
-                $product_type[] = $product->get_type();
-                
-                $productArrayNew[$i]['name'] = $item->get_name();
-                $productArrayNew[$i]['description']= $item->get_name();
-                $productArrayNew[$i]['price'] = $sale_price;
-                $productArrayNew[$i]['quantity'] =$item_data["quantity"];
-                $productArrayNew[$i]['type'] = $product->get_type();
+
+                // Section C: Use normalized values in payload.
+                // 'type' is intentionally omitted — provider does not document a
+                // contract for this key, so we send only the documented keys.
+                //
+                // The 'price' field is built as a per-product indexed sentinel so
+                // the injection step can replace it with a JSON NUMBER (not quoted).
+                // We track every product's validated price token so the injector
+                // can verify each one against its corresponding sentinel.
+                $productArrayNew[$i] = array(
+                    'name'        => $normalized_name,
+                    'description' => $normalized_description,
+                    'price'       => '__UPAY_PRODUCT_PRICE_SENTINEL_' . $i . '__',
+                    'quantity'    => $qty,
+                );
+                $product_price_tokens[] = $unit_price;
                 $i++;
+            }
+
+            if (empty($productArrayNew)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
             if($this->paymentData == null ) {
@@ -1489,62 +2485,176 @@ function woocommerceUpaymentsInit() {
             $whitelabled = $payment_data['whitelabled'];
 
             // Central checkout defaults — initialized before Classic/Blocks branching.
-            $src                   = 'knet';
+            $src                   = null; // Section O: Non-Whitelabel uses hosted checkout, no specific source.
             $cardToken             = null;
             $isSaveCard            = false;
             $isSaveCardRequested   = false;
             $subscription_plan     = 'one_time';
             $subscription_interval = 0;
+            $user_id               = get_current_user_id();
 
-            // 1. Get Extension Data from the Blocks Checkout
-            // WooCommerce Blocks sends this data in the request body, not $_POST.
-            // Require arrays at each structural level to prevent type confusion.
-            $request_data = json_decode(file_get_contents('php://input'), true);
+            // Section AN: Detect Store API/REST independently.
+            // Must use authoritative Store API namespace detection, not REST_REQUEST alone.
+            $is_store_api = self::is_store_api_checkout_request();
+            $is_blocks_request = false;
+            $request_data = null;
             $extension_data = array();
-            if (is_array($request_data)
-                && isset($request_data['extensions'])
-                && is_array($request_data['extensions'])
-                && isset($request_data['extensions']['upayments'])
-                && is_array($request_data['extensions']['upayments'])
-            ) {
-                $extension_data = $request_data['extensions']['upayments'];
+
+            if ($is_store_api) {
+                // Store API: parse JSON only, never consume Classic POST.
+                $raw_input = $this->get_request_body_raw();
+                if (is_string($raw_input) && $raw_input !== '') {
+                    $request_data = json_decode($raw_input, true);
+                }
+                if (!is_array($request_data)) {
+                    // Malformed JSON in Store API context — reject.
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (array_key_exists('extensions', $request_data)) {
+                    if (!is_array($request_data['extensions'])) {
+                        // Malformed extensions container — fail closed.
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    if (array_key_exists('upayments', $request_data['extensions'])) {
+                        if (!is_array($request_data['extensions']['upayments'])) {
+                            // Malformed upayments extension data — fail closed.
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
+                        $extension_data = $request_data['extensions']['upayments'];
+                    }
+                    // Missing upayments namespace (or explicit null) => still Blocks,
+                    // not Classic fallback. The request shape itself is Store API.
+                }
+                $is_blocks_request = true;
             }
+            // Classic POST path is only for actual Classic checkout (not Store API).
 
-            if(!empty($extension_data)){
+            if ($is_blocks_request) {
                 // Blocks path: read save_card and card_token only.
-                // Payment source is NOT read here — it is determined below
-                // based on whitelabel state.
-                if (isset($extension_data['card_token']) && is_scalar($extension_data['card_token'])) {
-                    $cardToken = trim((string) $extension_data['card_token']);
+                // Section AC: Reject non-scalar security-sensitive fields.
+                // Presence is decided by array_key_exists so explicit JSON null cannot
+                // masquerade as absence.
+                if (self::field_present($extension_data, 'card_token')) {
+                    $raw = $extension_data['card_token'];
+                    if ($raw === null) {
+                        $cardToken = null;
+                    } elseif (is_string($raw)) {
+                        // Section AT: Strict no-trim card token handling.
+                        // The card token is a security identifier — we accept it
+                        // exactly as supplied and validate without trimming.
+                        // Whitespace anywhere (including leading/trailing) is invalid
+                        // and is rejected as a malformed value (not coerced).
+                        if ($raw === '') {
+                            $cardToken = null;
+                        } elseif (preg_match('/\s/', $raw)) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        } else {
+                            $cardToken = $raw;
+                        }
+                    } elseif (is_int($raw)) {
+                        // Strict: integer token not supported by the existing frozen contract.
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    } else {
+                        // Arrays, objects, bools, floats are invalid.
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                 }
 
-                if (isset($extension_data['save_card'])) {
-                    $isSaveCardRequested = $this->normalize_save_card($extension_data['save_card']);
+                if (self::field_present($extension_data, 'save_card')) {
+                    // Presence-aware: parse only when explicitly supplied.
+                    // The parser itself rejects null, '', booleans, floats, 'yes',
+                    // 'true', 2, arrays, objects, etc.
+                    $parsed_save = self::parse_save_card_strict($extension_data['save_card']);
+                    if ($parsed_save === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $isSaveCardRequested = $parsed_save;
                 }
 
-                if (isset($extension_data['upay_subscription_plan']) && is_scalar($extension_data['upay_subscription_plan'])) {
-                    $subscription_plan = sanitize_text_field($extension_data['upay_subscription_plan']);
+                if (self::field_present($extension_data, 'upay_subscription_plan')) {
+                    $parsed_plan = self::parse_subscription_plan_strict($extension_data['upay_subscription_plan']);
+                    if ($parsed_plan === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    if (!self::is_valid_subscription_plan($parsed_plan)) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $subscription_plan = $parsed_plan;
                 }
-                if (isset($extension_data['upay_subscription_interval']) && is_scalar($extension_data['upay_subscription_interval'])) {
+                if (self::field_present($extension_data, 'upay_subscription_interval')) {
+                    if (!is_scalar($extension_data['upay_subscription_interval'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
                     $subscription_interval = self::parse_interval($extension_data['upay_subscription_interval']);
                 }
             } else {
                 // Classic path: require scalar + wp_unslash before sanitizing.
+                // Section AC: Reject non-scalar security-sensitive fields.
+                // Presence-aware: $_POST is treated as array for field presence.
                 $this->log("Whitelabled: " . ($whitelabled ? "true" : "false"));
+                $classic_post = isset($_POST) && is_array($_POST) ? $_POST : array();
 
-                if (isset($_POST["save_card"]) && is_scalar($_POST["save_card"])) {
-                    $isSaveCardRequested = $this->normalize_save_card(wp_unslash($_POST["save_card"]));
+                if (self::field_present($classic_post, 'save_card')) {
+                    if (!is_scalar($classic_post['save_card'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $parsed_save = self::parse_save_card_strict(wp_unslash($classic_post['save_card']));
+                    if ($parsed_save === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $isSaveCardRequested = $parsed_save;
                 }
 
-                if (isset($_POST["card_token"]) && is_scalar($_POST["card_token"])) {
-                    $cardToken = trim((string) wp_unslash($_POST["card_token"]));
+                if (self::field_present($classic_post, 'card_token')) {
+                    // Section #14: Reject int/float/bool/array/object outright.
+                    // A scalar coercion of a non-string into a string token would
+                    // accept a security identifier that the Blocks path already
+                    // rejects, and would mask a malformed request. Strings only,
+                    // no leading/trailing whitespace.
+                    if (!is_string($classic_post['card_token'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $raw_card = wp_unslash($classic_post['card_token']);
+                    if (!is_string($raw_card) || preg_match('/\s/', $raw_card)) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    // Section AT: Strict no-trim card token handling (Classic path too).
+                    $cardToken = $raw_card;
                 }
 
-                if (isset($_POST['upay_subscription_plan']) && is_scalar($_POST['upay_subscription_plan'])) {
-                    $subscription_plan = sanitize_text_field(wp_unslash($_POST['upay_subscription_plan']));
+                if (self::field_present($classic_post, 'upay_subscription_plan')) {
+                    $plan_raw = wp_unslash($classic_post['upay_subscription_plan']);
+                    $parsed_plan = self::parse_subscription_plan_strict($plan_raw);
+                    if ($parsed_plan === null) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    if (!self::is_valid_subscription_plan($parsed_plan)) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $subscription_plan = $parsed_plan;
                 }
-                if (isset($_POST['upay_subscription_interval']) && is_scalar($_POST['upay_subscription_interval'])) {
-                    $subscription_interval = self::parse_interval(wp_unslash($_POST['upay_subscription_interval']));
+                if (self::field_present($classic_post, 'upay_subscription_interval')) {
+                    if (!is_scalar($classic_post['upay_subscription_interval'])) {
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    $subscription_interval = self::parse_interval(wp_unslash($classic_post['upay_subscription_interval']));
                 }
             }
 
@@ -1553,15 +2663,34 @@ function woocommerceUpaymentsInit() {
             // Non-whitelabel: source is always 'knet' (client input ignored).
             // Whitelabel: source must be explicitly provided by client.
             if ($whitelabled) {
-                // Whitelabel: read client-supplied source.
+                // Whitelabel: read client-supplied source via presence-aware detection.
+                // Source must be explicitly supplied (not null, not '', not absent).
                 $raw_src = null;
-                if (!empty($extension_data)) {
-                    if (isset($extension_data['upayment_payment_type']) && is_scalar($extension_data['upayment_payment_type'])) {
-                        $raw_src = trim((string) sanitize_text_field($extension_data['upayment_payment_type']));
+                if ($is_blocks_request) {
+                    if (self::field_present($extension_data, 'upayment_payment_type')) {
+                        if (!is_scalar($extension_data['upayment_payment_type'])) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
+                        $raw_src = self::parse_payment_source_strict($extension_data['upayment_payment_type']);
+                        if ($raw_src === null) {
+                            WC()->session->set("refresh_totals", true);
+                            wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                            return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                        }
                     }
                 } else {
-                    if (isset($_POST["upayment_payment_type"]) && is_scalar($_POST["upayment_payment_type"])) {
-                        $raw_src = trim((string) sanitize_text_field(wp_unslash($_POST["upayment_payment_type"])));
+                    if (self::field_present($classic_post, 'upayment_payment_type')) {
+                        if (!is_scalar($classic_post['upayment_payment_type'])) {
+                            wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                        }
+                        $raw_src = self::parse_payment_source_strict(wp_unslash($classic_post['upayment_payment_type']));
+                        if ($raw_src === null) {
+                            WC()->session->set("refresh_totals", true);
+                            wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                            return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                        }
                     }
                 }
 
@@ -1574,20 +2703,24 @@ function woocommerceUpaymentsInit() {
 
                 $src = $raw_src;
             }
-            // Non-whitelabel: $src remains 'knet' (the default).
+            // Non-whitelabel: $src remains null (hosted checkout).
+
+            // Derive selected-card state after both Blocks/Classic paths resolved.
+            $has_selected_card = is_string($cardToken) && $cardToken !== '';
 
             // === CROSS-PATH VALIDATION (applies to both Classic and Blocks) ===
 
-            // Payment source server allowlist.
-            if (!in_array($src, self::$ALLOWED_PAYMENT_SOURCES, true)) {
-                $this->log('Invalid payment source rejected: ' . $src, 'warning');
-                WC()->session->set("refresh_totals", true);
-                wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
-                return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-            }
-
-            // Whitelabel enabled-method check: fail closed if payment map unavailable.
+            // Section C: Source validation only for Whitelabel.
             if ($whitelabled) {
+                // Payment source server allowlist.
+                if ($src === null || !in_array($src, self::$ALLOWED_PAYMENT_SOURCES, true)) {
+                    $this->log('Invalid payment source rejected.', 'warning');
+                    WC()->session->set("refresh_totals", true);
+                    wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+
+                // Whitelabel enabled-method check: fail closed if payment map unavailable.
                 if (!is_array($payment_data)
                     || !isset($payment_data['payment'])
                     || !is_array($payment_data['payment'])
@@ -1603,6 +2736,13 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__("Please select a valid UPayments payment method.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
+            } else {
+                // Non-Whitelabel: $src must be null (hosted checkout).
+                if ($src !== null) {
+                    $this->log('Non-Whitelabel: source must be null.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
             // Subscription plan allowlist.
@@ -1613,11 +2753,14 @@ function woocommerceUpaymentsInit() {
                 return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
 
-            // Subscription-context enforcement: non-one_time plan requires
-            // subscription feature active AND subscription product in cart.
+            // Section N: Subscription-context enforcement with mixed-order rejection.
+            // Uses order-derived composition from the authoritative line-item pass above.
             if ($subscription_plan !== 'one_time') {
-                if ($this->autoDeduction !== 'yes' || !$cart_has_custom_product) {
-                    $this->log('Subscription plan rejected outside subscription context.', 'warning');
+                if ($this->autoDeduction !== 'yes'
+                    || !$order_has_subscription_product
+                    || $order_has_normal_product
+                ) {
+                    $this->log('Subscription plan rejected: mixed order or invalid context.', 'warning');
                     WC()->session->set("refresh_totals", true);
                     wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
@@ -1628,22 +2771,24 @@ function woocommerceUpaymentsInit() {
                     wc_add_notice(__("Please log in to purchase a subscription.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
-                // Subscription checkout requires cc + save-card.
+                // Subscription checkout requires cc.
                 if ($src !== 'cc') {
                     $this->log('Subscription checkout requires cc payment source.', 'warning');
                     WC()->session->set("refresh_totals", true);
                     wc_add_notice(__("Subscription payments require Credit Card.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
-                if (!$isSaveCardRequested) {
-                    $this->log("Subscription checkout requires save-card.");
-                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
-                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
-                }
-                // Save-card feature must actually be enabled.
+                // Save-card feature must be enabled for subscriptions.
                 if ($this->saveCardEnabled !== 'yes') {
                     $this->log('Subscription checkout requires save-card feature enabled.');
                     wc_add_notice(__("Please select a valid payment type.", $this->domain), "error");
+                    return ["result" => "failure", "redirect" => wc_get_checkout_url()];
+                }
+                // For new card (no existing saved card token), require explicit save-card opt-in.
+                // For existing saved card (cardToken present), do NOT require save-card toggle.
+                if (!$has_selected_card && !$isSaveCardRequested) {
+                    $this->log("Subscription checkout with new card requires save-card opt-in.");
+                    wc_add_notice(__("Please Enable Save Card Toggle to Proceed with Subscription Purchase.", $this->domain), "error");
                     return ["result" => "failure", "redirect" => wc_get_checkout_url()];
                 }
             }
@@ -1655,15 +2800,27 @@ function woocommerceUpaymentsInit() {
             }
 
             // === POST-VALIDATION METADATA ===
-            // Stage UPayments_Checkout_Selected only after source is validated.
-            if ($whitelabled) {
-                $order->delete_meta_data("UPayments_Checkout_Selected");
-                $order->add_meta_data("UPayments_Checkout_Selected", $src);
-                $isSaveCard = $src === 'cc' && $isSaveCardRequested;
-            }
-
             $customer_unq_token = null;
             $credit_card_token = $cardToken;
+
+            // === SERVER-SIDE SAVE-CARD REQUEST CONTRACT (Section T) ===
+            // An explicit Save Card request is valid ONLY for:
+            // logged-in, Save Card enabled, whitelabel, CC source, NEW card.
+            if ($isSaveCardRequested) {
+                if ($user_id <= 0
+                    || $this->saveCardEnabled !== 'yes'
+                    || !$whitelabled
+                    || $src !== 'cc'
+                    || $has_selected_card
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
+            // === EFFECTIVE SAVE CARD (Section U) ===
+            // After contract validation: only new CC + explicit opt-in.
+            $isSaveCard = $isSaveCardRequested && !$has_selected_card;
 
             // Read phone through WC Order API (works for both Classic and Blocks).
             $billing_phone_raw = $order->get_billing_phone();
@@ -1677,138 +2834,690 @@ function woocommerceUpaymentsInit() {
             $provider_mobile = '';
             if (is_scalar($billing_phone_raw)) {
                 $raw = trim((string) $billing_phone_raw);
-                // Only normalize if user supplied explicit leading +.
                 if (strlen($raw) > 1 && $raw[0] === '+') {
-                    // Remove ordinary presentation separators.
                     $candidate = preg_replace('/[\s\-\(\)]+/', '', $raw);
-                    // Must be + followed by only ASCII digits, max 15 chars total.
                     if (preg_match('/^\+[0-9]+$/', $candidate) && strlen($candidate) <= 15) {
                         $provider_mobile = $candidate;
                     }
                 }
             }
 
-            // Determine if this transaction requires phone for token-dependent flow.
-            $requires_token_phone = $isSaveCard || $subscription_plan !== 'one_time';
+            // Determine if this transaction requires a customer token.
+            $requires_token = $isSaveCard || $subscription_plan !== 'one_time';
+            $canonical_token = null;
+            $token_kind = null;
+            $token_scope = null;
+            $token_generation = null;
 
-            // Enforce UPayments-specific phone requirement at payment boundary.
-            if ($requires_token_phone && $phone === '') {
-                wc_add_notice(__('Billing phone number is required to save a card or purchase a subscription.', 'upayments'), 'error');
+            // Compute customer.uniqueId using legacy compatibility behavior.
+            $billing_phone_raw = $order->get_billing_phone();
+            $customer_unique_id = '';
+            if (is_scalar($billing_phone_raw)) {
+                $phone_normalized = str_replace(' ', '', (string) $billing_phone_raw);
+                $phone_normalized = preg_replace('/[^A-Za-z0-9\-]/', '', $phone_normalized);
+                if ($user_id > 0 && !empty($phone_normalized)) {
+                    $customer_unique_id = $phone_normalized . $user_id;
+                } elseif (!empty($phone_normalized)) {
+                    $customer_unique_id = $phone_normalized;
+                }
+                if (substr($customer_unique_id, 0, 1) === '0') {
+                    $customer_unique_id = '1' . substr($customer_unique_id, 1);
+                }
+            }
+
+            // === PHASE A: DETERMINISTIC CHARGE PREFLIGHT (BEFORE TOKEN WORK) ===
+            // Build and validate the complete deterministic base payload.
+            // Nothing related to token identity may happen before all of this passes.
+
+            // Order description.
+            $order_description = 'WooCommerce order #' . $order_id;
+            if (strlen($order_description) > 500) {
+                $order_description = substr($order_description, 0, 500);
+            }
+
+            // Currency.
+            $currency = $this->getCurrencyCode($order_data["currency"]);
+            if (!is_string($currency)) {
+                $currency = strtoupper((string) $order_data["currency"]);
+            }
+            if (!preg_match('/^[A-Z]{3}$/', $currency)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            $customer_unq_token = $phone;
-
-            $user_id = get_current_user_id();
-            if ($user_id && !empty($customer_unq_token)) {
-                $customer_unq_token = $customer_unq_token . $user_id;
+            // Amount: strict positive plain-decimal grammar.
+            // No IEEE-754 float conversion: the decimal string itself is the source of truth.
+            // Reject all-zero numerics (e.g. '0', '00', '0.0', '000.000').
+            $amount_str = (string) $order_total;
+            if (!preg_match('/^[0-9]+(?:\.[0-9]+)?$/', $amount_str)
+                || strlen($amount_str) > 22
+            ) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            // Positivity check via decimal-string semantics: at least one character
+            // in the string (excluding the dot) must be a non-zero digit.
+            $is_positive = false;
+            for ($i = 0; $i < strlen($amount_str); $i++) {
+                $c = $amount_str[$i];
+                if ($c >= '1' && $c <= '9') {
+                    $is_positive = true;
+                    break;
+                }
+            }
+            if (!$is_positive) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            if (substr($customer_unq_token, 0, 1) === '0') {
-                $customer_unq_token = '1' . substr($customer_unq_token, 1);
+            // === SAFE AMOUNT-TO-JSON ENCODING ===
+            // The provider-bound JSON token for order.amount must be a JSON number,
+            // must remain a positive plain decimal, must contain no exponent, and must
+            // not represent a numerically different value due to float rounding.
+            //
+            // PHP's json_encode() can emit exponent notation for large floats, and any
+            // IEEE 754 conversion at integer-part length > 17 loses precision. To
+            // guarantee no exponent and no precision loss, we serialize the amount as
+            // the validated plain decimal string and inject it into the final JSON.
+            // The injected token is a JSON number (digits + optional '.') and bypasses
+            // PHP's float formatting entirely.
+            $amount_json_token = self::build_amount_json_token($amount_str);
+            if ($amount_json_token === null) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            if ($this->saveCardEnabled === 'yes' && $isSaveCard) {
-                $customerUnqToken = $this->getCustomerUniqueToken($customer_unq_token);
+            // Reference.
+            $reference_id = (string) $order_id;
+            if ($reference_id === '' || strlen($reference_id) > 35) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Callback URLs.
+            $callback_urls = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+            );
+            foreach ($callback_urls as $cb_url) {
+                if (!is_scalar($cb_url) || (string) $cb_url === '' || strlen((string) $cb_url) > 250) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $parsed = wp_parse_url((string) $cb_url);
+                if (!$parsed
+                    || !isset($parsed['scheme'])
+                    || !isset($parsed['host'])
+                    || ($parsed['scheme'] !== 'http' && $parsed['scheme'] !== 'https')
+                    || $parsed['host'] === ''
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
+            // Customer fields.
+            $customer_name = $this->truncate_provider_text(
+                trim(($order_data["billing"]["first_name"] ?? '') . ' ' . ($order_data["billing"]["last_name"] ?? '')),
+                50
+            );
+            $customer_data = array();
+            if ($customer_name !== '') {
+                $customer_data['name'] = $customer_name;
+            }
+            $email = isset($order_data["billing"]["email"]) && is_scalar($order_data["billing"]["email"]) ? (string) $order_data["billing"]["email"] : '';
+            if ($email !== '' && strlen($email) <= 50 && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $customer_data['email'] = $email;
+            }
+            if ($customer_unique_id !== '' && is_scalar($customer_unique_id) && strlen((string) $customer_unique_id) <= 50) {
+                $customer_data['uniqueId'] = (string) $customer_unique_id;
+            }
+            if ($provider_mobile !== '' && is_scalar($provider_mobile)) {
+                $customer_data['mobile'] = (string) $provider_mobile;
+            }
+
+            // MultiMerchant validation.
+            // FAIL CLOSED: when multiMerchant is enabled, the entire provider-bound
+            // structure must validate before any token work. Invalid enabled
+            // MultiMerchant configuration produces ZERO Create Token, ZERO
+            // Retrieve, ZERO Charge, ZERO provenance/identity writes.
+            $extraMerchantData = null;
+            if ($this->multiMerchant === 'yes') {
+                // === Read raw values; do NOT trim/sanitize. ===
+                $iban = isset($this->ibanNumber) && is_string($this->ibanNumber) ? $this->ibanNumber : '';
+                $knet_charge_raw = isset($this->knetCharge) && is_string($this->knetCharge) ? $this->knetCharge : '';
+                $cc_charge_raw = isset($this->ccCharge) && is_string($this->ccCharge) ? $this->ccCharge : '';
+                $knet_charge_type = isset($this->knetChargeType) && is_string($this->knetChargeType) ? $this->knetChargeType : '';
+                $cc_charge_type = isset($this->ccChargeType) && is_string($this->ccChargeType) ? $this->ccChargeType : '';
+
+                // IBAN structural validation: conservative lexical check.
+                // Country code: 2 letters. Check digits: 2 digits. BBAN: 11-30 alphanumeric.
+                // Provider documentation states 25 chars, but observed real-world
+                // values reach 30 (e.g. Kuwait IBAN); we accept 15-34 to avoid
+                // over-rejecting while still catching wholesale garbage.
+                if (!preg_match('/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/', $iban)) {
+                    $this->log('MultiMerchant: invalid IBAN format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // === Canonical JSON number grammar: no exponent, no sign, no leading
+                // zero, no whitespace, no comma, no other variation. Trailing-zero
+                // fractions such as 0.900 or 0.750 are accepted (matches first-party
+                // UPayments examples and the plugin's existing admin UI which uses
+                // step="0.010" and max="10.000"). Leading-zero invalid forms (01,
+                // 01.50, .5) and exponent/scientific notation (1e2) are rejected. ===
+                if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $knet_charge_raw)) {
+                    $this->log('MultiMerchant: invalid knetCharge format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!preg_match('/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/', $cc_charge_raw)) {
+                    $this->log('MultiMerchant: invalid ccCharge format.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                // Reject non-canonical charge-type forms exactly.
+                $valid_charge_types = array('fixed', 'percentage');
+                if (!in_array($knet_charge_type, $valid_charge_types, true)) {
+                    $this->log('MultiMerchant: invalid knetChargeType.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!in_array($cc_charge_type, $valid_charge_types, true)) {
+                    $this->log('MultiMerchant: invalid ccChargeType.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                // Pure-PHP positive-decimal validation (no BCMath, no float, no upper bound).
+                // The plugin UI's max="10.000" is a UI hint only; the runtime accepts
+                // any canonical positive plain-decimal per UPayments examples (25, 18, 15,
+                // 10, 0.900, 0.750, etc.). Server-side rejection here would conflict with
+                // provider documentation and the existing admin UI maximum.
+                if (self::compare_nonnegative_decimal_strings($knet_charge_raw, '0') <= 0) {
+                    $this->log('MultiMerchant: invalid knetCharge value.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (self::compare_nonnegative_decimal_strings($cc_charge_raw, '0') <= 0) {
+                    $this->log('MultiMerchant: invalid ccCharge value.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $knet_charge = $knet_charge_raw;
+                $cc_charge = $cc_charge_raw;
+
+                // All checks passed: build the deterministic provider-bound structure.
+                // The amount field uses a sentinel that is later replaced by the validated
+                // JSON number token. No float conversion happens here.
+                // Per the provider contract, the sum of extraMerchantData.amount values
+                // must equal order.amount. For this plugin's single-entry implementation,
+                // we assign the same validated amount token to both order.amount and
+                // extraMerchantData[0].amount, and the post-injection verification
+                // in inject_amount_token_into_payload_json() enforces exact equality.
+                $extraMerchantData = array(
+                    array(
+                        'amount'         => '__UPAY_MM_AMOUNT_SENTINEL__',
+                        'knetCharge'     => '__UPAY_MM_KNET_CHARGE_SENTINEL__',
+                        'knetChargeType' => $knet_charge_type,
+                        'ccCharge'       => '__UPAY_MM_CC_CHARGE_SENTINEL__',
+                        'ccChargeType'   => $cc_charge_type,
+                        'ibanNumber'     => $iban,
+                    ),
+                );
+                $mm_amount_token = $amount_json_token;
+                $mm_knet_charge_token = self::build_amount_json_token($knet_charge);
+                $mm_cc_charge_token = self::build_amount_json_token($cc_charge);
+                if ($mm_knet_charge_token === null || $mm_cc_charge_token === null) {
+                    $this->log('MultiMerchant: invalid charge JSON encoding.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $mm_amount_for_injection = $mm_amount_token;
+                $mm_knet_charge_for_injection = $mm_knet_charge_token;
+                $mm_cc_charge_for_injection = $mm_cc_charge_token;
             } else {
-                $customerUnqToken = null;
+                $mm_amount_for_injection = null;
+                $mm_knet_charge_for_injection = null;
+                $mm_cc_charge_for_injection = null;
+            }
+
+            // Build deterministic base payload (token fields are null placeholders).
+            // The order.amount field uses a placeholder so we can inject the
+            // validated plain decimal JSON token without float conversion.
+            // extraMerchantData is a real PHP array (not a string sentinel) so it is
+            // encoded naturally by wp_json_encode(); only its 'amount' value is replaced
+            // by the validated amount token via the MM amount sentinel below.
+            $payload = array(
+                'returnUrl'       => $success_url,
+                'cancelUrl'       => $error_url,
+                'notificationUrl' => $ipn_url,
+                'products'        => $productArrayNew,
+                'order'           => array(
+                    'id'          => $unique_order_id,
+                    'description' => $order_description,
+                    'currency'    => $currency,
+                    'amount'      => '__UPAY_ORDER_AMOUNT_SENTINEL__',
+                ),
+                'reference'       => array(
+                    'id' => $reference_id,
+                ),
+                'customer'        => $customer_data,
+                'plugin'          => array(
+                    'src' => 'woocommerce',
+                ),
+                'is_whitelabled'  => $whitelabled,
+                'language'        => 'en',
+                'isSaveCard'      => $isSaveCard,
+                'tokens'          => array(
+                    'creditCard'          => null,
+                    'customerUniqueToken' => null,
+                ),
+                'device'          => array(
+                    'browser'          => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0',
+                    'browserDetails'   => array(
+                        'screenWidth'                 => '1920',
+                        'screenHeight'                => '1080',
+                        'colorDepth'                  => '24',
+                        'javaEnabled'                 => 'false',
+                        'language'                    => 'en',
+                        'timeZone'                    => '-180',
+                        '3DSecureChallengeWindowSize' => '500_X_600',
+                    ),
+                ),
+                'extraMerchantData' => $extraMerchantData,
+            );
+
+            // Whitelabel: add paymentGateway.
+            if ($whitelabled && $src !== null) {
+                // Section AS: Source string is sent verbatim — no invented length
+                // ceiling. Provider documents the field but does not bound it.
+                // Future invariants can be added explicitly if documentation confirms a bound.
+                $payload['paymentGateway'] = array('src' => $src);
+            }
+
+            // The MM amount equality (per provider contract) is enforced after
+            // sentinel injection in the raw JSON (not by trying to add sentinel
+            // strings). The injection substitutes the same validated amount token
+            // for both order.amount and extraMerchantData[0].amount, so the raw-JSON
+            // equality check in inject_amount_token_into_payload_json() is the
+            // authoritative verification.
+
+            // Pre-token JSON dry-run: encode the deterministic payload and
+            // inject the validated amount JSON tokens in place of the sentinels.
+            $preflight_raw = wp_json_encode($payload);
+            if (!is_string($preflight_raw) || $preflight_raw === '') {
+                $this->log('Deterministic payload encoding failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            // The MM amount sentinel is only present when MultiMerchant is enabled and valid.
+            $mm_amount_for_injection = ($extraMerchantData !== null) ? $amount_json_token : null;
+            $preflight_json = self::inject_amount_token_into_payload_json(
+                $preflight_raw,
+                array(
+                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => $amount_json_token,
+                    '__UPAY_MM_AMOUNT_SENTINEL__' => $mm_amount_for_injection,
+                    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => $mm_knet_charge_for_injection,
+                    '__UPAY_MM_CC_CHARGE_SENTINEL__' => $mm_cc_charge_for_injection,
+                ),
+                array(
+                    'product_price_sent_substring' => '__UPAY_PRODUCT_PRICE_SENTINEL_',
+                    'product_price_tokens' => $product_price_tokens,
+                )
+            );
+            if (!is_string($preflight_json) || $preflight_json === '') {
+                $this->log('Deterministic amount injection failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // === PHASE B: TOKEN / SELECTED-CARD IDENTITY WORK ===
+            // Only after Phase A passes.
+
+            // Clear stale token-attempt metadata before token work.
+            // Preserve legacy/unscoped evidence for Phase 9I migration.
+            if (!CustomerTokenIdentity::clear_stale_attempt_metadata($order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section I: Force-fresh current order metadata after cleanup.
+            if (!CustomerTokenIdentity::force_refresh_order_meta($order)) {
+                wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section K: Check for residual migration evidence on current order (cardinality helper).
+            // Token-dependent operations must not proceed alongside preserved legacy/corrupt evidence.
+            $token_dependent_operation = $isSaveCard || $subscription_plan !== 'one_time' || $has_selected_card;
+
+            if ($token_dependent_operation) {
+                $residual_keys = array(
+                    '_upay_customer_unique_token',
+                    '_upay_customer_token_kind_v1',
+                    '_upay_customer_token_scope_v1',
+                    '_upay_customer_token_generation_v1',
+                    '_upay_credit_card_token',
+                );
+                $has_residual_evidence = false;
+                foreach ($residual_keys as $rkey) {
+                    $r_card = CustomerTokenIdentity::get_historical_meta_cardinality($order, $rkey);
+                    if ($r_card['status'] === CustomerTokenIdentity::META_EXACTLY_ONE) {
+                        // Empty string card token is not usable evidence.
+                        if ($rkey === '_upay_credit_card_token' && (string) $r_card['value'] === '') {
+                            continue;
+                        }
+                        $has_residual_evidence = true;
+                        break;
+                    }
+                    if ($r_card['status'] === CustomerTokenIdentity::META_DUPLICATE_OR_INVALID) {
+                        $has_residual_evidence = true;
+                        break;
+                    }
+                }
+                if ($has_residual_evidence) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
+
+            // Section J: Stage UPayments_Checkout_Selected AFTER cleanup/refresh/residual gate.
+            if ($whitelabled) {
+                $order->delete_meta_data("UPayments_Checkout_Selected");
+                $order->add_meta_data("UPayments_Checkout_Selected", $src);
+            }
+
+            // CASE: Selected saved card requires membership validation.
+            if ($has_selected_card) {
+                if ($user_id <= 0) {
+                    wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if ($this->saveCardEnabled !== 'yes') {
+                    wc_add_notice(__('Please select a valid payment type.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if (!$whitelabled || $src !== 'cc') {
+                    wc_add_notice(__('Please select a valid payment method.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                // Section Q: Use read-only identity scope for selected-card path.
+// Section #14: SINGLE atomic context read — derive scope AND generation
+// from the same secret-option snapshot. The previous implementation did
+// two independent reads (scope, then generation), which produced a torn
+// scope(A)+generation(B) snapshot when a credential rotated in between.
+                $selected_ctx = CustomerTokenIdentity::read_existing_identity_context(
+                    $this->apiKey,
+                    $this->getMode()
+                );
+                if ($selected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $selected_ctx['scope'] === null
+                    || $selected_ctx['generation_id'] === null
+                ) {
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                $scope = $selected_ctx['scope'];
+                $existing_generation = $selected_ctx['generation_id'];
+
+                $provenance = CustomerTokenIdentity::read_provenance($user_id, $scope, $existing_generation);
+                if ($provenance['state'] !== CustomerTokenIdentity::STATE_VALID) {
+                    wc_add_notice(__('Please log in to use a saved card.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $canonical_token = $provenance['record']['token'];
+                $token_kind = $provenance['record']['kind'];
+                $token_scope = $scope;
+                $token_generation = isset($provenance['record']['secret_generation_id'])
+                    ? $provenance['record']['secret_generation_id']
+                    : null;
+
+                $gateway = $this;
+                $membership_valid = CustomerTokenIdentity::verify_card_membership(
+                    $credit_card_token,
+                    $canonical_token,
+                    function($token) use ($gateway) {
+                        return $gateway->getSavedCards($token);
+                    }
+                );
+
+                if (!$membership_valid) {
+                    wc_add_notice(__('Please select a valid payment method.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $isSaveCard = false;
+            }
+            // CASE: Save Card or subscription requires canonical token.
+            elseif ($requires_token) {
+                if ($user_id <= 0) {
+                    wc_add_notice(__('Please log in to save a card or purchase a subscription.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if ($this->saveCardEnabled !== 'yes') {
+                    wc_add_notice(__('Please select a valid payment type.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $gateway = $this;
+                $token_result = CustomerTokenIdentity::get_or_establish_token(
+                    $user_id,
+                    $this->apiKey,
+                    $this->getMode(),
+                    function($candidate) use ($gateway) {
+                        $params = wp_json_encode(array('customerUniqueToken' => $candidate));
+                        return $gateway->execute_upayments_request('create-customer-unique-token', 'POST', $params);
+                    }
+                );
+
+                if (!$token_result['success']) {
+                    $this->log('Token establishment failed: ' . $token_result['reason'], 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $canonical_token = $token_result['token'];
+                $token_kind = isset($token_result['kind']) ? $token_result['kind'] : null;
+                $token_scope = isset($token_result['scope']) ? $token_result['scope'] : null;
+                $token_generation = isset($token_result['secret_generation_id']) ? $token_result['secret_generation_id'] : null;
+            }
+            // CASE: Ordinary payment — no canonical token required.
+            else {
+                $canonical_token = null;
+                $token_kind = null;
+                $token_scope = null;
+                $token_generation = null;
                 $isSaveCard = false;
             }
 
-            if(!empty($credit_card_token)){
-                $order->delete_meta_data("_upay_credit_card_token");
-                $order->add_meta_data("_upay_credit_card_token", $credit_card_token);
-                $order->save_meta_data();
-            }
+            // Write current attempt snapshots.
+            // Section J: Ordinary payment (null tuple) must NOT initialize token identity.
+            $is_ordinary_payment = ($canonical_token === null && $token_kind === null && $token_scope === null && $token_generation === null);
 
-            if($customerUnqToken){
-                $order->delete_meta_data("_upay_customer_unique_token");
-                $order->add_meta_data("_upay_customer_unique_token", $customerUnqToken);
-                $order->save_meta_data();
-            }
-
-            $extraMerchantData = null;
-            if ($this->multiMerchant == "yes") {
-                $this->log("multiMerchant enabled");
-                if(isset($this->ibanNumber) && isset($this->knetCharge) && $this->knetCharge > 0 && isset($this->ccCharge) &&((float) $this->knetCharge > 0) && (float) $this->ccCharge > 0) {
-
-                    $extraMerchantData[0] = [
-                        "amount" =>  $order_total,
-                        "knetCharge" => (float) $this->knetCharge,
-                        "knetChargeType" =>  $this->knetChargeType,
-                        "ccCharge" => $this->ccCharge,
-                        "ccChargeType" => $this->ccChargeType,
-                        "ibanNumber" => $this->ibanNumber
-                    ];
+            if (!$is_ordinary_payment) {
+                // Section S: Use read-only authoritative expected scope/generation.
+                // For freshly established tokens, these are already known from the result.
+                // For selected-card tokens, they were already validated above.
+                // Section #14: single atomic read of scope + generation so they
+                // cannot drift relative to each other.
+                $expected_ctx = CustomerTokenIdentity::read_existing_identity_context(
+                    $this->apiKey,
+                    $this->getMode()
+                );
+                if ($expected_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $expected_ctx['scope'] === null
+                    || $expected_ctx['generation_id'] === null
+                ) {
+                    $this->log('Runtime token context: identity context not in SECRET_VALID state.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                $this->log("Multimerchant payment data prepared.");
+                $expected_scope = $expected_ctx['scope'];
+                $expected_generation = $expected_ctx['generation_id'];
+
+                if (!CustomerTokenIdentity::validate_token_runtime_context(
+                    $canonical_token,
+                    $token_kind,
+                    $token_scope,
+                    $token_generation,
+                    $expected_scope,
+                    $expected_generation
+                )) {
+                    $this->log('Runtime token context validation failed.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
             }
 
-            $params = json_encode([
-                "returnUrl" => $success_url, 
-                "cancelUrl" => $error_url, 
-                "notificationUrl" => $ipn_url, 
-                "products" => $productArrayNew,
-                "order" =>[
-                    "amount" => $order_total, 
-                    "currency" => $this->getCurrencyCode($order_data["currency"]) , 
-                    "id" => $unique_order_id, 
-                ], 
-                "reference" => [
-                    "id" => "".$order_id, 
-                ], 
-                "customer" => array_merge(
-                    array(
-                        "name" => $order_data["billing"]["first_name"] . " " . $order_data["billing"]["last_name"],
-                        "email" => $order_data["billing"]["email"],
-                    ),
-                    // uniqueId: preserve existing legacy behavior (included when legacy phone non-empty).
-                    $phone !== '' ? array(
-                        "uniqueId" => $customer_unq_token,
-                    ) : array(),
-                    // mobile: independent provider representation (only when valid international format).
-                    $provider_mobile !== '' ? array(
-                        "mobile" => $provider_mobile,
-                    ) : array()
+            // Section H: Unique snapshot writes.
+            if ($has_selected_card) {
+                $order->delete_meta_data("_upay_credit_card_token");
+                $order->add_meta_data("_upay_credit_card_token", $credit_card_token, true);
+            }
+
+            if (!$is_ordinary_payment) {
+                $order->delete_meta_data("_upay_customer_unique_token");
+                $order->delete_meta_data("_upay_customer_token_kind_v1");
+                $order->delete_meta_data("_upay_customer_token_scope_v1");
+                $order->delete_meta_data("_upay_customer_token_generation_v1");
+                $order->add_meta_data("_upay_customer_unique_token", $canonical_token, true);
+                $order->add_meta_data("_upay_customer_token_kind_v1", $token_kind, true);
+                $order->add_meta_data("_upay_customer_token_scope_v1", $token_scope, true);
+                $order->add_meta_data("_upay_customer_token_generation_v1", $token_generation, true);
+            }
+
+            $order->save_meta_data();
+
+            // Section M: Durable persistence verification before Charge.
+            if (!$is_ordinary_payment || $has_selected_card) {
+                $verify_order = wc_get_order($order_id);
+                if (!$verify_order) {
+                    $this->log('Persistence verification: unable to reload order.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                if (!CustomerTokenIdentity::force_refresh_order_meta($verify_order)) {
+                    $this->log('Persistence verification: force refresh failed.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+
+                $verify_keys = array();
+                if (!$is_ordinary_payment) {
+                    $verify_keys['_upay_customer_unique_token'] = $canonical_token;
+                    $verify_keys['_upay_customer_token_kind_v1'] = $token_kind;
+                    $verify_keys['_upay_customer_token_scope_v1'] = $token_scope;
+                    $verify_keys['_upay_customer_token_generation_v1'] = $token_generation;
+                }
+                if ($has_selected_card) {
+                    $verify_keys['_upay_credit_card_token'] = $credit_card_token;
+                }
+
+                foreach ($verify_keys as $vkey => $expected_value) {
+                    $v_card = CustomerTokenIdentity::get_historical_meta_cardinality($verify_order, $vkey);
+                    if ($v_card['status'] !== CustomerTokenIdentity::META_EXACTLY_ONE) {
+                        $this->log('Persistence verification failed: ' . $vkey, 'warning');
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                    if ((string) $v_card['value'] !== (string) $expected_value) {
+                        $this->log('Persistence verification value mismatch: ' . $vkey, 'warning');
+                        wc_add_notice(__('Payment request could not be completed. Please try again.', 'upayments'), 'error');
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                }
+            }
+
+            // === PHASE D: FINAL CHARGE PAYLOAD COMPLETION ===
+            // MultiMerchant structure was already authoritatively constructed during
+            // the deterministic pre-token phase above. It is provider payload data
+            // here, not a re-derivable input. Inject token-dependent fields into the
+            // already-validated deterministic payload.
+            $payload['tokens'] = array(
+                'creditCard'          => $credit_card_token,
+                'customerUniqueToken' => $canonical_token,
+            );
+
+            // Final JSON encode (re-encode + re-inject amount token).
+            $final_raw = wp_json_encode($payload);
+            if (!is_string($final_raw) || $final_raw === '') {
+                $this->log('Final payload encoding failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+            $params = self::inject_amount_token_into_payload_json(
+                $final_raw,
+                array(
+                    '__UPAY_ORDER_AMOUNT_SENTINEL__' => $amount_json_token,
+                    '__UPAY_MM_AMOUNT_SENTINEL__' => $mm_amount_for_injection,
+                    '__UPAY_MM_KNET_CHARGE_SENTINEL__' => $mm_knet_charge_for_injection,
+                    '__UPAY_MM_CC_CHARGE_SENTINEL__' => $mm_cc_charge_for_injection,
                 ),
-                "plugin" => [
-                    "src" => "woocommerce", 
-                ], 
-                "is_whitelabled" => $whitelabled, 
-                "language" => "en", 
-                "isSaveCard" => $isSaveCard, 
-                "paymentGateway" => ["src" => $src,], 
-                "tokens" => [
-                    "creditCard" => $credit_card_token, 
-                    "customerUniqueToken" => $customerUnqToken, 
-                ], 
-                "device" => [
-                    "browser" => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 OPR/93.0.0.0", 
-                    "browserDetails" => [
-                        "screenWidth" => "1920", 
-                        "screenHeight" => "1080", 
-                        "colorDepth" => "24", 
-                        "javaEnabled" => "false", 
-                        "language" => "en", 
-                        "timeZone" => "-180",
-                        "3DSecureChallengeWindowSize" => "500_X_600"
-                    ], 
-                ], 
-                "extraMerchantData" => $extraMerchantData,
-            ]);
+                array(
+                    // Each product's price sentinel is indexed. Identity is preserved
+                    // so the injection step can verify each per-product token.
+                    'product_price_sent_substring' => '__UPAY_PRODUCT_PRICE_SENTINEL_',
+                    'product_price_tokens' => $product_price_tokens,
+                )
+            );
+            if (!is_string($params) || $params === '') {
+                $this->log('Final amount injection failed.', 'warning');
+                wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // === PHASE C+: FINAL IDENTITY CONTEXT GATE ===
+            // For non-ordinary payments, revalidate the atomic identity context
+            // one last time and require exact match against the scope+generation
+            // that authorized token establishment. Any identity rotation that
+            // landed between the token establishment and the Charge call must
+            // fail closed rather than persist a Charge under the wrong root.
+            if (!$is_ordinary_payment) {
+                $final_ctx = CustomerTokenIdentity::read_existing_identity_context($this->apiKey, $this->getMode());
+                if ($final_ctx['state'] !== CustomerTokenIdentity::SECRET_VALID
+                    || $final_ctx['scope'] === null
+                    || $final_ctx['generation_id'] === null
+                ) {
+                    $this->log('Charge: identity context invalidated before Charge.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+                if (!hash_equals((string) $final_ctx['scope'], (string) $expected_scope)
+                    || !hash_equals((string) $final_ctx['generation_id'], (string) $expected_generation)
+                ) {
+                    $this->log('Charge: identity context changed between token establish and Charge.', 'warning');
+                    wc_add_notice(__('Payment request could not be completed. Please try again.', $this->domain), 'error');
+                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                }
+            }
 
             $this->log(__("Create payment request prepared.", $this->domain));
 
+            // === PHASE E: CHARGE ===
             $transport = $this->execute_upayments_request('charge', 'POST', $params);
 
-            if (!$transport['transport_ok']) {
-                $this->log('UPayments charge request failed at transport layer.', 'warning');
+            // Section S: Strict HTTP 201 check for Charge.
+            if (!is_array($transport)
+                || !isset($transport['transport_ok']) || !$transport['transport_ok']
+                || !isset($transport['http_status']) || (int) $transport['http_status'] !== 201
+                || !isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0
+                || !isset($transport['body']) || !is_scalar($transport['body'])
+            ) {
+                $this->log('UPayments charge request failed.', 'warning');
                 WC()->session->set("refresh_totals", true);
                 wc_add_notice(__("Payment request could not be completed. Please try again.", $this->domain), "error");
                 return ["result" => "failure", "redirect" => wc_get_checkout_url()];
             }
 
-            $response = $transport['body'];
+            $response = (string) $transport['body'];
             $this->log('Create payment HTTP response received.');
 
             // Charge response processing — hardened structural validation.
@@ -1861,7 +3570,7 @@ function woocommerceUpaymentsInit() {
                     // E. Determine redirect URL: prefer data.link, fallback to data.transactionData.redirect_url.
                     $redirect_url = null;
 
-                    if (isset($result['data']['link']) && is_scalar($result['data']['link'])) {
+                    if (isset($result['data']['link']) && is_string($result['data']['link'])) {
                         $redirect_url = $this->normalize_upayments_redirect_url($result['data']['link']);
                     }
 
@@ -1869,7 +3578,7 @@ function woocommerceUpaymentsInit() {
                         && isset($result['data']['transactionData'])
                         && is_array($result['data']['transactionData'])
                         && isset($result['data']['transactionData']['redirect_url'])
-                        && is_scalar($result['data']['transactionData']['redirect_url'])
+                        && is_string($result['data']['transactionData']['redirect_url'])
                     ) {
                         $redirect_url = $this->normalize_upayments_redirect_url($result['data']['transactionData']['redirect_url']);
                     }
@@ -2348,30 +4057,18 @@ function woocommerceUpaymentsInit() {
             return password_hash($this->apiKey, PASSWORD_BCRYPT);
         }
 
+        /**
+         * Get customer unique token from phone.
+         *
+         * @deprecated Retained temporarily to avoid undefined-method breakage for
+         *             third-party customizations. New code must use CustomerTokenIdentity.
+         *             Future code-quality/public-API phase will decide final removal.
+         * @param string $phone Unused. Previously used as customer token.
+         * @return string Empty string. Phone is no longer used as token identity.
+         */
         public function getCustomerUniqueToken($phone)
         {
-            $token = "";
-            $phone = trim($phone);
-            if (!empty($phone))
-            {
-                $token = $phone;
-                $params = json_encode(["customerUniqueToken" => $token, ]);
-                $transport = $this->execute_upayments_request('create-customer-unique-token', 'POST', $params);
-
-                if ($transport['transport_ok']) {
-                    $result = json_decode((string) $transport['body'], true);
-                    if (is_array($result)) {
-                        if (!empty($result["errors"])) {
-                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
-                        } elseif (!empty($result["status"])) {
-                            $token = $token;
-                        } else {
-                            $cards = ["error" => 1, "msg" => isset($result["message"]) ? (string) $result["message"] : ""];
-                        }
-                    }
-                }
-            }
-            return $token;
+            return '';
         }
 
         public function getUpayPaymentMethods()
@@ -2382,24 +4079,23 @@ function woocommerceUpaymentsInit() {
             }
 
             // --- FAILURE SENTINEL (used for cached failures) ---
-            $failure_sentinel = array('state' => 'failure');
+            $failure_sentinel = $this->get_failure_sentinel();
 
             // -------------------------------------------------------
             // STEP 1: Check credential-scoped result cache.
             // -------------------------------------------------------
             $cached = $this->get_cached_payment_methods();
             if ($cached !== null) {
-                // Fresh cached result: return immediately, zero provider work.
-                if (isset($cached['result']) && $cached['result'] === 'success') {
+                $cache_status = $this->is_valid_cached_availability($cached);
+                if ($cache_status === 'success') {
                     return $cached;
                 }
-                // Cached failure sentinel.
-                if (isset($cached['state']) && $cached['state'] === 'failure') {
+                if ($cache_status === 'failure') {
                     wc_clear_notices();
                     wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Unknown cached shape: treat as miss and fall through.
+                // Malformed cache: treat as miss and fall through.
             }
 
             // -------------------------------------------------------
@@ -2412,10 +4108,11 @@ function woocommerceUpaymentsInit() {
                 // Re-check cache ONCE — another worker may have populated it.
                 $cached = $this->get_cached_payment_methods();
                 if ($cached !== null) {
-                    if (isset($cached['result']) && $cached['result'] === 'success') {
+                    $cache_status = $this->is_valid_cached_availability($cached);
+                    if ($cache_status === 'success') {
                         return $cached;
                     }
-                    if (isset($cached['state']) && $cached['state'] === 'failure') {
+                    if ($cache_status === 'failure') {
                         wc_clear_notices();
                         wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                         return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
@@ -2436,17 +4133,18 @@ function woocommerceUpaymentsInit() {
             // Re-check cache under lock (another worker may have refreshed).
             $cached = $this->get_cached_payment_methods();
             if ($cached !== null) {
-                if (isset($cached['result']) && $cached['result'] === 'success') {
+                $cache_status = $this->is_valid_cached_availability($cached);
+                if ($cache_status === 'success') {
                     $this->release_payment_methods_lock();
                     return $cached;
                 }
-                if (isset($cached['state']) && $cached['state'] === 'failure') {
+                if ($cache_status === 'failure') {
                     $this->release_payment_methods_lock();
                     wc_clear_notices();
                     wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                     return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
                 }
-                // Unknown cached array: DO NOT RELEASE lock.
+                // Malformed cache: DO NOT RELEASE lock.
                 // Treat as cache miss while retaining ownership.
                 // The durable gate check below will determine next action.
             }
@@ -2492,8 +4190,14 @@ function woocommerceUpaymentsInit() {
             // -------------------------------------------------------
             $transport = $this->execute_upayments_request('check-payment-button-status', 'GET');
 
-            if (!$transport['transport_ok']) {
-                // Transport failure: cache failure sentinel for remaining cooldown.
+            // Section AH: Consolidated transport guard (no unsafe first dereference).
+            if (!is_array($transport)
+                || !isset($transport['transport_ok']) || $transport['transport_ok'] !== true
+                || !isset($transport['http_status']) || (int) $transport['http_status'] !== 201
+                || !isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0
+                || !isset($transport['body']) || !is_scalar($transport['body'])
+                || (string) $transport['body'] === ''
+            ) {
                 $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                 wc_clear_notices();
                 wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
@@ -2502,65 +4206,245 @@ function woocommerceUpaymentsInit() {
 
             $result = json_decode((string) $transport['body'], true);
             if (!is_array($result)) {
-                // Malformed JSON: cache failure sentinel.
                 $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
                 wc_clear_notices();
                 wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
                 return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            if (array_key_exists('status', $result) && !empty($result['status'])) {
-                // Status truthy: require data to be an array before reading.
-                if (!isset($result['data']) || !is_array($result['data'])) {
-                    $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-                    wc_clear_notices();
-                    wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-                    return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
-                }
-                // Application-level success.
-                $payment_methods = $result['data'];
-                $payment_methods['result'] = 'success';
-                // Cache success for remaining cooldown window.
-                $this->set_cached_payment_methods($payment_methods, $new_not_before);
-                return $payment_methods;
+            // Section O: Strict status === true check. Do NOT accept '1', 1, 'true', etc.
+            if (!array_key_exists('status', $result) || $result['status'] !== true) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
             }
 
-            // Status not present or falsy: cache failure sentinel.
-            $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
-            wc_clear_notices();
-            wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
-            return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            if (!isset($result['data']) || !is_array($result['data'])) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section AC: Normalize availability payload to canonical schema.
+            $payment_methods = $result['data'];
+
+            if (!array_key_exists('isWhiteLabel', $payment_methods)) {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            $wl = $payment_methods['isWhiteLabel'];
+            if ($wl === true || $wl === 1 || $wl === '1') {
+                $normalized_wl = true;
+            } elseif ($wl === false || $wl === 0 || $wl === '0') {
+                $normalized_wl = false;
+            } else {
+                $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                wc_clear_notices();
+                wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+            }
+
+            // Section Y: Build canonical payButtons with all six known keys.
+            $known_buttons = array('knet', 'credit_card', 'apple_pay_knet', 'apple_pay', 'samsung_pay', 'google_pay');
+            $normalized_buttons = array();
+            $raw_buttons = isset($payment_methods['payButtons']) && is_array($payment_methods['payButtons'])
+                ? $payment_methods['payButtons']
+                : array();
+
+            foreach ($known_buttons as $btn) {
+                if (array_key_exists($btn, $raw_buttons)) {
+                    $bv = $raw_buttons[$btn];
+                    if ($bv === true || $bv === 1 || $bv === '1') {
+                        $normalized_buttons[$btn] = 1;
+                    } elseif ($bv === false || $bv === 0 || $bv === '0') {
+                        $normalized_buttons[$btn] = 0;
+                    } else {
+                        $this->set_cached_payment_methods($failure_sentinel, $new_not_before);
+                        wc_clear_notices();
+                        wc_add_notice(__("Payment methods could not be loaded. Please try again.", $this->domain), "error");
+                        return array('result' => 'failure', 'redirect' => wc_get_checkout_url());
+                    }
+                } else {
+                    $normalized_buttons[$btn] = 0;
+                }
+            }
+
+            // Cache only canonical schema (Section Y).
+            $canonical_cache = array(
+                'schema'       => 3,
+                'result'       => 'success',
+                'isWhiteLabel' => $normalized_wl,
+                'payButtons'   => $normalized_buttons,
+            );
+
+            // Expose to getPaymentIcons with full structure.
+            $payment_methods['result'] = 'success';
+            $payment_methods['isWhiteLabel'] = $normalized_wl;
+            $payment_methods['payButtons'] = $normalized_buttons;
+            // Cache canonical schema (Section Y).
+            $this->set_cached_payment_methods($canonical_cache, $new_not_before);
+            return $payment_methods;
         }
 
-        public function getSavedCards($phone)
+        public function getSavedCards($customer_token)
         {
-            $api_key =  $this->apiKey;
-            $savedCards=null;
-            if (!empty($api_key))
-            {
-                $params = json_encode(["customerUniqueToken" => $phone]);
-                $transport = $this->execute_upayments_request('retrieve-customer-cards', 'POST', $params);
-
-                if ($transport['transport_ok']) {
-                    $result = json_decode((string) $transport['body'], true);
-                    if (is_array($result)
-                        && array_key_exists("status", $result)
-                        && !empty($result["status"])
-                        && isset($result['data'])
-                        && is_array($result['data'])
-                        && isset($result['data']['customerCards'])
-                        && is_array($result['data']['customerCards'])) {
-                        // An empty customerCards array is a valid success payload:
-                        // the customer has no saved cards. PR #8 Scheduler treats this
-                        // as zero POST / no saved card.
-                        $savedCards = array(
-                            'data'   => $result['data']['customerCards'],
-                            'result' => 'success',
-                        );
-                    }
-                }
+            $api_key = $this->apiKey;
+            if (empty($api_key) || !is_string($customer_token) || $customer_token === '') {
+                return null;
             }
-            return $savedCards;
+
+            // Strict request input: must be ASCII numeric, 8-18 digits.
+            $token_str = $customer_token;
+            if (!preg_match('/^[0-9]{8,18}$/', $token_str)) {
+                return null;
+            }
+
+            $params = wp_json_encode(array("customerUniqueToken" => $token_str));
+            $transport = $this->execute_upayments_request('retrieve-customer-cards', 'POST', $params);
+
+            if (!is_array($transport)) {
+                return null;
+            }
+
+            if (!isset($transport['transport_ok']) || !$transport['transport_ok']) {
+                return null;
+            }
+
+            if (!isset($transport['http_status']) || (int) $transport['http_status'] !== 201) {
+                return null;
+            }
+
+            if (!isset($transport['curl_errno']) || (int) $transport['curl_errno'] !== 0) {
+                return null;
+            }
+
+            if (!isset($transport['body']) || !is_scalar($transport['body'])) {
+                return null;
+            }
+
+            $result = json_decode((string) $transport['body'], true);
+            if (!is_array($result)) {
+                return null;
+            }
+
+            if (!array_key_exists('status', $result) || $result['status'] !== true) {
+                return null;
+            }
+
+            if (!isset($result['data']) || !is_array($result['data'])) {
+                return null;
+            }
+
+            if (!array_key_exists('customerCards', $result['data']) || !is_array($result['data']['customerCards'])) {
+                return null;
+            }
+
+            return array(
+                'data' => $result['data']['customerCards'],
+                'result' => 'success',
+            );
+        }
+
+        /**
+         * Section AH: Defense in depth — require already-normalized payment state.
+         *
+         * This helper NEVER makes additional availability calls (e.g. getPaymentIcons()).
+         * The caller must supply the exact normalized availability state that has
+         * already been validated. When the caller cannot supply valid state, the
+         * helper fails closed and returns null.
+         *
+         * @param array|null $payment_data Already-normalized availability state.
+         * @return array|null Provider response on success, null on any failure.
+         */
+        public function getSavedCardsForCurrentUser($payment_data)
+        {
+            $user_id = get_current_user_id();
+            if ($user_id <= 0) {
+                return null;
+            }
+
+            if ($this->saveCardEnabled !== 'yes') {
+                return null;
+            }
+
+            // Strict structural validation of the supplied normalized state.
+            // Must be array; whitelabled MUST be exactly boolean true;
+            // payment MUST be array; payment['cc'] MUST be present (CC enabled).
+            if (!is_array($payment_data)) {
+                return null;
+            }
+            if (!array_key_exists('whitelabled', $payment_data)
+                || $payment_data['whitelabled'] !== true
+            ) {
+                return null;
+            }
+            if (!array_key_exists('payment', $payment_data)
+                || !is_array($payment_data['payment'])
+            ) {
+                return null;
+            }
+            // CC must be EXPLICITLY enabled (key present, scalar non-empty).
+            if (!array_key_exists('cc', $payment_data['payment'])) {
+                return null;
+            }
+            $cc_value = $payment_data['payment']['cc'];
+            if (!is_string($cc_value) || $cc_value === '') {
+                return null;
+            }
+
+            $gateway = $this;
+            return CustomerTokenIdentity::get_saved_cards_for_current_user(
+                $user_id,
+                $this->apiKey,
+                $this->getMode(),
+                function($token) use ($gateway) {
+                    return $gateway->getSavedCards($token);
+                }
+            );
+        }
+
+        /**
+         * UTF-8 safe provider text truncation.
+         * PHP 7.2 compatible, no mandatory mbstring dependency.
+         */
+        private function truncate_provider_text($value, $max_chars) {
+            if (!is_scalar($value)) {
+                return '';
+            }
+            $str = (string) $value;
+            if ($str === '') {
+                return '';
+            }
+            // Remove invalid UTF-8 sequences using PCRE (always available).
+            $str = preg_replace('/[\x00-\x7F][\x80-\xBF]+/u', '', $str);
+            $str = preg_replace('/[\xC0-\xDF](?![\x80-\xBF])/u', '', $str);
+            $str = preg_replace('/[\xE0-\xEF](?![\x80-\xBF]{2})/u', '', $str);
+            $str = preg_replace('/[\xF0-\xF7](?![\x80-\xBF]{3})/u', '', $str);
+            if ($str === '' || $str === null) {
+                return '';
+            }
+            // Fast path: mbstring available.
+            if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+                if (mb_strlen($str, 'UTF-8') <= $max_chars) {
+                    return $str;
+                }
+                return mb_substr($str, 0, $max_chars, 'UTF-8');
+            }
+            // PCRE fallback: count code points, then safely extract.
+            $matches = array();
+            if (preg_match_all('/./us', $str, $matches) === false) {
+                return '';
+            }
+            $chars = $matches[0];
+            if (count($chars) <= $max_chars) {
+                return $str;
+            }
+            return implode('', array_slice($chars, 0, $max_chars));
         }
 
         public function getPaymentIcons()
@@ -2588,36 +4472,39 @@ function woocommerceUpaymentsInit() {
                 ? $data['payButtons']
                 : array();
 
-            $whitelabled = !empty($data['isWhiteLabel']);
+            $whitelabled = isset($data['isWhiteLabel']) && $data['isWhiteLabel'] === true;
             $methods     = [];
+
+            // Section P: Non-Whitelabel generic checkout must always be available.
+            $methods['payment'] = array();
 
             // If ONLY normal products in cart → allow all methods
             if (!$isSubscriptionContext) {
-                if (!empty($payment_methods['knet']) && (int) $payment_methods['knet'] === 1) {
+                if (isset($payment_methods['knet']) && $payment_methods['knet'] === 1) {
                     $methods['payment']['knet'] = __('KNET', $this->domain);
                 }
 
-                if (!empty($payment_methods['apple_pay_knet']) && (int) $payment_methods['apple_pay_knet'] === 1) {
+                if (isset($payment_methods['apple_pay_knet']) && $payment_methods['apple_pay_knet'] === 1) {
                     $methods['payment']['apple-pay-knet'] = __('Apple Pay KNET', $this->domain);
                 }
 
-                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                if (isset($payment_methods['credit_card']) && $payment_methods['credit_card'] === 1) {
                     $methods['payment']['cc'] = __('Credit Card', $this->domain);
                 }
 
-                if (!empty($payment_methods['apple_pay']) && (int) $payment_methods['apple_pay'] === 1) {
+                if (isset($payment_methods['apple_pay']) && $payment_methods['apple_pay'] === 1) {
                     $methods['payment']['apple-pay'] = __('Apple Pay Credit Card', $this->domain);
                 }
 
-                if (!empty($payment_methods['samsung_pay']) && (int) $payment_methods['samsung_pay'] === 1) {
+                if (isset($payment_methods['samsung_pay']) && $payment_methods['samsung_pay'] === 1) {
                     $methods['payment']['samsung-pay'] = __('Samsung Pay', $this->domain);
                 }
 
-                if (!empty($payment_methods['google_pay']) && (int) $payment_methods['google_pay'] === 1) {
+                if (isset($payment_methods['google_pay']) && $payment_methods['google_pay'] === 1) {
                     $methods['payment']['google-pay'] = __('Google Pay', $this->domain);
                 }
             } else { // If subscription product in cart → ONLY CC allowed (per API requirement)
-                if (!empty($payment_methods['credit_card']) && (int) $payment_methods['credit_card'] === 1) {
+                if (isset($payment_methods['credit_card']) && $payment_methods['credit_card'] === 1) {
                     $methods['payment']['cc'] = __('Credit Card', $this->domain);
                 }
             }

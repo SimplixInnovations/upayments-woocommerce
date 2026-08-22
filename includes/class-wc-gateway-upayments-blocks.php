@@ -75,61 +75,100 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
         $is_logged_in = false;
         $user_id = null;
         $product_details = null;
-        $save_card_on = false;
-        
+
         // Safety check: ensure the gateway instance exists before calling methods
         $save_card_enabled = $this->gateway ? ($this->gateway->get_option('enable_save_card') === 'yes') : false;
 
         // Check if Subscription is Enabled or not
         $is_subscription_enabled = $this->gateway ? ($this->gateway->get_option('enable_subscriptions') === 'yes') : false;
-        
-        // 1. Get payment icons and whitelabeled status
+
+        // 1. Get payment icons and whitelabeled status — produce ONE canonical availability state.
+        $availability = null;
         if ( $this->gateway ) {
-            $payment_data = $this->gateway->getPaymentIcons(); 
-            if ( $payment_data ) {
-                $icons = $payment_data['payment'] ?? [];
-                $whitelabled = $payment_data['whitelabled'] ?? false;
+            $availability = $this->gateway->getPaymentIcons();
+            if ( is_array( $availability ) ) {
+                $icons = isset( $availability['payment'] ) && is_array( $availability['payment'] )
+                    ? $availability['payment']
+                    : array();
+                $whitelabled = isset( $availability['whitelabled'] ) && $availability['whitelabled'] === true;
             }
 
-            // 2. Get saved cards and login status
-            $loggedInUser = $this->gateway->get_logged_in_user_phone_number();
-            $is_logged_in = false;
-            $hasPhone = false;
-            $logged_in_phone = '';
+            // 2. Saved-card retrieval gated on a single normalized availability state.
+            $user_id = get_current_user_id();
+            $is_logged_in = $user_id > 0;
 
-            if (is_array($loggedInUser)
-                && isset($loggedInUser['success'])
-                && $loggedInUser['success'] === true
-            ) {
-                $is_logged_in = true;
-
-                // Only accept phone when scalar and non-empty after trim test.
-                if (isset($loggedInUser['phone'])
-                    && is_scalar($loggedInUser['phone'])
-                    && trim((string) $loggedInUser['phone']) !== ''
-                ) {
-                    $hasPhone = true;
-                    $logged_in_phone = (string) $loggedInUser['phone'];
-                }
-            }
-
-            // Only retrieve saved cards when logged in with valid phone.
-            if ($is_logged_in && $hasPhone) {
-                $user_id = get_current_user_id();
-                if ($user_id > 0) {
-                    $savedCards = $this->gateway->getSavedCards($logged_in_phone . $user_id);
-                    if (is_array($savedCards)
-                        && isset($savedCards['result'])
-                        && $savedCards['result'] === 'success'
-                        && isset($savedCards['data'])
-                        && is_array($savedCards['data'])
+            // Normalize availability once, validate once, then pass the EXACT state
+            // into the saved-card helper. Retrieve is allowed only when ALL are true:
+            //   - valid normalized availability (array)
+            //   - Whitelabel === true (boolean)
+            //   - CC explicitly enabled
+            //   - logged in
+            //   - Save Card feature enabled
+            //   - existing read-only identity secret/scope/generation
+            //   - valid current provenance
+            // Otherwise ZERO Retrieve call.
+            $can_retrieve_saved_cards = false;
+            if ( $is_logged_in && $save_card_enabled && is_array( $availability ) ) {
+                $whitelabel_ok = ( isset( $availability['whitelabled'] ) && $availability['whitelabled'] === true );
+                $cc_enabled = (
+                    isset( $availability['payment'] )
+                    && is_array( $availability['payment'] )
+                    && array_key_exists( 'cc', $availability['payment'] )
+                    && is_scalar( $availability['payment']['cc'] )
+                    && (string) $availability['payment']['cc'] !== ''
+                );
+                if ( $whitelabel_ok && $cc_enabled ) {
+                    // Residual Correction #15: single atomic read of the canonical
+                    // identity context (api_key + is_test_mode), then pass the
+                    // captured generation into read_provenance(). The previous
+                    // implementation observed scope and generation via two
+                    // separate reads of the secret option, which enabled torn
+                    // scope(A)+generation(B) snapshots.
+                    $api_key = is_string( $this->gateway->apiKey ) ? $this->gateway->apiKey : '';
+                    $is_test_mode = (bool) $this->gateway->getMode();
+                    $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context(
+                        $api_key,
+                        $is_test_mode
+                    );
+                    if ( is_array( $ctx )
+                        && isset( $ctx['state'] ) && $ctx['state'] === 'valid'
+                        && is_string( $ctx['scope'] ) && $ctx['scope'] !== ''
+                        && is_string( $ctx['generation_id'] ) && $ctx['generation_id'] !== ''
                     ) {
-                        $saved_cards = $savedCards['data'];
+                        $provenance = \UPayments\Token\CustomerTokenIdentity::read_provenance(
+                            $user_id,
+                            $ctx['scope'],
+                            $ctx['generation_id']
+                        );
+                        if ( is_array( $provenance ) && isset( $provenance['state'] ) && $provenance['state'] === 'valid' ) {
+                            $can_retrieve_saved_cards = true;
+                        }
                     }
                 }
             }
 
-            $save_card_on = $hasPhone;
+            if ( $can_retrieve_saved_cards ) {
+                $savedCards = $this->gateway->getSavedCardsForCurrentUser( $availability );
+                if (is_array($savedCards)
+                    && isset($savedCards['result'])
+                    && $savedCards['result'] === 'success'
+                    && isset($savedCards['data'])
+                    && is_array($savedCards['data'])
+                ) {
+                    // Section T: Sanitize each saved card entry.
+                    $sanitized = array();
+                    foreach ($savedCards['data'] as $card) {
+                        if (!is_array($card)) continue;
+                        if (!isset($card['token']) || !is_string($card['token']) || $card['token'] === '') continue;
+                        $sanitized[] = array(
+                            'token' => $card['token'],
+                            'number' => isset($card['number']) && is_scalar($card['number']) ? (string) $card['number'] : '',
+                            'brand' => isset($card['brand']) && is_scalar($card['brand']) ? (string) $card['brand'] : '',
+                        );
+                    }
+                    $saved_cards = $sanitized;
+                }
+            }
 
         }
         if ( WC()->cart ) {
@@ -161,7 +200,7 @@ class WCGatewayUPaymentsBlocks extends AbstractPaymentMethodType {
             'saved_cards'               => $saved_cards,
             'is_logged_in'              => $is_logged_in,
             'save_card_enabled'         => $save_card_enabled,
-            'save_card_toggle_on'       => $save_card_on,
+            'save_card_toggle_on'       => false,
             'cart_total'                => $total,
             'currency_display'          => $currency_display,
             'is_subscription_enabled'   => $is_subscription_enabled,
