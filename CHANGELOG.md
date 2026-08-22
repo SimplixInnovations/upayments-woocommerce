@@ -4,6 +4,92 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #29 — Evidence-integrity repair, OTHER sink removed, semantic ledger enforced
+
+**Parent**: `f05b6b82d7e3a3384f9b8ee8f724395f9d869eca`
+
+#### Fixes
+
+1. **`upay_run_process_payment()` POST injection**: Added an optional 6th `$post` parameter that, when supplied, snapshots the prior `$_POST` and harness `state['post']`, replaces them with the supplied array, and deterministically restores both via `try/finally` even if `process_payment()` throws. Prior to this fix the 6th positional argument at the MALFORMED-CARD call site was silently ignored: `process_payment()` saw the harness-default `$_POST`, not the per-iteration malformed token.
+
+2. **MALFORMED-CARD deterministic counter**: The `foreach ($malformed_card_tokens as $label => $bad_token)` loop previously computed `$order = upay_make_order(80000 + $i, ...)` with `$i` undefined (foreach binds `$label`, not `$i`). All 11 iterations silently produced order id `80000` (collision). Replaced with an explicit `$malformed_card_index` counter that is incremented at the end of each iteration so every malformed token now drives a distinct order.
+
+3. **26 SP-X47 "result is array" reclassified**: All 26 entries in the SP-X47 loop were tagged `semantic_runtime` despite the assertion (`is_array($r ?? null)`) being a harness subprocess envelope shape check, not a production outcome. Reclassified to `harness_self_test`.
+
+4. **SP-X48 / SP-X49 plumbing reclassified**: `body_consumed_count > 0 implies path=store_api` and the body_consumed_count invariants were tagged `semantic_runtime`. These are harness subprocess envelope checks (`body_consumed_count` and `path` are both harness-emitted subprocess fields, not production contract). Reclassified to `harness_self_test`.
+
+5. **OTHER sink eliminated (OTHER=0 mandatory)**: The ledger family fallback that previously attributed 241 misclassified assertions to `OTHER` has been removed. `upay_ledger_family_for()` is now exhaustive over the legitimate prefix space; an unknown prefix is a hard FAIL (no silent sink). All 241 previously-OTHER assertions were reclassified to one of the four honest buckets:
+
+   | Previously-OTHER family | Count | Honest bucket |
+   |-------------------------|-------|---------------|
+   | PRIOR-LOCK-1..4 | 4 | `helper_unit_runtime` (direct `upay_get_user_lock_evidence()` / `upay_call_static(... 'inspect_customer_history' ...)` invocations) |
+   | RACE-1..4 (incl. sub-asserts) | 12 | `helper_unit_runtime` (reflection-invoked `create_provenance()` direct calls) |
+   | ECON-E2E-1..18 | 24 | `semantic_runtime` via new `ECON-E2E` family (drives real `process_payment()` through charge path) |
+   | SEM14-T-1..10 | 10 | `semantic_runtime` via new `SEM14-T` family (drives real `process_payment()` through source-validation gate) |
+   | SP-X6/SP-X7/SP-X14/SP-X17..X21/SP-X80..X100 path-envelope | ~120 | `harness_self_test` (subprocess path/body_consumed envelope) |
+   | SP-X26/X-X35/X-X36/X-X37/X-X38/X-X39/X-X40/X-X101 counter | 37 | `semantic_runtime` via new `SP-CARD` family (production call-count / write-count contract) |
+   | SP-SUCCESS-1 body_consumed envelope | 1 | `harness_self_test` |
+   | SP-6/SP-7 fail-closed counter | 18 | `semantic_runtime` via new `SP-CARD` family |
+   | Other SP-X35 hostile Classic POST | 1 | `semantic_runtime` via new `SP-CARD` family |
+
+6. **Taxonomy guards strengthened**: `_upay_dispatch()` now rejects any `semantic_runtime` description containing any of the following harness subprocess envelope phrases as a hard FAIL: `result is array`, `process_payment returned array`, `process_payment_result is array`, `body consumed`, `body NOT consumed`, `body_consumed_count`, `last_charge_body is string`, `create_token_bodies is array`, `retrieve_bodies is array`, `charge_bodies is array`, `scenario label preserved`, `wc_loaded=true`, `payload decoded`, `-> not store_api`, `-> store_api path`, `exact-match gate`, `subprocess load confirmed`, `subprocess arg echo`, `subprocess invocation determinism`, `plain + pretty permalink both consume body once`. Any future harness writer who tags these as `semantic_runtime` aborts the run with a `[guard]` failure.
+
+7. **MALFORMED-CARD coverage expanded (88 → 288)**: Added 25 new malformed token shapes driving through `process_payment()` and asserting the strict fail-closed contract: `negative-int`, `zero-int`, `float-zero`, `float-negative`, `float-nan-str`, `float-inf-str`, `scientific-string`, `hex-string`, `binary-string`, `octal-string`, `leading-zeros`, `trailing-newline`, `tab-internal`, `cr-internal`, `null-byte`, `unicode-digit`, `rtl-marker`, `html-encoded`, `sql-quote`, `json-string`, `true-string`, `false-string`, `null-string`, `negative-string`, `plus-prefix`. 25 new sources × 8 assertions = 200 additional semantic assertions.
+
+8. **Frozen production blob SHAs preserved (byte-identical)**:
+   - `UPayments.php`: `64c789e81ae4d292ef9b1d7382812c319a44bc25` ✓
+   - `includes/Token/CustomerTokenIdentity.php`: `85430d37e9baf540842f5655b86ccf0eca3e6aea` ✓
+   - `includes/class-wc-gateway-upayments-blocks.php`: `813d192d69c069eb7ee11df93acc9dbdf03e270a` ✓
+   - `includes/Subscription/Cron/Scheduler.php`: `5251866d4df2d1326e7c09f0c8ec1d146c0bb325` ✓
+   - `includes/Subscription/Cron/CycleClaim.php`: `c34d83e2d77cc65024fe663e4c378cecb2b17347` ✓
+
+#### Final counts (executable truth)
+
+| Category | PASS | FAIL |
+|----------|------|------|
+| semantic_runtime | 605 | 0 |
+| helper_unit_runtime | 841 | 0 |
+| static_source | 46 | 0 |
+| harness_self_test | 364 | 0 |
+| lint_tooling | 10 | 0 |
+| **Total PHP** | **1866** | **0** |
+
+Blocks harness: **PASS 144** (runtime 88, static source 15, harness self-test 41), FAIL 0, exit 0.
+
+Semantic runtime gate: **605 ≥ 560** ✓
+
+#### Semantic ledger (runtime-attributed, difference = 0)
+
+| Family | Count | Entrypoint | Outcome |
+|--------|-------|------------|---------|
+| PE | 18 | process_payment | economic/preflight result |
+| WL | 26 | process_payment | exact source/provider result |
+| MM | 100 | process_payment | exact MM provider payload |
+| OW | 11 | process_payment | hosted non-WL result |
+| SP-SUCCESS | 20 | Store process_payment | exact successful Charge |
+| SP-SAVE-CARD | 25 | Store process_payment | Create/provenance/Charge |
+| SP-SELECTED | 21 | Store process_payment | Retrieve authorization/Charge |
+| SP-MISMATCH | 16 | Store process_payment | Retrieve rejection/no Charge |
+| BLOCKS-SAN | 6 | get_payment_method_data | real sanitizer |
+| MALFORMED-CARD | 288 | process_payment | strict failure/no mutation |
+| HOSTILE | 3 | Store process_payment | hostile Classic POST isolation |
+| ECON-E2E | 24 | process_payment | raw Charge product.price/quantity exact |
+| SEM14-T | 10 | process_payment | 11-char source allowlist rejection |
+| SP-CARD | 37 | Store process_payment | path/counter/hostile-input production contract |
+| OTHER | 0 | (sink removed; unknown prefix is hard-fail) | — |
+| **TOTAL** | **605** | | **== semantic_runtime (enforced)** |
+
+Environment: PHP 8.5.6 (CLI), Node v26.7.0.
+
+#### Production source changes
+
+None. All five frozen production blob SHAs are byte-identical to #28. The defect was narrowly localized to test-evidence integrity.
+
+#### Parent / commit policy
+
+- Parent exactly: `f05b6b82d7e3a3384f9b8ee8f724395f9d869eca` (no amend/rebase/force-push/squash/cherry-pick).
+- Single `#29` commit.
+
 ### Residual Correction #28 — Complete taxonomy audit, MM raw JSON proof, genuine semantic coverage, enforced semantic ledger
 
 **Parent**: `ebd8b22faeee0bb5a38e822c6e8a484d64dd84a8`

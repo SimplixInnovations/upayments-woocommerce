@@ -85,9 +85,11 @@ $_semantic_runtime_assert_calls = 0;
 // Every PASS tagged semantic_runtime is attributed to exactly one ledger
 // family by its description prefix. The mapping covers only genuine
 // end-to-end production workflows driven through process_payment(),
-// Store process_payment() or get_payment_method_data(). Anything that
-// does not match a known E2E family falls into OTHER and is surfaced,
-// never silently absorbed.
+// Store process_payment() or get_payment_method_data().
+//
+// Residual Correction #29: OTHER is REMOVED. The mapping is exhaustive
+// over the legitimate prefix space; an unknown prefix is a hard FAIL, not
+// a silent sink. Every semantic assertion MUST name a family explicitly.
 function upay_ledger_family_for($description) {
     static $rules = array(
         // Most specific first.
@@ -112,13 +114,51 @@ function upay_ledger_family_for($description) {
         array('WL ',              'WL'),
         array('OW-',              'OW'),
         array('OW ',              'OW'),
+        // Residual Correction #29: explicit ECON-E2E family for the 18
+        // end-to-end product-economics assertions. Each one drives a real
+        // process_payment() through the charge path and asserts the raw
+        // Charge body products[].price / products[].quantity shape.
+        array('ECON-E2E-',       'ECON-E2E'),
+        // Residual Correction #29: explicit SEM14-T family for the 10
+        // 11-char source allowlist rejection assertions. Each drives a
+        // real process_payment() through the source-validation gate.
+        array('SEM14-T-',        'SEM14-T'),
+        // Residual Correction #29: explicit SP-CARD family for the
+        // Store-API card-scoped semantic assertions (SP-X9 result=failure,
+        // SP-X10 payment_type=knet preserved, etc). These reach
+        // process_payment_result and assert genuine production contract.
+        // Also covers the SP-X26..X40, SP-X101 counter assertions which
+        // test the EXACT count of production-side calls (Charge, Create
+        // Token, Retrieve) and the order-meta / identity-meta write counts
+        // recorded by the harness subprocess on production's behalf.
+        array('SP-X9 ',          'SP-CARD'),
+        array('SP-X10 ',         'SP-CARD'),
+        array('SP-X26 ',         'SP-CARD'),
+        array('SP-X35 ',         'SP-CARD'),
+        array('SP-X36 ',         'SP-CARD'),
+        array('SP-X37 ',         'SP-CARD'),
+        array('SP-X38 ',         'SP-CARD'),
+        array('SP-X39 ',         'SP-CARD'),
+        array('SP-X40 ',         'SP-CARD'),
+        array('SP-X101 ',        'SP-CARD'),
+        // Residual Correction #29: SP-6/SP-7 fail-closed scenarios drive
+        // the full Store process_payment() flow with hostile input and
+        // assert production's fail-closed counter contract.
+        array('SP-6 ',           'SP-CARD'),
+        array('SP-7 ',           'SP-CARD'),
+        // Residual Correction #29: SP-SUCCESS-1..N continue to map to
+        // SP-SUCCESS family via the SP-SUCCESS prefix rule above.
     );
     foreach ($rules as $rule) {
         if (strpos($description, $rule[0]) === 0) {
             return $rule[1];
         }
     }
-    return 'OTHER';
+    // Residual Correction #29: hard-fail on unknown semantic family. The
+    // fallback 'OTHER' has been removed; any new semantic assertion that
+    // is added without an explicit rule above is an evidence-integrity
+    // defect and aborts the run.
+    return 'UNKNOWN_FAMILY';
 }
 
 function _upay_dispatch($condition, $description, $kind) {
@@ -178,6 +218,46 @@ function _upay_dispatch($condition, $description, $kind) {
             $log[] = "FAIL: [guard] semantic_runtime category wrong for $description (should be static_source / lint_tooling)";
             return;
         }
+        // Residual Correction #29: harness subprocess envelope phrases
+        // (result is array, process_payment returned array, body consumed,
+        // body_consumed, last_charge_body is string, create_token_bodies
+        // is array, retrieve_bodies is array, charge_bodies is array,
+        // scenario label preserved, wc_loaded=true, payload decoded,
+        // scenario label, path=store_api, path != store_api, exact-match
+        // gate) are HARNESS subprocess output shape — they MUST NOT be
+        // tagged semantic_runtime. They test the subprocess envelope, not
+        // a production outcome. Catch every known harness phrase and fail.
+        static $harness_phrase_guard = array(
+            'result is array',
+            'process_payment returned array',
+            'process_payment_result is array',
+            'body consumed',
+            'body NOT consumed',
+            'body_consumed_count',
+            'last_charge_body is string',
+            'create_token_bodies is array',
+            'retrieve_bodies is array',
+            'charge_bodies is array',
+            'scenario label preserved',
+            'wc_loaded=true',
+            'payload decoded',
+            '-> not store_api',
+            '-> store_api path',
+            'exact-match gate',
+            'subprocess load confirmed',
+            'subprocess arg echo',
+            'subprocess invocation determinism',
+            'plain + pretty permalink both consume body once',
+        );
+        $desc_lower = strtolower($description);
+        foreach ($harness_phrase_guard as $phrase) {
+            if (strpos($desc_lower, strtolower($phrase)) !== false) {
+                $fail++;
+                $_fail_semantic_runtime++;
+                $log[] = "FAIL: [guard] semantic_runtime contains harness-envelope phrase '$phrase' (must be harness_self_test): $description";
+                return;
+            }
+        }
     }
 
     if ($condition) {
@@ -199,18 +279,26 @@ function _upay_dispatch($condition, $description, $kind) {
             // ledger family at runtime so the printed ledger sums to the
             // printed semantic_runtime count by construction.
             $_ledger_family = upay_ledger_family_for($description);
+            if ($_ledger_family === 'UNKNOWN_FAMILY') {
+                // Residual Correction #29: OTHER sink removed. An unknown
+                // prefix is an evidence-integrity defect. Record and fail.
+                $fail++;
+                $_fail_semantic_runtime++;
+                $GLOBALS['_upay_semantic_unknown_family_count'] = isset($GLOBALS['_upay_semantic_unknown_family_count'])
+                    ? $GLOBALS['_upay_semantic_unknown_family_count'] + 1 : 1;
+                if (!isset($GLOBALS['_upay_semantic_unknown_samples'])) {
+                    $GLOBALS['_upay_semantic_unknown_samples'] = array();
+                }
+                if (count($GLOBALS['_upay_semantic_unknown_samples']) < 50) {
+                    $GLOBALS['_upay_semantic_unknown_samples'][] = $description;
+                }
+                $log[] = "FAIL: [guard] semantic_runtime unknown ledger family (no explicit rule): $description";
+                return;
+            }
             if (!isset($GLOBALS['_upay_semantic_family_counts'][$_ledger_family])) {
                 $GLOBALS['_upay_semantic_family_counts'][$_ledger_family] = 0;
             }
             $GLOBALS['_upay_semantic_family_counts'][$_ledger_family]++;
-            if ($_ledger_family === 'OTHER') {
-                if (!isset($GLOBALS['_upay_semantic_other_samples'])) {
-                    $GLOBALS['_upay_semantic_other_samples'] = array();
-                }
-                if (count($GLOBALS['_upay_semantic_other_samples']) < 15) {
-                    $GLOBALS['_upay_semantic_other_samples'][] = $description;
-                }
-            }
         }
     } else {
         $fail++;
@@ -434,7 +522,7 @@ function upay_set_input($body) {
     $state['input_body'] = $body;
 }
 
-function upay_run_process_payment($gateway, $order, $rest_request = false, $uri = '/checkout/', $method = 'POST') {
+function upay_run_process_payment($gateway, $order, $rest_request = false, $uri = '/checkout/', $method = 'POST', $post = null) {
     upay_setup_request($rest_request, $uri, $method);
     // Reset counters that are produced per-call
     $state =& upay_test_state();
@@ -451,7 +539,28 @@ function upay_run_process_payment($gateway, $order, $rest_request = false, $uri 
     $state['secret_creates'] = 0;
     $state['transport_log'] = [];
     $state['last_charge_body'] = null;
-    return $gateway->process_payment($order->get_id());
+
+    // Phase 9I #29 evidence-integrity repair: when caller supplies $post,
+    // snapshot the existing $_POST + harness state['post'] and inject the
+    // supplied array before invoking process_payment().  Restore deterministically
+    // via try/finally even if the gateway throws.
+    $post_snapshot = null;
+    $harness_post_snapshot = null;
+    $post_injected = ($post !== null);
+    if ($post_injected) {
+        $post_snapshot       = isset($_POST) ? $_POST : [];
+        $harness_post_snapshot = isset($state['post']) ? $state['post'] : [];
+        $_POST                = is_array($post) ? $post : (array) $post;
+        $state['post']        = $_POST;
+    }
+    try {
+        return $gateway->process_payment($order->get_id());
+    } finally {
+        if ($post_injected) {
+            $_POST         = $post_snapshot;
+            $state['post'] = $harness_post_snapshot;
+        }
+    }
 }
 
 // ===========================================================================
@@ -3610,27 +3719,35 @@ $current_generation_str = str_repeat('c', 32);     // current generation (32 hex
 
 // PRIOR-LOCK-1: Without user-lock evidence, the prior-scope lock store has
 // no entry for the user. This is the canonical pre-lock state.
+// Residual Correction #29: reclassified helper_unit_runtime — this
+// assertion calls upay_get_user_lock_evidence() directly (harness fixture
+// helper), it does NOT drive process_payment() through a real charge path.
 upay_reset_state();
 upay_assert(
     upay_get_user_lock_evidence(88) === null,
     'PRIOR-LOCK-1 no user-lock evidence recorded before transition',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 // PRIOR-LOCK-2: Driving the user-lock transition records canonical evidence
 // in the per-user lock store with locked_at timestamp + evidence_kind.
+// Residual Correction #29: reclassified helper_unit_runtime — harness
+// fixture helper direct invocation, not process_payment() driven.
 upay_simulate_user_lock_transition(88);
 $lock_evidence = upay_get_user_lock_evidence(88);
 upay_assert(
     is_array($lock_evidence) && isset($lock_evidence['locked_at']) && $lock_evidence['evidence_kind'] === 'wp_login_equivalent',
     'PRIOR-LOCK-2 user-lock transition recorded canonical evidence',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 // PRIOR-LOCK-3: After the transition, inspect_customer_history returns the
 // prior_scope_only classification with reason prior_scope_same_generation
 // when the order's scope differs from current but its generation matches.
 // This is the EXACT transition observable at the user-lock boundary.
+// Residual Correction #29: reclassified helper_unit_runtime — the call is
+// upay_call_static(... 'inspect_customer_history', ...) i.e. direct static
+// helper invocation, NOT a process_payment() driven semantic outcome.
 $state =& upay_test_state();
 $prior_order = new FakeWCOrder(10088);
 $prior_order->add_meta_data('_upay_customer_unique_token', '12345678', true);
@@ -3645,15 +3762,17 @@ $res = upay_call_static('UPayments\Token\CustomerTokenIdentity', 'inspect_custom
 upay_assert(
     isset($res['classification']) && $res['classification'] === 'prior_scope_only' && isset($res['reason']) && $res['reason'] === 'prior_scope_same_generation',
     'PRIOR-LOCK-3 inspect_customer_history AFTER user-lock transition with prior-scope order -> prior_scope_only/prior_scope_same_generation (got ' . json_encode($res) . ')',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 // PRIOR-LOCK-4: Lock evidence is per-user_id, not global.
+// Residual Correction #29: reclassified helper_unit_runtime — direct
+// fixture helper invocation.
 upay_simulate_user_lock_transition(99);
 upay_assert(
     upay_get_user_lock_evidence(88) !== null && upay_get_user_lock_evidence(99) !== null && upay_get_user_lock_evidence(1000) === null,
     'PRIOR-LOCK-4 lock evidence is per-user_id, not global',
-    'semantic_runtime'
+    'helper_unit_runtime'
 );
 
 // =========================================================================
@@ -3691,7 +3810,7 @@ function upay_run_create_provenance_race($scenario_name, $failure_injection, $po
         $result,
         false,
         "$scenario_name create_provenance returned false on failure",
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 
     // The meta key for the inserted record must either be absent entirely
@@ -3702,7 +3821,7 @@ function upay_run_create_provenance_race($scenario_name, $failure_injection, $po
     upay_assert(
         count($remaining) === 0,
         "$scenario_name meta key empty after rollback (got " . count($remaining) . " records)",
-        'semantic_runtime'
+        'helper_unit_runtime'
     );
 
     // The compensating delete MUST have used exact-value semantics. If
@@ -3723,7 +3842,7 @@ function upay_run_create_provenance_race($scenario_name, $failure_injection, $po
         upay_assert(
             $exact_value_used,
             "$scenario_name rollback used delete_user_meta with exact value (no blanket key delete)",
-            'semantic_runtime'
+            'helper_unit_runtime'
         );
     }
     if ($post_assert_extra !== null) {
@@ -3760,7 +3879,7 @@ upay_run_create_provenance_race(
         upay_assert(
             count($remaining) === 0,
             'RACE-2 readback count mismatch: meta key clean after rollback',
-            'semantic_runtime'
+            'helper_unit_runtime'
         );
     }
 );
@@ -5168,8 +5287,11 @@ $result_index = upay_run_store_api_child('SP-X13', true, '/index.php/wc/store/v1
 upay_assert_eq($result_index['path'] ?? null, 'store_api', 'SP-X13 /index.php prefix -> store_api path', 'harness_self_test');
 
 // --- SP-X14: Empty request URI -> not Store API ------------------------
+//             HARNESS self-test: the path field is harness subprocess
+//             emitted (not a production-side outcome). Residual Correction
+//             #29: reclassified to harness_self_test.
 $result_empty_uri = upay_run_store_api_child('SP-X14', true, '', 'POST', $store_body);
-upay_assert(isset($result_empty_uri['path']) && $result_empty_uri['path'] !== 'store_api', 'SP-X14 empty URI -> not store_api', 'semantic_runtime');
+upay_assert(isset($result_empty_uri['path']) && $result_empty_uri['path'] !== 'store_api', 'SP-X14 empty URI -> not store_api', 'harness_self_test');
 upay_assert_eq((int) ($result_empty_uri['body_consumed_count'] ?? 0), 0, 'SP-X14 empty URI -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X15: JSON array (not object) at top level ----------------------
@@ -5190,30 +5312,35 @@ upay_assert_eq($result_zero_card['path'] ?? null, 'store_api', 'SP-X16 card_toke
 upay_assert_eq((int) ($result_zero_card['body_consumed_count'] ?? 0), 1, 'SP-X16 card_token=0 -> body consumed', 'harness_self_test');
 
 // --- SP-X17: Whitespace-only URI ---------------------------------------
+//             HARNESS self-test (Residual Correction #29).
 $ws_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_ws = upay_run_store_api_child('SP-X17', true, '   ', 'POST', $ws_body);
-upay_assert(isset($result_ws['path']) && $result_ws['path'] !== 'store_api', 'SP-X17 whitespace URI -> not store_api', 'semantic_runtime');
+upay_assert(isset($result_ws['path']) && $result_ws['path'] !== 'store_api', 'SP-X17 whitespace URI -> not store_api', 'harness_self_test');
 
 // --- SP-X18: Method=PATCH on Store URI -> not Store API ----------------
+//             HARNESS self-test (Residual Correction #29).
 $result_patch = upay_run_store_api_child('SP-X18', true, '/wc/store/v1/checkout', 'PATCH', $store_body);
-upay_assert(isset($result_patch['path']) && $result_patch['path'] !== 'store_api', 'SP-X18 PATCH on Store URI -> not store_api', 'semantic_runtime');
+upay_assert(isset($result_patch['path']) && $result_patch['path'] !== 'store_api', 'SP-X18 PATCH on Store URI -> not store_api', 'harness_self_test');
 upay_assert_eq((int) ($result_patch['body_consumed_count'] ?? 0), 0, 'SP-X18 PATCH -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X19: Method=DELETE on Store URI -> not Store API --------------
+//             HARNESS self-test (Residual Correction #29).
 $result_delete = upay_run_store_api_child('SP-X19', true, '/wc/store/v1/checkout', 'DELETE', $store_body);
-upay_assert(isset($result_delete['path']) && $result_delete['path'] !== 'store_api', 'SP-X19 DELETE on Store URI -> not store_api', 'semantic_runtime');
+upay_assert(isset($result_delete['path']) && $result_delete['path'] !== 'store_api', 'SP-X19 DELETE on Store URI -> not store_api', 'harness_self_test');
 upay_assert_eq((int) ($result_delete['body_consumed_count'] ?? 0), 0, 'SP-X19 DELETE -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X20: Non-Store REST route /wc/store/v1/cart -> not Store API ---
+//             HARNESS self-test (Residual Correction #29).
 $cart_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_cart = upay_run_store_api_child('SP-X20', true, '/wc/store/v1/cart', 'POST', $cart_body);
-upay_assert(isset($result_cart['path']) && $result_cart['path'] !== 'store_api', 'SP-X20 /wc/store/v1/cart -> not store_api (exact-match gate)', 'semantic_runtime');
+upay_assert(isset($result_cart['path']) && $result_cart['path'] !== 'store_api', 'SP-X20 /wc/store/v1/cart -> not store_api (exact-match gate)', 'harness_self_test');
 upay_assert_eq((int) ($result_cart['body_consumed_count'] ?? 0), 0, 'SP-X20 cart -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X21: Non-Store REST route /wc/store/v1/products -> not Store API
+//             HARNESS self-test (Residual Correction #29).
 $prod_body = wp_json_encode(['payment_data' => ['order_id' => 99999]]);
 $result_prod = upay_run_store_api_child('SP-X21', true, '/wc/store/v1/products', 'POST', $prod_body);
-upay_assert(isset($result_prod['path']) && $result_prod['path'] !== 'store_api', 'SP-X21 /wc/store/v1/products -> not store_api', 'semantic_runtime');
+upay_assert(isset($result_prod['path']) && $result_prod['path'] !== 'store_api', 'SP-X21 /wc/store/v1/products -> not store_api', 'harness_self_test');
 upay_assert_eq((int) ($result_prod['body_consumed_count'] ?? 0), 0, 'SP-X21 products -> body NOT consumed', 'harness_self_test');
 
 // --- SP-X22: Subdirectory + pretty permalink ----------------------------
@@ -5394,12 +5521,16 @@ upay_assert(is_array($result_valid_ext['charge_bodies'] ?? null), 'SP-X45 charge
 upay_assert_eq($result_valid_ext['scenario'] ?? '', 'SP-X10', 'SP-X46 scenario label preserved in subprocess', 'harness_self_test');
 
 // --- SP-X47: SP-X1..SP-X10 results all have valid process_payment_result
-//             shape. process_payment_result is a genuine production
-//             contract. The wc_loaded field is harness subprocess load
-//             confirmation — split into two assertions with separate
-//             categories.
+//             shape. The "result is array" check is harness subprocess
+//             envelope shape confirmation (the subprocess returns a hash),
+//             NOT a production outcome. process_payment_result IS the
+//             genuine production contract and is asserted separately as
+//             "process_payment returned array" in each SP-X* scenario block.
 //             Residual Correction #18: reclassified wc_loaded to
-//             harness_self_test; result is array stays semantic_runtime.
+//             harness_self_test.
+//             Residual Correction #29: reclassified "result is array" to
+//             harness_self_test (subprocess envelope shape, not production
+//             semantic outcome). 26 entries.
 foreach ([$result_subdir, $result_pretty, $result_plain, $result_trail, $result_get,
           $result_norest, $result_put, $result_wpusers, $result_empty, $result_valid_ext,
           $result_nonempty_ext, $result_subdir_plain, $result_index, $result_empty_uri,
@@ -5407,29 +5538,40 @@ foreach ([$result_subdir, $result_pretty, $result_plain, $result_trail, $result_
           $result_cart, $result_prod, $result_subdir_pretty, $result_bad_json,
           $result_null_ext, $result_str_ext, $result_init] as $i => $r) {
     $sp = "SP-X47-" . ($i + 1);
-    upay_assert(is_array($r ?? null), "$sp result is array", 'semantic_runtime');
+    upay_assert(is_array($r ?? null), "$sp result is array", 'harness_self_test');
     upay_assert_eq($r['wc_loaded'] ?? null, true, "$sp wc_loaded=true (subprocess load confirmed)", 'harness_self_test');
 }
 
 // --- SP-X48: production enters Store API only when body is consumed ----
+//             HARNESS self-test: these two assertions verify the harness
+//             subprocess envelope contract (body_consumed_count and path
+//             are both harness-emitted fields from the subprocess), NOT a
+//             production semantic outcome. The genuine production-side
+//             gate "process_payment_result is array" / "result key
+//             present" is asserted separately within each SP-X* scenario
+//             block (e.g. SP-X9 line 5103, SP-X10 line 5142-5144, etc.).
+//             Residual Correction #29: reclassified body_consumed_count
+//             plumbing assertions to harness_self_test.
 upay_assert(
     (int) ($result_valid_ext['body_consumed_count'] ?? 0) > 0
         && $result_valid_ext['path'] === 'store_api',
     'SP-X48 body_consumed_count > 0 implies path=store_api',
-    'semantic_runtime'
+    'harness_self_test'
 );
 upay_assert(
     (int) ($result_norest['body_consumed_count'] ?? 0) === 0
         && $result_norest['path'] !== 'store_api',
     'SP-X48 body_consumed_count = 0 implies path != store_api',
-    'semantic_runtime'
+    'harness_self_test'
 );
 
 // --- SP-X49: cross-scenario body_consumed invariant -------------------
+//             HARNESS self-test: same plumbing reason as SP-X48.
+//             Residual Correction #29: reclassified.
 upay_assert(
     (int) ($result_plain['body_consumed_count'] ?? 0) === (int) ($result_pretty['body_consumed_count'] ?? 0),
     'SP-X49 plain + pretty permalink both consume body once',
-    'semantic_runtime'
+    'harness_self_test'
 );
 
 // --- SP-X50: SP-1 path is consistent across multiple invocations ------
@@ -5472,16 +5614,19 @@ $body_variants = [
 
 foreach ($body_variants as $label => $payload) {
     $result = upay_run_store_api_child($label, true, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
-    // Genuine semantic_runtime: production's classifier decided store_api
-    // and consumed the body — these are real production routing
-    // decisions.
-    upay_assert_eq($result['path'] ?? null, 'store_api', "$label body shape -> store_api path", 'semantic_runtime');
-    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'semantic_runtime');
-    // HARNESS self-test: subprocess arg + load plumbing echoes.
-    // Residual Correction #18: reclassified.
+    // HARNESS self-test: the path field, body_consumed_count,
+    // process_payment_result envelope, and result-key check are all
+    // HARNESS SUBPROCESS emitted fields. They confirm the subprocess
+    // routing logic was reached and the body was consumed by the
+    // subprocess, NOT direct production outcomes. The genuine production
+    // semantic invariants are covered separately by SP-X26 charge_calls
+    // and SP-X35 hostile Classic POST.
+    // Residual Correction #29: reclassified to harness_self_test.
+    upay_assert_eq($result['path'] ?? null, 'store_api', "$label body shape -> store_api path", 'harness_self_test');
+    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'harness_self_test');
     upay_assert_eq($result['rest_request_observed'] ?? null, true, "$label -> REST_REQUEST observed true (subprocess env echo)", 'harness_self_test');
-    upay_assert(is_array($result['process_payment_result'] ?? null), "$label -> process_payment returned array", 'semantic_runtime');
-    upay_assert(array_key_exists('result', $result['process_payment_result'] ?? []), "$label -> result key present", 'semantic_runtime');
+    upay_assert(is_array($result['process_payment_result'] ?? null), "$label -> process_payment returned array", 'harness_self_test');
+    upay_assert(array_key_exists('result', $result['process_payment_result'] ?? []), "$label -> result key present", 'harness_self_test');
     upay_assert_eq($result['wc_loaded'] ?? null, true, "$label -> wc_loaded true (subprocess load confirmed)", 'harness_self_test');
 }
 
@@ -5497,23 +5642,25 @@ $false_variants = [
 
 foreach ($false_variants as $label => $payload) {
     $result = upay_run_store_api_child($label, false, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
-    // Genuine semantic_runtime: production routing decisions.
-    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label REST_REQUEST=false -> not store_api", 'semantic_runtime');
-    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label -> body NOT consumed", 'semantic_runtime');
-    // HARNESS self-test: subprocess env echo.
-    // Residual Correction #18: reclassified.
+    // HARNESS self-test (Residual Correction #29): path and body_consumed
+    // are subprocess envelope fields.
+    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label REST_REQUEST=false -> not store_api", 'harness_self_test');
+    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label -> body NOT consumed", 'harness_self_test');
     upay_assert_eq($result['rest_request_observed'] ?? null, false, "$label -> REST_REQUEST observed false (subprocess env echo)", 'harness_self_test');
 }
 
 // --- SP-X86..SP-X90: method variants all NOT Store API ------------------
+//             HARNESS self-test (Residual Correction #29): subprocess
+//             envelope checks.
 foreach (['GET', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as $i => $method) {
     $label = 'SP-X8' . (6 + $i);
     $result = upay_run_store_api_child($label, true, '/wc/store/v1/checkout', $method, $store_body);
-    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label method=$method -> not store_api", 'semantic_runtime');
-    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label method=$method -> body NOT consumed", 'semantic_runtime');
+    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label method=$method -> not store_api", 'harness_self_test');
+    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label method=$method -> body NOT consumed", 'harness_self_test');
 }
 
 // --- SP-X91..SP-X95: unrelated REST routes all NOT Store API -----------
+//             HARNESS self-test (Residual Correction #29).
 foreach ([
     'SP-X91' => '/wc/store/v1/cart',
     'SP-X92' => '/wc/store/v1/products',
@@ -5522,11 +5669,13 @@ foreach ([
     'SP-X95' => '/wp/v2/users/1',
 ] as $label => $uri) {
     $result = upay_run_store_api_child($label, true, $uri, 'POST', $store_body);
-    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label uri=$uri -> not store_api", 'semantic_runtime');
-    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label uri=$uri -> body NOT consumed", 'semantic_runtime');
+    upay_assert(isset($result['path']) && $result['path'] !== 'store_api', "$label uri=$uri -> not store_api", 'harness_self_test');
+    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 0, "$label uri=$uri -> body NOT consumed", 'harness_self_test');
 }
 
 // --- SP-X96..SP-X100: valid body with all field combinations ----------
+//             HARNESS self-test (Residual Correction #29): subprocess
+//             envelope checks.
 foreach ([
     'SP-X96' => ['order_id' => 99999, 'upayment_payment_type' => 'knet'],
     'SP-X97' => ['order_id' => 99999, 'upayment_payment_type' => 'cc'],
@@ -5539,15 +5688,8 @@ foreach ([
         'payment_data' => ['order_id' => 99999],
     ];
     $result = upay_run_store_api_child($label, true, '/wc/store/v1/checkout', 'POST', wp_json_encode($payload));
-    // Genuine semantic_runtime: production consumed the body and the
-    // extension dict survived round-trip into production's body parser.
-    upay_assert_eq($result['path'] ?? null, 'store_api', "$label -> store_api path", 'semantic_runtime');
-    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'semantic_runtime');
-    // payload_decoded is the harness subprocess echo of the JSON it
-    // decoded; preserved means the subprocess arg plumbing works,
-    // NOT that production parsed the field. Genuine production payload
-    // routing is already covered by SP-X26 charge_calls and SP-X35.
-    // Residual Correction #18: reclassified.
+    upay_assert_eq($result['path'] ?? null, 'store_api', "$label -> store_api path", 'harness_self_test');
+    upay_assert_eq((int) ($result['body_consumed_count'] ?? 0), 1, "$label -> body consumed", 'harness_self_test');
     upay_assert_eq($result['payload_decoded']['extensions']['upayments']['upayment_payment_type'] ?? null, $ext['upayment_payment_type'], "$label -> upayment_payment_type preserved (subprocess JSON round-trip)", 'harness_self_test');
 }
 
@@ -5640,8 +5782,12 @@ $result_success = upay_run_store_api_child('SP-SUCCESS-1', true, '/wc/store/v1/c
 upay_assert_eq($result_success['path'] ?? null, 'store_api',
     'SP-SUCCESS-1 happy path → path=store_api', 'semantic_runtime');
 // Body must be consumed by Store API flow (not Classic fallback).
+// Residual Correction #29: reclassified body_consumed envelope check to
+// harness_self_test (subprocess envelope field, not production contract).
+// Production's happy path semantic outcome (charge_calls=1, result=success,
+// redirect URL exact match) is asserted separately below.
 upay_assert_eq((int) ($result_success['body_consumed_count'] ?? 0), 1,
-    'SP-SUCCESS-1 body consumed by Store API flow (count=1)', 'semantic_runtime');
+    'SP-SUCCESS-1 body consumed by Store API flow (count=1)', 'harness_self_test');
 // Charge dispatched exactly once.
 upay_assert_eq((int) ($result_success['charge_calls'] ?? 0), 1,
     'SP-SUCCESS-1 Charge dispatched exactly once', 'semantic_runtime');
@@ -6220,8 +6366,41 @@ $malformed_card_tokens = [
     'null' => null,
     'numeric-with-spaces' => ' 1234567890123456 ',
     'very-long' => str_repeat('1', 100),
+    // Residual Correction #29: extended coverage of additional malformed
+    // shapes that production must reject with the strict fail-closed
+    // contract. Each new shape drives process_payment() and asserts
+    // result=failure + zero provider mutations + zero meta writes.
+    'negative-int' => -12345678,
+    'zero-int' => 0,
+    'float-zero' => 0.0,
+    'float-negative' => -0.5,
+    'float-nan-str' => 'NaN',
+    'float-inf-str' => 'Infinity',
+    'scientific-string' => '1e10',
+    'hex-string' => '0x1234abcd',
+    'binary-string' => '0b1010',
+    'octal-string' => '0o755',
+    'leading-zeros' => '000012345678',
+    'trailing-newline' => "12345678\n",
+    'tab-internal' => "1234\t5678",
+    'cr-internal' => "1234\r5678",
+    'null-byte' => "1234\x005678",
+    'unicode-digit' => '１２３４５６７８',     // full-width digits
+    'rtl-marker' => "12345678\u{200F}",
+    'html-encoded' => '&lt;script&gt;',
+    'sql-quote' => "1'; DROP--",
+    'json-string' => '"12345678"',
+    'true-string' => 'true',
+    'false-string' => 'false',
+    'null-string' => 'null',
+    'negative-string' => '-12345678',
+    'plus-prefix' => '+12345678',
 ];
 
+// Phase 9I #29 evidence-integrity repair: explicit deterministic counter so
+// that order IDs are stable and traceable; was previously relying on undefined
+// $i which made every iteration compute order id 80000 (silent collision).
+$malformed_card_index = 0;
 foreach ($malformed_card_tokens as $label => $bad_token) {
     upay_reset_state();
     $state =& upay_test_state();
@@ -6233,7 +6412,7 @@ foreach ($malformed_card_tokens as $label => $bad_token) {
         'card_token' => $bad_token,
         'save_card' => '0',
     ];
-    $order = upay_make_order(80000 + $i, '5.00');
+    $order = upay_make_order(80000 + $malformed_card_index, '5.00');
     $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $post);
     upay_assert_eq($res['result'], 'failure', "MALFORMED-CARD-$label result=failure", 'semantic_runtime');
     upay_assert_eq($state['charge_calls'], 0, "MALFORMED-CARD-$label Charge=0", 'semantic_runtime');
@@ -6243,6 +6422,7 @@ foreach ($malformed_card_tokens as $label => $bad_token) {
     upay_assert_eq($state['identity_writes'], 0, "MALFORMED-CARD-$label identity_writes=0", 'semantic_runtime');
     upay_assert_eq($state['provenance_writes'], 0, "MALFORMED-CARD-$label provenance_writes=0", 'semantic_runtime');
     upay_assert_eq($state['usermeta_writes'], 0, "MALFORMED-CARD-$label usermeta_writes=0", 'semantic_runtime');
+    $malformed_card_index++;
 }
 
 // ---------------------------------------------------------------------------
@@ -6265,6 +6445,14 @@ $_semantic_ledger = [
     'BLOCKS-SAN'     => ['entrypoint' => 'get_payment_method_data','outcome' => 'real sanitizer'],
     'MALFORMED-CARD' => ['entrypoint' => 'process_payment',        'outcome' => 'strict failure/no mutation'],
     'HOSTILE'        => ['entrypoint' => 'Store process_payment',  'outcome' => 'hostile Classic POST isolation'],
+    // Residual Correction #29: explicit ledger families for the honest
+    // reclassification of previously-OTHER semantic assertions. Each
+    // drives real process_payment() through the charge path and asserts
+    // a production contract (NOT helper invocation, NOT subprocess
+    // envelope shape).
+    'ECON-E2E'       => ['entrypoint' => 'process_payment',        'outcome' => 'raw Charge product.price/quantity exact'],
+    'SEM14-T'        => ['entrypoint' => 'process_payment',        'outcome' => '11-char source allowlist rejection'],
+    'SP-CARD'        => ['entrypoint' => 'Store process_payment',  'outcome' => 'path/counter/hostile-input production contract'],
     'OTHER'          => ['entrypoint' => 'various',                'outcome' => 'various production workflows'],
 ];
 
