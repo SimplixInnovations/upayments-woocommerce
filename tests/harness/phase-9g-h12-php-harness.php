@@ -2380,7 +2380,7 @@ $raw_inputs = [
 foreach ($raw_inputs as $name => $input) {
     $product = new FakeWCProduct(1, 'p', 'simple');
     $item = new FakeWCOrderItem($product, $input[0], $input[1]);
-    upay_assert($item->quantity === $input[0] && $item->total === $input[1], $name . ' FakeWCOrderItem preserves raw inputs', 'semantic_runtime');
+    upay_assert($item->quantity === $input[0] && $item->total === $input[1], $name . ' FakeWCOrderItem preserves raw inputs', 'harness_self_test');
 }
 
 // ---------------------------------------------------------------------------
@@ -2394,7 +2394,7 @@ $dtotal->items_meta = [
     new FakeWCOrderItem($p1, 1, '0.1'),
     new FakeWCOrderItem($p2, 1, '0.2'),
 ];
-upay_assert_eq($dtotal->get_total(), '0.3', 'DTOTAL-1 0.1+0.2 deterministic decimal', 'semantic_runtime');
+upay_assert_eq($dtotal->get_total(), '0.3', 'DTOTAL-1 0.1+0.2 deterministic decimal', 'harness_self_test');
 
 $dtotal2 = new FakeWCOrder(2);
 $dtotal2->items_meta = [
@@ -2402,7 +2402,7 @@ $dtotal2->items_meta = [
 ];
 // get_total() sums the line totals (item.total) directly, not multiplied by quantity.
 // The harness fixture stores line_total on each item directly.
-upay_assert_eq($dtotal2->get_total(), '1', 'DTOTAL-2 line total accumulates deterministically', 'semantic_runtime');
+upay_assert_eq($dtotal2->get_total(), '1', 'DTOTAL-2 line total accumulates deterministically', 'harness_self_test');
 
 // ---------------------------------------------------------------------------
 // SECTION BOOL: isSaveCard bool type assertion via raw charge body
@@ -2423,7 +2423,7 @@ $gateway = upay_make_gateway(['saveCardEnabled' => 'yes']);
 upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST');
 $body = $state['last_charge_body'];
 $is_str_or_null = is_string($body) || $body === null;
-upay_assert($is_str_or_null, 'BOOL-1 charge body captured', 'semantic_runtime');
+upay_assert($is_str_or_null, 'BOOL-1 charge body captured', 'harness_self_test');
 
 // ---------------------------------------------------------------------------
 // SECTION BIZZARE: Quantity 10,000,000 boundary
@@ -2439,7 +2439,7 @@ $p_x = new FakeWCProduct(99, 'x', 'simple');
 $big_order = upay_make_order(60001, null, [new FakeWCOrderItem($p_x, 10000000, '1.00')]);
 $gw_big = upay_make_gateway();
 $r_big = upay_run_process_payment($gw_big, $big_order, false, '/checkout/', 'POST');
-upay_assert(is_array($r_big), 'BIG-1 quantity 10,000,000 process_payment returned array', 'semantic_runtime');
+upay_assert(is_array($r_big), 'BIG-1 quantity 10,000,000 process_payment returned array', 'helper_unit_runtime');
 
 // ---------------------------------------------------------------------------
 // SECTION STAGE-ISOLATION: Real subprocess Store API constant environment
@@ -3201,38 +3201,38 @@ $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc
 $order = upay_make_order(70001, '5.00');
 $gateway = upay_make_gateway();
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-1 int card_token rejected', 'semantic_runtime');
-upay_assert_eq($res['redirect'], wc_get_checkout_url(), 'SEM14-A-1 redirect to checkout', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-A-1 int card_token rejected', 'helper_unit_runtime');
+upay_assert_eq($res['redirect'], wc_get_checkout_url(), 'SEM14-SEM14-A-1 redirect to checkout', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => 1.5];
 $order = upay_make_order(70002, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-2 float card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-2 float card_token rejected', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => true];
 $order = upay_make_order(70003, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-3 bool card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-3 bool card_token rejected', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => ['a', 'b']];
 $order = upay_make_order(70004, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-4 array card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-4 array card_token rejected', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => new stdClass()];
 $order = upay_make_order(70005, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-5 object card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-5 object card_token rejected', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => ''];
 $order = upay_make_order(70006, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-6 empty card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-6 empty card_token rejected', 'helper_unit_runtime');
 
 $classic_post = ['payment_method' => 'upayments', 'upayment_payment_type' => 'cc', 'upayment_card_token' => '   '];
 $order = upay_make_order(70007, '5.00');
 $res = upay_run_process_payment($gateway, $order, false, '/checkout/', 'POST', $classic_post);
-upay_assert_eq($res['result'], 'failure', 'SEM14-A-7 whitespace card_token rejected', 'semantic_runtime');
+upay_assert_eq($res['result'], 'failure', 'SEM14-SEM14-A-7 whitespace card_token rejected', 'helper_unit_runtime');
 
 // --- SEM14-B: Strict order-ID parsing (negative floats, scientific, etc.) ---
 foreach (['1.0', '1e2', '+1', '-1', ' 1', '1 ', '01', '0005', '0x1', '0b1', '0o1', '1.5', 'inf', 'nan', 'null', 'true'] as $i => $bad) {
@@ -3338,9 +3338,9 @@ $gen_m = str_repeat('c', 32);
 upay_set_secret('live_key', 'live_secret_test_' . str_repeat('c', 20), 'live', $gen_m);
 $ctx1 = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('live_key', false);
 $ctx2 = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('live_key', false);
-upay_assert_eq($ctx1['state'], $ctx2['state'], 'SEM14-M-1 read is deterministic (same state on repeat)', 'semantic_runtime');
-upay_assert_eq($ctx1['scope'], $ctx2['scope'], 'SEM14-M-2 read is deterministic (same scope on repeat)', 'semantic_runtime');
-upay_assert_eq($ctx1['generation_id'], $ctx2['generation_id'], 'SEM14-M-3 read is deterministic (same generation on repeat)', 'semantic_runtime');
+upay_assert_eq($ctx1['state'], $ctx2['state'], 'SEM14-SEM14-M-1 read is deterministic (same state on repeat)', 'helper_unit_runtime');
+upay_assert_eq($ctx1['scope'], $ctx2['scope'], 'SEM14-SEM14-M-2 read is deterministic (same scope on repeat)', 'helper_unit_runtime');
+upay_assert_eq($ctx1['generation_id'], $ctx2['generation_id'], 'SEM14-SEM14-M-3 read is deterministic (same generation on repeat)', 'helper_unit_runtime');
 
 // --- SEM14-N: Atomic provenance write compensation (verify create_provenance failure path deletes the meta) ---
 $reflection = new ReflectionClass('\UPayments\Token\CustomerTokenIdentity');
@@ -3349,9 +3349,9 @@ $cp_method->setAccessible(true);
 upay_reset_state();
 upay_set_secret('live_key', 'live_secret_test_' . str_repeat('a', 20), 'live', $gen);
 $result = $cp_method->invoke(null, 100, 'live_key', false, 'wrong_fingerprint', $gen, 'canonical', '12345678', 'create');
-upay_assert_eq($result, false, 'SEM14-N-1 invalid fingerprint rejected', 'semantic_runtime');
+upay_assert_eq($result, false, 'SEM14-SEM14-N-1 invalid fingerprint rejected', 'helper_unit_runtime');
 $exists = get_user_meta(100, 'upay_provenance_user_100', true);
-upay_assert_eq($exists, '', 'SEM14-N-2 compensating delete: provenance not present', 'semantic_runtime');
+upay_assert_eq($exists, '', 'SEM14-SEM14-N-2 compensating delete: provenance not present', 'helper_unit_runtime');
 
 // --- SEM14-O: Strict order-ID parsing covers edge inputs ---
 $parse_method = $reflection->getMethod('parse_strict_positive_int');
@@ -4008,7 +4008,7 @@ foreach ([10000001, 100000000, PHP_INT_MAX, 9999999] as $i => $qty) {
 }
 // 1.00/10000000 = 0.0000001 exact (7 digits), valid
 $actual = WC_Upayments::compute_provider_unit_price_decimal('1.00', 10000000);
-upay_assert_eq($actual, '0.0000001', 'SEM14-U-10000000 1.00/10000000 = 0.0000001 exact', 'semantic_runtime');
+upay_assert_eq($actual, '0.0000001', 'SEM14-SEM14-U-10000000 1.00/10000000 = 0.0000001 exact', 'helper_unit_runtime');
 
 // --- SEM14-V: Atomic provenance write: mismatched fingerprint rejected, no new write ---
 upay_reset_state();
@@ -4022,21 +4022,21 @@ update_user_meta(101, 'upay_provenance_user_101', wp_json_encode([
     'scope' => 'fingerprint_' . $gen,
 ]));
 $result = $cp_method->invoke(null, 101, 'live_key', false, 'wrong_fingerprint', $gen, 'canonical', '12345678', 'create');
-upay_assert_eq($result, false, 'SEM14-V-1 mismatched fingerprint rejected', 'semantic_runtime');
+upay_assert_eq($result, false, 'SEM14-SEM14-V-1 mismatched fingerprint rejected', 'helper_unit_runtime');
 // Pre-write rejection: existing meta is NOT deleted (function never reached write stage).
 $existing_meta = get_user_meta(101, 'upay_provenance_user_101', true);
-upay_assert_eq($existing_meta !== '', true, 'SEM14-V-2 pre-write rejection: existing meta preserved', 'semantic_runtime');
+upay_assert_eq($existing_meta !== '', true, 'SEM14-SEM14-V-2 pre-write rejection: existing meta preserved', 'helper_unit_runtime');
 
 // --- SEM14-W: read_existing_identity_context with valid input and missing secret ---
 upay_reset_state();
 $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('live_key', false);
-upay_assert_eq($ctx['state'], 'absent', 'SEM14-W-1 missing secret -> absent', 'semantic_runtime');
+upay_assert_eq($ctx['state'], 'absent', 'SEM14-SEM14-W-1 missing secret -> absent', 'helper_unit_runtime');
 
 // --- SEM14-X: read_existing_identity_context with valid input and present secret ---
 upay_reset_state();
 upay_set_secret('live_key', 'live_secret_test_' . str_repeat('b', 20), 'live', $gen);
 $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('live_key', false);
-upay_assert_eq($ctx['state'], 'valid', 'SEM14-X-1 valid secret -> valid', 'semantic_runtime');
+upay_assert_eq($ctx['state'], 'valid', 'SEM14-SEM14-X-1 valid secret -> valid', 'helper_unit_runtime');
 
 // --- SEM14-Y: parse_strict_nonneg_int requires explicit generation for history ---
 $psni_method = $reflection->getMethod('parse_strict_nonneg_int');
