@@ -710,7 +710,7 @@ $result = upay_call_static('WC_Upayments', 'inject_amount_token_into_payload_jso
     '__UPAY_MM_KNET_CHARGE_SENTINEL__' => '1.50',
     '__UPAY_MM_CC_CHARGE_SENTINEL__' => '1.50',
 ]]);
-upay_assert_eq($result, null, 'PHP-INJ-14 MM token provided but no MM sentinel in payload rejected', 'semantic_runtime');
+upay_assert_eq($result, null, 'PHP-INJ-14 MM token provided but no MM sentinel in payload rejected', 'helper_unit_runtime');
 
 // ---------------------------------------------------------------------------
 // 8. classify_checkout_request_context (pure classifier)
@@ -2218,6 +2218,12 @@ foreach ($mm_scenarios as $name => $scenario) {
         }
         upay_assert_eq(isset($mm_charge['paymentGateway']['src']) ? $mm_charge['paymentGateway']['src'] : null, 'knet', $name . ' paymentGateway.src=knet', 'semantic_runtime');
         upay_assert_eq(strpos($mm_charge_str, 'e+') === false && strpos($mm_charge_str, 'E+') === false, true, $name . ' no exponent notation', 'semantic_runtime');
+        // Raw JSON primitive proof: monetary fields must be unquoted numbers.
+        $charge_val = $scenario['charge'];
+        upay_assert_eq(strpos($mm_charge_str, '"knetCharge":' . $charge_val) !== false || strpos($mm_charge_str, '"knetCharge": ' . $charge_val) !== false, true, $name . ' knetCharge is unquoted JSON number', 'semantic_runtime');
+        upay_assert_eq(strpos($mm_charge_str, '"knetCharge":"' . $charge_val . '"') === false, true, $name . ' knetCharge is NOT quoted string', 'semantic_runtime');
+        upay_assert_eq(strpos($mm_charge_str, '"ccCharge":' . $charge_val) !== false || strpos($mm_charge_str, '"ccCharge": ' . $charge_val) !== false, true, $name . ' ccCharge is unquoted JSON number', 'semantic_runtime');
+        upay_assert_eq(strpos($mm_charge_str, '"ccCharge":"' . $charge_val . '"') === false, true, $name . ' ccCharge is NOT quoted string', 'semantic_runtime');
     } else {
         upay_assert_eq($res['result'] ?? null, 'failure', $name . ' result=failure', 'semantic_runtime');
         upay_assert_eq($state['create_token_calls'], 0, $name . ' Create=0', 'semantic_runtime');
@@ -5023,7 +5029,7 @@ upay_assert_eq((int) ($result_wpusers['body_consumed_count'] ?? 0), 0, 'SP-X8 /w
 $result_empty = upay_run_store_api_child('SP-X9', true, '/wc/store/v1/checkout', 'POST', '');
 upay_assert_eq($result_empty['path'] ?? null, 'store_api', 'SP-X9 empty body -> store_api path (production enters and fails)', 'semantic_runtime');
 upay_assert_eq((int) ($result_empty['body_consumed_count'] ?? 0), 1, 'SP-X9 empty body -> body consumed (production entered Store API)', 'semantic_runtime');
-upay_assert(is_array($result_empty['process_payment_result'] ?? null), 'SP-X9 empty body -> process_payment returned array', 'semantic_runtime');
+upay_assert(is_array($result_empty['process_payment_result'] ?? null), 'SP-X9 empty body -> process_payment returned array', 'harness_self_test');
 upay_assert_eq($result_empty['process_payment_result']['result'] ?? null, 'failure', 'SP-X9 empty body -> result=failure', 'semantic_runtime');
 
 // --- SP-X10: Valid extensions body --------------------------------------
@@ -5183,7 +5189,7 @@ upay_assert_eq((int) ($result_init['charge_calls'] ?? 0), 1, 'SP-X26 charge_call
 //             contract (array of {result, redirect}). The keys are
 //             production contract, not harness infrastructure.
 upay_assert(is_array($result_init['process_payment_result'] ?? null), 'SP-X27 process_payment_result is array', 'semantic_runtime');
-upay_assert(array_key_exists('result', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has result key', 'semantic_runtime');
+upay_assert(array_key_exists('result', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has result key', 'harness_self_test');
 upay_assert(array_key_exists('redirect', $result_init['process_payment_result'] ?? []), 'SP-X27 process_payment_result has redirect key', 'semantic_runtime');
 
 // --- SP-X28: pid isolation ----------------------------------------------
@@ -5773,16 +5779,45 @@ upay_assert(!$mismatch_has_b, 'SP-CARD-MISMATCH Retrieve response does NOT conta
 // ===========================================================================
 // SECTION BLOCKS-SANITIZER: Blocks PHP strict saved-card token sanitizer
 // ===========================================================================
-// Exercises the real WCGatewayUPaymentsBlocks::get_payment_method_data()
-// path that produces saved_cards. Feeds provider entries containing
-// mixed types and asserts only the strict non-empty string token survives.
+// Exercises the REAL WCGatewayUPaymentsBlocks::get_payment_method_data()
+// with a testable subclass that injects a mock gateway returning mixed-type
+// provider cards. The sanitizer must reject all non-string tokens via the
+// actual production code path.
 
 require_once $ROOT . '/includes/class-wc-gateway-upayments-blocks.php';
 
-// Create a testable gateway that returns mixed-type provider cards.
+if (!class_exists('WC_Upayments_BlocksSanitizerTestable', false)) {
+class WC_Upayments_BlocksSanitizerTestable extends WC_Upayments_Testable {
+    public $mock_payment_icons = null;
+    public $mock_saved_cards = null;
+    public $saved_cards_calls = 0;
+
+    public function getPaymentIcons() {
+        return $this->mock_payment_icons;
+    }
+
+    public function getSavedCardsForCurrentUser($payment_data) {
+        $this->saved_cards_calls++;
+        return $this->mock_saved_cards;
+    }
+}
+}
+
+if (!class_exists('WCGatewayUPaymentsBlocks_Testable', false)) {
+class WCGatewayUPaymentsBlocks_Testable extends WCGatewayUPaymentsBlocks {
+    public function __construct($pluginFile, $gw) {
+        parent::__construct($pluginFile);
+        $this->gateway = $gw;
+    }
+}
+}
+
 upay_reset_state();
 $state =& upay_test_state();
 $state['current_user_id'] = 42;
+$blocks_secret = str_repeat('a', 64);
+$blocks_gen = str_repeat('b', 32);
+$blocks_verifier = hash_hmac('sha256', 'upayments_token_identity_secret_record_v1|1|' . $blocks_gen, $blocks_secret);
 $state['options']['woocommerce_upayments_settings'] = [
     'enable_save_card' => 'yes',
     'enable_subscriptions' => 'no',
@@ -5792,35 +5827,32 @@ $state['options']['woocommerce_upayments_settings'] = [
 ];
 $state['options']['upayments_token_identity_secret_v2'] = [
     'version' => 1,
-    'secret' => str_repeat('a', 64),
-    'generation_id' => 'abcd1234',
-    'verifier' => hash_hmac('sha256', 'upayments_token_identity_secret_record_v1|1|abcd1234', str_repeat('a', 64)),
+    'secret' => $blocks_secret,
+    'generation_id' => $blocks_gen,
+    'verifier' => $blocks_verifier,
 ];
+// Derive the actual scope from the secret.
+$blocks_ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('test_api_key', false);
+$blocks_scope = $blocks_ctx['scope'] ?? null;
+$blocks_gen_actual = $blocks_ctx['generation_id'] ?? null;
 $state['usermeta'][42] = [
-    '_upay_customer_token_v2_b1_abcd1234' => [[
-        'version' => 3,
-        'kind' => 'canonical',
-        'token' => '12345678',
-        'source' => 'create_201',
-        'scope' => 'abcd1234',
-        'secret_generation_id' => 'abcd1234',
+    '_upay_customer_token_v2_b1_' . $blocks_scope => [[
+        'version' => 3, 'kind' => 'canonical', 'token' => '12345678',
+        'source' => 'create_201', 'scope' => $blocks_scope, 'secret_generation_id' => $blocks_gen_actual,
+        'established_at_gmt' => time(),
     ]],
 ];
-$state['availability_response'] = [
-    'result' => 'success',
-    'isWhiteLabel' => true,
-    'payButtons' => ['knet' => 1, 'credit_card' => 1],
-];
 
-// Create a testable gateway that returns mixed-type provider cards.
-$blocks_gw = new WC_Upayments_Testable();
+$blocks_gw = new WC_Upayments_BlocksSanitizerTestable();
 $blocks_gw->apiKey = 'test_api_key';
 $blocks_gw->testMode = 'no';
 $blocks_gw->saveCardEnabled = 'yes';
 $blocks_gw->autoDeduction = 'no';
-
-// Override getSavedCardsForCurrentUser to return mixed-type cards.
-$mixed_cards_result = [
+$blocks_gw->mock_payment_icons = [
+    'payment' => ['knet' => 'KNET', 'cc' => 'Credit Card'],
+    'whitelabled' => true,
+];
+$blocks_gw->mock_saved_cards = [
     'result' => 'success',
     'data' => [
         ['token' => '1234567890123456', 'number' => '****3456', 'brand' => 'Visa'],
@@ -5831,61 +5863,22 @@ $mixed_cards_result = [
         ['token' => [], 'number' => '****3456', 'brand' => 'Visa'],
         ['token' => new stdClass(), 'number' => '****3456', 'brand' => 'Visa'],
         ['token' => '', 'number' => '****3456', 'brand' => 'Visa'],
+        ['number' => '****3456', 'brand' => 'Visa'],
+        'not_an_array',
     ],
 ];
 
-// Create a Blocks instance with the testable gateway.
-$blocks = new WCGatewayUPaymentsBlocks('');
-$ref_gw = new ReflectionProperty(WCGatewayUPaymentsBlocks::class, 'gateway');
-$ref_gw->setAccessible(true);
-$ref_gw->setValue($blocks, $blocks_gw);
+$blocks = new WCGatewayUPaymentsBlocks_Testable('', $blocks_gw);
 
-// Monkey-patch getSavedCardsForCurrentUser on the gateway.
-$blocks_gw->mock_saved_cards = $mixed_cards_result;
-// We need to override the method. Use reflection to set a flag.
-$state['_mock_saved_cards'] = $mixed_cards_result;
+$blocks_data = $blocks->get_payment_method_data();
+$blocks_saved_cards = $blocks_data['saved_cards'] ?? [];
 
-// Override getSavedCardsForCurrentUser via a testable subclass.
-// Since we can't easily override, let's test the sanitizer logic directly
-// by extracting the relevant code path.
-
-// The sanitizer logic from get_payment_method_data():
-$saved_cards = [];
-$availability = $blocks_gw->getPaymentIcons();
-if (is_array($availability)) {
-    $whitelabel_ok = isset($availability['whitelabled']) && $availability['whitelabled'] === true;
-    $cc_enabled = isset($availability['payment']) && is_array($availability['payment'])
-        && array_key_exists('cc', $availability['payment'])
-        && is_scalar($availability['payment']['cc'])
-        && (string) $availability['payment']['cc'] !== '';
-    if ($whitelabel_ok && $cc_enabled) {
-        $savedCards = $mixed_cards_result;
-        if (is_array($savedCards)
-            && isset($savedCards['result'])
-            && $savedCards['result'] === 'success'
-            && isset($savedCards['data'])
-            && is_array($savedCards['data'])
-        ) {
-            $sanitized = array();
-            foreach ($savedCards['data'] as $card) {
-                if (!is_array($card)) continue;
-                if (!isset($card['token']) || !is_string($card['token']) || $card['token'] === '') continue;
-                $sanitized[] = array(
-                    'token' => $card['token'],
-                    'number' => isset($card['number']) && is_scalar($card['number']) ? (string) $card['number'] : '',
-                    'brand' => isset($card['brand']) && is_scalar($card['brand']) ? (string) $card['brand'] : '',
-                );
-            }
-            $saved_cards = $sanitized;
-        }
-    }
-}
-
-// Assert only the strict string token survived.
-upay_assert_eq(count($saved_cards), 1, 'BLOCKS-SAN-1 exactly 1 saved card after sanitization', 'semantic_runtime');
-upay_assert_eq(count($saved_cards) >= 1 ? $saved_cards[0]['token'] : null, '1234567890123456', 'BLOCKS-SAN-2 saved card token is strict string', 'semantic_runtime');
-upay_assert_eq(count($saved_cards) >= 1 ? $saved_cards[0]['number'] : null, '****3456', 'BLOCKS-SAN-3 saved card number preserved', 'semantic_runtime');
-upay_assert_eq(count($saved_cards) >= 1 ? $saved_cards[0]['brand'] : null, 'Visa', 'BLOCKS-SAN-4 saved card brand preserved', 'semantic_runtime');
+upay_assert_eq($blocks_gw->saved_cards_calls > 0, true, 'BLOCKS-SAN-0 getSavedCardsForCurrentUser called by real Blocks method', 'semantic_runtime');
+upay_assert_eq(count($blocks_saved_cards), 1, 'BLOCKS-SAN-1 exactly 1 saved card after real Blocks sanitization', 'semantic_runtime');
+upay_assert_eq(count($blocks_saved_cards) >= 1 ? $blocks_saved_cards[0]['token'] : null, '1234567890123456', 'BLOCKS-SAN-2 token is strict string', 'semantic_runtime');
+upay_assert_eq(count($blocks_saved_cards) >= 1 ? is_string($blocks_saved_cards[0]['token']) : false, true, 'BLOCKS-SAN-2b token remains string type', 'semantic_runtime');
+upay_assert_eq(count($blocks_saved_cards) >= 1 ? $blocks_saved_cards[0]['number'] : null, '****3456', 'BLOCKS-SAN-3 number preserved', 'semantic_runtime');
+upay_assert_eq(count($blocks_saved_cards) >= 1 ? $blocks_saved_cards[0]['brand'] : null, 'Visa', 'BLOCKS-SAN-4 brand preserved', 'semantic_runtime');
 
 
 // ===========================================================================
