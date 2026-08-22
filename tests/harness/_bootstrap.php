@@ -362,10 +362,14 @@ class WpdbStub {
     public $locks = [];
     public function esc_like($s) { return addcslashes($s, '_%\\'); }
     public function prepare($sql, ...$args) {
-        // Substitute %s with the provided arguments for lock queries to work.
         $i = 0;
-        $result = preg_replace_callback('/%[sd]/', function() use (&$i, $args) {
-            return isset($args[$i]) ? "'" . $args[$i++] . "'" : "''";
+        $result = preg_replace_callback('/%([sd])/', function($m) use (&$i, $args) {
+            if (!isset($args[$i])) return $m[0] === 's' ? "''" : '0';
+            $val = $args[$i++];
+            if ($m[1] === 'd') {
+                return (string) ((int) $val);
+            }
+            return "'" . str_replace("'", "''", (string) $val) . "'";
         }, $sql);
         return $result;
     }
@@ -685,6 +689,7 @@ class WC_Upayments_Testable extends WC_Upayments {
             'enable_save_card' => $this->saveCardEnabled ?? 'no',
             'enable_subscriptions' => 'no',
             'testmode' => $this->testMode ?? 'no',
+            'test_mode' => $this->testMode ?? 'no',
             'api_key' => $this->apiKey ?? '',
         ];
         return isset($map[$key]) ? $map[$key] : $default;

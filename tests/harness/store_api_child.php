@@ -135,7 +135,8 @@ $_SERVER['SCRIPT_NAME']    = '/index.php';
 //
 // These hostile values must never appear in any captured Charge
 // request body when the Store body is well-formed.
-$_POST = [
+// UPAY_HOSTILE_CLASSIC env var overrides these defaults (JSON).
+$hostile_classic_defaults = [
     'payment_method'             => 'upayments',
     'upayment_payment_type'      => 'cc',
     'card_token'                 => '9999999988887777',
@@ -145,6 +146,17 @@ $_POST = [
     'upay_unique_id'             => 'HOSTILE_CLASSIC_SHOULD_NOT_WIN',
     'cart_hash'                  => 'hostile_classic_fake_hash',
 ];
+$hostile_classic_env = getenv('UPAY_HOSTILE_CLASSIC');
+if (is_string($hostile_classic_env) && $hostile_classic_env !== '') {
+    $hostile_decoded = json_decode($hostile_classic_env, true);
+    if (is_array($hostile_decoded)) {
+        $_POST = array_merge($hostile_classic_defaults, $hostile_decoded);
+    } else {
+        $_POST = $hostile_classic_defaults;
+    }
+} else {
+    $_POST = $hostile_classic_defaults;
+}
 
 // --- Load shared bootstrap (parent harness preamble) -------------------
 $bootstrap = __DIR__ . '/_bootstrap.php';
@@ -347,47 +359,24 @@ $retrieve_callback = function($outbound_body) use (&$_submitted_card_token_ref, 
         && preg_match('/^[0-9]{8,18}$/', $_submitted_card_token_ref) === 1
     ) {
         if ($retrieve_mode === 'mismatch') {
+            $cards = [['token' => '7654321098765432', 'number' => '****5432', 'brand' => 'Mastercard']];
+            $state['retrieve_response_cards'] = $cards;
             return [
-                'transport_ok' => true,
-                'http_status'  => 201,
-                'curl_errno'   => 0,
-                'body'         => wp_json_encode([
-                    'status' => true,
-                    'data'   => [
-                        'customerCards' => [
-                            [
-                                'token'  => '99999999',
-                                'number' => '****9999',
-                                'brand'  => 'Mastercard',
-                            ],
-                        ],
-                    ],
-                ]),
+                'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+                'body' => wp_json_encode(['status' => true, 'data' => ['customerCards' => $cards]]),
             ];
         }
+        $cards = [['token' => $_submitted_card_token_ref, 'number' => '****' . substr($_submitted_card_token_ref, -4), 'brand' => 'Visa']];
+        $state['retrieve_response_cards'] = $cards;
         return [
-            'transport_ok' => true,
-            'http_status'  => 201,
-            'curl_errno'   => 0,
-            'body'         => wp_json_encode([
-                'status' => true,
-                'data'   => [
-                    'customerCards' => [
-                        [
-                            'token'  => $_submitted_card_token_ref,
-                            'number' => '****' . substr($_submitted_card_token_ref, -4),
-                            'brand'  => 'Visa',
-                        ],
-                    ],
-                ],
-            ]),
+            'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+            'body' => wp_json_encode(['status' => true, 'data' => ['customerCards' => $cards]]),
         ];
     }
+    $state['retrieve_response_cards'] = [];
     return [
-        'transport_ok' => true,
-        'http_status'  => 201,
-        'curl_errno'   => 0,
-        'body'         => wp_json_encode(['status' => true, 'data' => ['customerCards' => []]]),
+        'transport_ok' => true, 'http_status' => 201, 'curl_errno' => 0,
+        'body' => wp_json_encode(['status' => true, 'data' => ['customerCards' => []]]),
     ];
 };
 
@@ -432,7 +421,9 @@ $gateway = new WC_Upayments_InputTestable();
 $gateway->input_body = is_string($body_value) ? $body_value : '';
 
 // --- establish_then_select mode: Call get_or_establish_token to create a
-// real token with correct scope/generation, then use it as the selected card.
+// real token with correct scope/generation, then use a distinct card token.
+// setup must include 'card_token' for the saved card (B), distinct from
+// the established customer token (A).
 if (is_array($identity_setup_decoded) && ($identity_setup_decoded['setup_mode'] ?? '') === 'establish_then_select') {
     $established = \UPayments\Token\CustomerTokenIdentity::get_or_establish_token(
         $state['current_user_id'],
@@ -448,13 +439,15 @@ if (is_array($identity_setup_decoded) && ($identity_setup_decoded['setup_mode'] 
         $state['established_token'] = $established_token;
         $state['established_scope'] = $established['scope'];
         $state['established_generation'] = $established['secret_generation_id'];
-        // Rewrite the input body to use the established token as card_token.
-        $body_decoded = json_decode($gateway->input_body, true);
-        if (is_array($body_decoded) && isset($body_decoded['extensions']['upayments'])) {
-            $body_decoded['extensions']['upayments']['card_token'] = $established_token;
-            $gateway->input_body = wp_json_encode($body_decoded);
-            // Re-extract the submitted card token.
-            $submitted_card_token = $established_token;
+        // Use the distinct card_token from setup (B), not the established token (A).
+        $card_token_b = $identity_setup_decoded['card_token'] ?? null;
+        if ($card_token_b !== null) {
+            $body_decoded = json_decode($gateway->input_body, true);
+            if (is_array($body_decoded) && isset($body_decoded['extensions']['upayments'])) {
+                $body_decoded['extensions']['upayments']['card_token'] = $card_token_b;
+                $gateway->input_body = wp_json_encode($body_decoded);
+                $submitted_card_token = $card_token_b;
+            }
         }
         // Reset transport and mutation counters for the actual process_payment run.
         $state['create_token_calls'] = 0;
@@ -465,6 +458,7 @@ if (is_array($identity_setup_decoded) && ($identity_setup_decoded['setup_mode'] 
         $state['order_meta_writes'] = 0;
         $state['identity_writes'] = 0;
         $state['provenance_writes'] = 0;
+        $state['secret_creates'] = 0;
     }
 }
 
@@ -496,26 +490,12 @@ $charge_bodies = [];
 $create_token_bodies = [];
 $retrieve_bodies = [];
 $create_token_response_token = $final['create_token_response_token'] ?? null;
-$retrieve_response_cards = null;
+$retrieve_response_cards = $final['retrieve_response_cards'] ?? null;
 foreach ($final['transport_log'] as $entry) {
     if ($entry['route'] === 'charge') {
         $charge_bodies[] = $entry['body'];
     } elseif ($entry['route'] === 'create-customer-unique-token') {
         $create_token_bodies[] = $entry['body'];
-        $dec = json_decode((string) $entry['body'], true);
-        if (is_array($dec) && isset($dec['data']['customerUniqueToken'])
-            && is_string($dec['data']['customerUniqueToken'])
-        ) {
-            $create_token_response_token = $dec['data']['customerUniqueToken'];
-        }
-    } elseif ($entry['route'] === 'retrieve-customer-cards') {
-        $retrieve_bodies[] = $entry['body'];
-        $dec = json_decode((string) $entry['body'], true);
-        if (is_array($dec) && isset($dec['data']['customerCards'])
-            && is_array($dec['data']['customerCards'])
-        ) {
-            $retrieve_response_cards = $dec['data']['customerCards'];
-        }
     }
 }
 
@@ -546,6 +526,26 @@ if (is_array($result) && isset($result['redirect'])) {
     } elseif (strpos($redir, '/checkout/') !== false) {
         $selected_channel = 'classic';
     }
+}
+
+// --- Read identity context and provenance for persistence proof ---------
+$identity_context_state = null;
+$provenance_state = null;
+$provenance_token = null;
+$provenance_kind = null;
+try {
+    $ctx = \UPayments\Token\CustomerTokenIdentity::read_existing_identity_context('test_api_key', false);
+    $identity_context_state = $ctx['state'] ?? null;
+    if (($ctx['state'] ?? null) === 'valid' && ($ctx['scope'] ?? null) !== null && ($ctx['generation_id'] ?? null) !== null) {
+        $prov = \UPayments\Token\CustomerTokenIdentity::read_provenance($state['current_user_id'], $ctx['scope'], $ctx['generation_id']);
+        $provenance_state = $prov['state'] ?? null;
+        if (($prov['state'] ?? null) === 'valid' && is_array($prov['record'] ?? null)) {
+            $provenance_token = $prov['record']['token'] ?? null;
+            $provenance_kind = $prov['record']['kind'] ?? null;
+        }
+    }
+} catch (Throwable $e) {
+    // Persistence proof read failed — leave nulls.
 }
 
 $out = [
@@ -583,6 +583,10 @@ $out = [
     'identity_writes'                => $final['identity_writes'],
     'provenance_writes'              => $final['provenance_writes'],
     'secret_creates'                 => $final['secret_creates'],
+    'identity_context_state'         => $identity_context_state,
+    'provenance_state'               => $provenance_state,
+    'provenance_token'               => $provenance_token,
+    'provenance_kind'                => $provenance_kind,
     'notices'                        => $final['notices'],
     'pid'                            => getmypid(),
     'wc_loaded'                      => class_exists('WC_Upayments'),

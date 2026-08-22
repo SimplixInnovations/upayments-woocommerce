@@ -509,12 +509,15 @@ $gw->execute_upayments_request('check-payment-button-status', 'GET');
 upay_assert_eq(upay_test_state()['availability_calls'], 1, 'H-ST-23 availability call counter', 'harness_self_test');
 
 $wpdb_prepared = $wpdb->prepare('SELECT GET_LOCK(%s, %d)', 'test-lock', 5);
-upay_assert(strpos($wpdb_prepared, "'test-lock'") !== false, 'H-ST-24 wpdb prepare substitutes %s with quotes', 'harness_self_test');
-upay_assert(strpos($wpdb_prepared, '5') !== false, 'H-ST-25 wpdb prepare substitutes %d', 'harness_self_test');
-upay_assert(strpos($wpdb_prepared, '%s') === false, 'H-ST-26 wpdb prepare no remaining %s', 'harness_self_test');
-upay_assert(strpos($wpdb_prepared, '%d') === false, 'H-ST-27 wpdb prepare no remaining %d', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, "'test-lock'") !== false, 'H-ST-24 wpdb prepare %s quoted', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, ', 5)') !== false, 'H-ST-25 wpdb prepare %d unquoted integer', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, ", '5')") === false, 'H-ST-26 wpdb prepare %d NOT quoted', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, '%s') === false, 'H-ST-27 wpdb prepare no remaining %s', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared, '%d') === false, 'H-ST-28 wpdb prepare no remaining %d', 'harness_self_test');
+$wpdb_prepared_esc = $wpdb->prepare('SELECT %s', "it's");
+upay_assert(strpos($wpdb_prepared_esc, "it''s") !== false, 'H-ST-29 wpdb prepare %s escapes quotes', 'harness_self_test');
 $wpdb_prepared_like = $wpdb->prepare('SELECT 1 FROM t WHERE k LIKE %s', 'prefix%');
-upay_assert(strpos($wpdb_prepared_like, "'prefix%'") !== false, 'H-ST-28 wpdb prepare LIKE pattern', 'harness_self_test');
+upay_assert(strpos($wpdb_prepared_like, "'prefix%'") !== false, 'H-ST-30 wpdb prepare LIKE pattern', 'harness_self_test');
 
 if ($_fail_harness_self_test > 0) {
     fwrite(STDERR, "FATAL: harness self-tests failed ($_fail_harness_self_test). Aborting.\n");
@@ -4654,22 +4657,24 @@ foreach ($vpr_cases as $vpr_name => list($rec, $expected_class, $is_valid)) {
 // We then assert the exact emitted counters (charged_count, classic_fallback,
 // store_api_path, etc.) for each scenario.
 
-function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json, $identity_setup = null, $retrieve_mode = 'match') {
+function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body_json, $identity_setup = null, $retrieve_mode = 'match', $hostile_classic = null) {
     $repo_root = realpath(__DIR__ . '/../..');
     $child = str_replace('\\', '/', $repo_root . '/tests/harness/store_api_child.php');
     if (!file_exists($child)) {
         return ['error' => 'child script missing', 'scenario' => $scenario_name, 'exit' => -1];
     }
-    // Windows escapeshellarg corrupts JSON via colon padding; pass body via env var.
     putenv('UPAY_BODY=' . $body_json);
-    // Residual Correction #20: pass identity setup for selected-card scenarios.
     if ($identity_setup !== null) {
         putenv('UPAY_IDENTITY_SETUP=' . wp_json_encode($identity_setup));
     } else {
         putenv('UPAY_IDENTITY_SETUP');
     }
-    // Residual Correction #22: pass retrieve mode for SP-CARD-MISMATCH.
     putenv('UPAY_RETRIEVE_MODE=' . $retrieve_mode);
+    if ($hostile_classic !== null) {
+        putenv('UPAY_HOSTILE_CLASSIC=' . wp_json_encode($hostile_classic));
+    } else {
+        putenv('UPAY_HOSTILE_CLASSIC');
+    }
     $cmd = sprintf(
         'php %s --scenario=%s --rest=%s --uri=%s --method=%s 2>&1',
         escapeshellarg($child),
@@ -4684,6 +4689,7 @@ function upay_run_store_api_child($scenario_name, $is_rest, $uri, $method, $body
     putenv('UPAY_BODY');
     putenv('UPAY_IDENTITY_SETUP');
     putenv('UPAY_RETRIEVE_MODE');
+    putenv('UPAY_HOSTILE_CLASSIC');
     $output = implode("\n", $output_lines);
 
     // Residual Correction #18: require exit === 0 before parsing.
@@ -5614,254 +5620,142 @@ upay_assert_eq(strpos($last_charge_body_str, 'monthly') === false, true,
     'SP-SUCCESS-1 hostile Classic subscription plan absent from Charge body', 'semantic_runtime');
 upay_assert_eq((int) ($result_success['order_meta_writes'] ?? 0) > 0, true,
     'SP-SUCCESS-1 order metadata written', 'semantic_runtime');
+// SP-SUCCESS-1: isSaveCard === false.
+upay_assert_eq(
+    is_array($last_charge) && isset($last_charge['isSaveCard']) && $last_charge['isSaveCard'] === false,
+    true, 'SP-SUCCESS-1 isSaveCard === false', 'semantic_runtime');
+// tokens.creditCard === null (key exists, value is null).
+upay_assert_eq(
+    is_array($last_charge) && isset($last_charge['tokens']) && array_key_exists('creditCard', $last_charge['tokens']) && $last_charge['tokens']['creditCard'] === null,
+    true, 'SP-SUCCESS-1 tokens.creditCard === null', 'semantic_runtime');
+// tokens.customerUniqueToken === null (key exists, value is null).
+upay_assert_eq(
+    is_array($last_charge) && isset($last_charge['tokens']) && array_key_exists('customerUniqueToken', $last_charge['tokens']) && $last_charge['tokens']['customerUniqueToken'] === null,
+    true, 'SP-SUCCESS-1 tokens.customerUniqueToken === null', 'semantic_runtime');
 
 // ===========================================================================
 // SP-SAVE-CARD: Store API save-card workflow.
-//
-// Store API body: source=cc, card_token=null, save_card=1, one_time
-// Hostile Classic POST: contradictory values (knet, card_token=9999..., save_card=0)
-//
-// Requires:
-//   - result = success
-//   - redirect === exact expected URL
-//   - Create = 1 (generates new token)
-//   - Retrieve = 0 (no selected card)
-//   - Charge = 1
-//   - Create customerUniqueToken: exact string, 8 numeric digits, first digit 1-9
-//   - provider response token === outbound generated candidate
-//   - Charge customerUniqueToken === established candidate
-//   - Charge creditCard absent/null
-//   - hostile Classic values absent
+// Store: cc / save_card=1 / no card / one_time
+// Hostile Classic: knet / save_card=0 / hostile card / monthly
 // ===========================================================================
 
 $save_card_body = wp_json_encode([
-    'extensions' => [
-        'upayments' => [
-            'order_id' => 99999,
-            'upayment_payment_type' => 'cc',
-            'card_token' => null,
-            'save_card' => '1',
-            'upay_subscription_plan' => 'one_time',
-            'upay_subscription_interval' => '0',
-        ],
-    ],
-    'payment_data' => [
-        'order_id' => 99999,
-    ],
+    'extensions' => ['upayments' => [
+        'order_id' => 99999, 'upayment_payment_type' => 'cc',
+        'card_token' => null, 'save_card' => '1',
+        'upay_subscription_plan' => 'one_time', 'upay_subscription_interval' => '0',
+    ]],
+    'payment_data' => ['order_id' => 99999],
 ]);
-$result_save_card = upay_run_store_api_child('SP-SAVE-CARD', true, '/wc/store/v1/checkout', 'POST', $save_card_body);
-
-// Path classification.
-upay_assert_eq($result_save_card['path'] ?? null, 'store_api',
-    'SP-SAVE-CARD → path=store_api', 'semantic_runtime');
-// Body consumed by Store API flow.
-upay_assert_eq((int) ($result_save_card['body_consumed_count'] ?? 0), 1,
-    'SP-SAVE-CARD body consumed by Store API flow', 'semantic_runtime');
-// Create = 1 (generates new token for save_card=1).
-upay_assert_eq((int) ($result_save_card['create_token_calls'] ?? 0), 1,
-    'SP-SAVE-CARD CreateToken called exactly once', 'semantic_runtime');
-// Retrieve = 0 (no selected card).
-upay_assert_eq((int) ($result_save_card['retrieve_calls'] ?? 0), 0,
-    'SP-SAVE-CARD RetrieveCards not called (no selected card)', 'semantic_runtime');
-// Charge = 1.
-upay_assert_eq((int) ($result_save_card['charge_calls'] ?? 0), 1,
-    'SP-SAVE-CARD Charge dispatched exactly once', 'semantic_runtime');
-// Final result = success.
-upay_assert_eq($result_save_card['process_payment_result']['result'] ?? null, 'success',
-    'SP-SAVE-CARD final result === success', 'semantic_runtime');
-// Redirect URL exact.
-$save_card_redirect = (string) ($result_save_card['process_payment_result']['redirect'] ?? '');
-upay_assert_eq($save_card_redirect, 'https://example.test/upayments/redirect/SP-SAVE-CARD',
-    'SP-SAVE-CARD redirect URL is exact Charge envelope link', 'semantic_runtime');
-// Create-token response token is a valid 8-digit canonical token.
-$save_card_create_token = (string) ($result_save_card['create_token_response_token'] ?? '');
-upay_assert_eq(preg_match('/^[1-9][0-9]{7}$/', $save_card_create_token), 1,
-    'SP-SAVE-CARD CreateToken response is valid 8-digit canonical token', 'semantic_runtime');
-// Create-token response token === outbound generated candidate (echo seam).
-$save_card_create_bodies = $result_save_card['create_token_bodies'] ?? [];
-$save_card_outbound_candidate = null;
-if (count($save_card_create_bodies) > 0) {
-    $save_card_create_decoded = json_decode((string) $save_card_create_bodies[0], true);
-    if (is_array($save_card_create_decoded) && isset($save_card_create_decoded['customerUniqueToken'])) {
-        $save_card_outbound_candidate = $save_card_create_decoded['customerUniqueToken'];
-    }
-}
-upay_assert_eq($save_card_create_token, $save_card_outbound_candidate,
-    'SP-SAVE-CARD provider response token === outbound generated candidate', 'semantic_runtime');
-// Charge body: customerUniqueToken === established candidate.
-$save_card_charge_body_str = (string) ($result_save_card['last_charge_body'] ?? '');
-$save_card_charge = json_decode($save_card_charge_body_str, true);
-upay_assert_eq(
-    is_array($save_card_charge) && isset($save_card_charge['tokens']['customerUniqueToken'])
-        && $save_card_charge['tokens']['customerUniqueToken'] === $save_card_create_token,
-    true,
-    'SP-SAVE-CARD Charge customerUniqueToken === established candidate', 'semantic_runtime');
-// Charge body: creditCard absent (save_card flow, not selected-card).
-upay_assert_eq(isset($save_card_charge['tokens']['creditCard']), false,
-    'SP-SAVE-CARD Charge creditCard absent (save-card flow)', 'semantic_runtime');
-// paymentGateway.src = cc.
-upay_assert_eq(
-    is_array($save_card_charge) && isset($save_card_charge['paymentGateway']['src'])
-        && $save_card_charge['paymentGateway']['src'] === 'cc',
-    true,
-    'SP-SAVE-CARD paymentGateway.src=cc in Charge body', 'semantic_runtime');
-// Hostile Classic values absent from Charge body.
-upay_assert_eq(strpos($save_card_charge_body_str, '9999999988887777') === false, true,
-    'SP-SAVE-CARD hostile Classic card token absent from Charge body', 'semantic_runtime');
-upay_assert_eq(strpos($save_card_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') === false, true,
-    'SP-SAVE-CARD hostile Classic sentinel absent from Charge body', 'semantic_runtime');
-// No thrown exception.
-upay_assert_eq($result_save_card['process_payment_exception'] ?? 'none', 'none',
-    'SP-SAVE-CARD no thrown exception during process_payment', 'semantic_runtime');
-
-// ===========================================================================
-// SP-SELECTED-CARD: Store API selected-card path with Retrieve membership.
-//
-// Pre-seed: valid identity secret, current scope, current generation,
-//           valid canonical provenance, logged-in user.
-// Store request: source=cc, card_token=strict-string saved card, save_card=0
-// Retrieve must return customerCards WITH the submitted card (membership).
-//
-// Requires:
-//   - Create = 0 (using existing card)
-//   - Retrieve = 1 (verify membership)
-//   - Charge = 1
-//   - outbound Retrieve customerUniqueToken === provenance customer token
-//   - result = success
-//   - Charge: paymentGateway.src=cc, tokens.customerUniqueToken=provenance token,
-//             tokens.creditCard=submitted selected card
-// ===========================================================================
-
-// Build identity/provenance fixture using establish_then_select mode.
-// The child will call get_or_establish_token to create a real token
-// with correct scope/generation, then use it as the selected card.
-$selected_card_setup = [
-    'setup_mode' => 'establish_then_select',
-    'user_id' => 1,
+$save_card_hostile = [
+    'upayment_payment_type' => 'knet', 'card_token' => '1111111122222222',
+    'save_card' => '0', 'upay_subscription_plan' => 'monthly',
+    'upay_subscription_interval' => '2', 'upay_unique_id' => 'HOSTILE_SAVE_CARD',
 ];
+$result_save_card = upay_run_store_api_child('SP-SAVE-CARD', true, '/wc/store/v1/checkout', 'POST', $save_card_body, null, 'match', $save_card_hostile);
 
+upay_assert_eq($result_save_card['path'] ?? null, 'store_api', 'SP-SAVE-CARD path=store_api', 'semantic_runtime');
+upay_assert_eq((int) ($result_save_card['create_token_calls'] ?? 0), 1, 'SP-SAVE-CARD Create=1', 'semantic_runtime');
+upay_assert_eq((int) ($result_save_card['retrieve_calls'] ?? 0), 0, 'SP-SAVE-CARD Retrieve=0', 'semantic_runtime');
+upay_assert_eq((int) ($result_save_card['charge_calls'] ?? 0), 1, 'SP-SAVE-CARD Charge=1', 'semantic_runtime');
+upay_assert_eq($result_save_card['process_payment_result']['result'] ?? null, 'success', 'SP-SAVE-CARD result=success', 'semantic_runtime');
+upay_assert_eq((string) ($result_save_card['process_payment_result']['redirect'] ?? ''), 'https://example.test/upayments/redirect/SP-SAVE-CARD', 'SP-SAVE-CARD redirect exact', 'semantic_runtime');
+$save_card_a = (string) ($result_save_card['create_token_response_token'] ?? '');
+upay_assert_eq(preg_match('/^[1-9][0-9]{7}$/', $save_card_a), 1, 'SP-SAVE-CARD A is canonical 8-digit', 'semantic_runtime');
+$save_card_create_bodies = $result_save_card['create_token_bodies'] ?? [];
+$save_card_outbound_a = null;
+if (count($save_card_create_bodies) > 0) {
+    $sc_dec = json_decode((string) $save_card_create_bodies[0], true);
+    if (is_array($sc_dec) && isset($sc_dec['customerUniqueToken'])) $save_card_outbound_a = $sc_dec['customerUniqueToken'];
+}
+upay_assert_eq($save_card_a, $save_card_outbound_a, 'SP-SAVE-CARD Create response A === outbound A', 'semantic_runtime');
+$save_card_charge_str = (string) ($result_save_card['last_charge_body'] ?? '');
+$save_card_charge = json_decode($save_card_charge_str, true);
+upay_assert_eq(is_array($save_card_charge) && ($save_card_charge['tokens']['customerUniqueToken'] ?? null) === $save_card_a, true, 'SP-SAVE-CARD Charge customerUniqueToken === A', 'semantic_runtime');
+upay_assert_eq(is_array($save_card_charge) && array_key_exists('creditCard', $save_card_charge['tokens'] ?? []) && $save_card_charge['tokens']['creditCard'] === null, true, 'SP-SAVE-CARD Charge creditCard === null', 'semantic_runtime');
+upay_assert_eq(is_array($save_card_charge) && ($save_card_charge['paymentGateway']['src'] ?? null) === 'cc', true, 'SP-SAVE-CARD paymentGateway.src=cc', 'semantic_runtime');
+upay_assert_eq(is_array($save_card_charge) && ($save_card_charge['isSaveCard'] ?? null) === true, true, 'SP-SAVE-CARD isSaveCard=true', 'semantic_runtime');
+upay_assert_eq(strpos($save_card_charge_str, '1111111122222222') === false, true, 'SP-SAVE-CARD hostile Classic card absent', 'semantic_runtime');
+upay_assert_eq(strpos($save_card_charge_str, 'HOSTILE_SAVE_CARD') === false, true, 'SP-SAVE-CARD hostile sentinel absent', 'semantic_runtime');
+upay_assert_eq(strpos($save_card_charge_str, '"monthly"') === false, true, 'SP-SAVE-CARD hostile monthly absent', 'semantic_runtime');
+upay_assert_eq($result_save_card['identity_context_state'] ?? null, 'valid', 'SP-SAVE-CARD identity context valid', 'semantic_runtime');
+upay_assert_eq($result_save_card['provenance_state'] ?? null, 'valid', 'SP-SAVE-CARD provenance valid', 'semantic_runtime');
+upay_assert_eq($result_save_card['provenance_token'] ?? null, $save_card_a, 'SP-SAVE-CARD provenance.token === A', 'semantic_runtime');
+upay_assert_eq($result_save_card['provenance_kind'] ?? null, 'canonical', 'SP-SAVE-CARD provenance.kind=canonical', 'semantic_runtime');
+
+// ===========================================================================
+// SP-SELECTED-CARD: Store API selected-card path.
+// A = 8-digit customer token (established), B = 16-digit saved card (distinct)
+// Store: cc / save_card=0 / card B / one_time
+// Hostile Classic: knet / save_card=1 / hostile card / monthly
+// ===========================================================================
+
+$CARD_TOKEN_B = '8765432101234567';
+$selected_card_setup = ['setup_mode' => 'establish_then_select', 'user_id' => 1, 'card_token' => $CARD_TOKEN_B];
 $selected_card_body = wp_json_encode([
-    'extensions' => [
-        'upayments' => [
-            'order_id' => 99999,
-            'upayment_payment_type' => 'cc',
-            'card_token' => '__placeholder__',
-            'save_card' => '0',
-            'upay_subscription_plan' => 'one_time',
-            'upay_subscription_interval' => '0',
-        ],
-    ],
-    'payment_data' => [
-        'order_id' => 99999,
-    ],
+    'extensions' => ['upayments' => [
+        'order_id' => 99999, 'upayment_payment_type' => 'cc',
+        'card_token' => '__placeholder__', 'save_card' => '0',
+        'upay_subscription_plan' => 'one_time', 'upay_subscription_interval' => '0',
+    ]],
+    'payment_data' => ['order_id' => 99999],
 ]);
-$result_selected_card = upay_run_store_api_child(
-    'SP-SELECTED-CARD', true, '/wc/store/v1/checkout', 'POST',
-    $selected_card_body, $selected_card_setup, 'match'
-);
+$selected_hostile = [
+    'upayment_payment_type' => 'knet', 'card_token' => '3333333344444444',
+    'save_card' => '1', 'upay_subscription_plan' => 'monthly',
+    'upay_subscription_interval' => '2', 'upay_unique_id' => 'HOSTILE_SELECTED',
+];
+$result_selected_card = upay_run_store_api_child('SP-SELECTED-CARD', true, '/wc/store/v1/checkout', 'POST', $selected_card_body, $selected_card_setup, 'match', $selected_hostile);
 
-// Path classification.
-upay_assert_eq($result_selected_card['path'] ?? null, 'store_api',
-    'SP-SELECTED-CARD → path=store_api', 'semantic_runtime');
-// Create = 0 (using existing card, not generating new token).
-upay_assert_eq((int) ($result_selected_card['create_token_calls'] ?? 0), 0,
-    'SP-SELECTED-CARD CreateToken not called (using existing card)', 'semantic_runtime');
-// Retrieve = 1 (verify membership).
-upay_assert_eq((int) ($result_selected_card['retrieve_calls'] ?? 0), 1,
-    'SP-SELECTED-CARD RetrieveCards called exactly once', 'semantic_runtime');
-// Charge = 1.
-upay_assert_eq((int) ($result_selected_card['charge_calls'] ?? 0), 1,
-    'SP-SELECTED-CARD Charge dispatched exactly once', 'semantic_runtime');
-// Final result = success.
-upay_assert_eq($result_selected_card['process_payment_result']['result'] ?? null, 'success',
-    'SP-SELECTED-CARD final result === success', 'semantic_runtime');
-// Redirect URL exact.
-$selected_redirect = (string) ($result_selected_card['process_payment_result']['redirect'] ?? '');
-upay_assert_eq($selected_redirect, 'https://example.test/upayments/redirect/SP-SELECTED-CARD',
-    'SP-SELECTED-CARD redirect URL is exact Charge envelope link', 'semantic_runtime');
-// The established token is used as the selected card.
-$established_token = (string) ($result_selected_card['established_token'] ?? '');
-upay_assert($established_token !== '', 'SP-SELECTED-CARD established token is non-empty', 'semantic_runtime');
-// outbound Retrieve customerUniqueToken === established token.
-$selected_retrieve_outbound_token = (string) ($result_selected_card['retrieve_outbound_token'] ?? '');
-upay_assert_eq($selected_retrieve_outbound_token, $established_token,
-    'SP-SELECTED-CARD outbound Retrieve customerUniqueToken === established token', 'semantic_runtime');
-// Charge body: customerUniqueToken === established token.
-$selected_charge_body_str = (string) ($result_selected_card['last_charge_body'] ?? '');
-$selected_charge = json_decode($selected_charge_body_str, true);
-upay_assert_eq(
-    is_array($selected_charge) && isset($selected_charge['tokens']['customerUniqueToken'])
-        && $selected_charge['tokens']['customerUniqueToken'] === $established_token,
-    true,
-    'SP-SELECTED-CARD Charge customerUniqueToken === established token', 'semantic_runtime');
-// Charge body: creditCard === established token (the selected card).
-upay_assert_eq(
-    is_array($selected_charge) && isset($selected_charge['tokens']['creditCard'])
-        && $selected_charge['tokens']['creditCard'] === $established_token,
-    true,
-    'SP-SELECTED-CARD Charge creditCard === established token', 'semantic_runtime');
-// paymentGateway.src = cc.
-upay_assert_eq(
-    is_array($selected_charge) && isset($selected_charge['paymentGateway']['src'])
-        && $selected_charge['paymentGateway']['src'] === 'cc',
-    true,
-    'SP-SELECTED-CARD paymentGateway.src=cc in Charge body', 'semantic_runtime');
-// Hostile Classic values absent.
-upay_assert_eq(strpos($selected_charge_body_str, '9999999988887777') === false, true,
-    'SP-SELECTED-CARD hostile Classic card token absent from Charge body', 'semantic_runtime');
-upay_assert_eq(strpos($selected_charge_body_str, 'HOSTILE_CLASSIC_SHOULD_NOT_WIN') === false, true,
-    'SP-SELECTED-CARD hostile Classic sentinel absent from Charge body', 'semantic_runtime');
-// No thrown exception.
-upay_assert_eq($result_selected_card['process_payment_exception'] ?? 'none', 'none',
-    'SP-SELECTED-CARD no thrown exception during process_payment', 'semantic_runtime');
+upay_assert_eq($result_selected_card['path'] ?? null, 'store_api', 'SP-SELECTED-CARD path=store_api', 'semantic_runtime');
+upay_assert_eq((int) ($result_selected_card['create_token_calls'] ?? 0), 0, 'SP-SELECTED-CARD Create=0', 'semantic_runtime');
+upay_assert_eq((int) ($result_selected_card['retrieve_calls'] ?? 0), 1, 'SP-SELECTED-CARD Retrieve=1', 'semantic_runtime');
+upay_assert_eq((int) ($result_selected_card['charge_calls'] ?? 0), 1, 'SP-SELECTED-CARD Charge=1', 'semantic_runtime');
+upay_assert_eq((int) ($result_selected_card['secret_creates'] ?? 0), 0, 'SP-SELECTED-CARD secret_creates=0', 'semantic_runtime');
+upay_assert_eq($result_selected_card['process_payment_result']['result'] ?? null, 'success', 'SP-SELECTED-CARD result=success', 'semantic_runtime');
+upay_assert_eq((string) ($result_selected_card['process_payment_result']['redirect'] ?? ''), 'https://example.test/upayments/redirect/SP-SELECTED-CARD', 'SP-SELECTED-CARD redirect exact', 'semantic_runtime');
+$established_a = (string) ($result_selected_card['established_token'] ?? '');
+upay_assert($established_a !== '', 'SP-SELECTED-CARD A non-empty', 'semantic_runtime');
+upay_assert_eq(preg_match('/^[1-9][0-9]{7}$/', $established_a), 1, 'SP-SELECTED-CARD A canonical 8-digit', 'semantic_runtime');
+upay_assert($established_a !== $CARD_TOKEN_B, 'SP-SELECTED-CARD A !== B', 'semantic_runtime');
+upay_assert_eq((string) ($result_selected_card['retrieve_outbound_token'] ?? ''), $established_a, 'SP-SELECTED-CARD Retrieve outbound === A', 'semantic_runtime');
+$selected_retrieve_cards = $result_selected_card['retrieve_response_cards'] ?? [];
+upay_assert_eq(count($selected_retrieve_cards) >= 1 && ($selected_retrieve_cards[0]['token'] ?? '') === $CARD_TOKEN_B, true, 'SP-SELECTED-CARD Retrieve response contains B', 'semantic_runtime');
+$selected_charge_str = (string) ($result_selected_card['last_charge_body'] ?? '');
+$selected_charge = json_decode($selected_charge_str, true);
+upay_assert_eq(is_array($selected_charge) && ($selected_charge['tokens']['customerUniqueToken'] ?? null) === $established_a, true, 'SP-SELECTED-CARD Charge customerUniqueToken === A', 'semantic_runtime');
+upay_assert_eq(is_array($selected_charge) && ($selected_charge['tokens']['creditCard'] ?? null) === $CARD_TOKEN_B, true, 'SP-SELECTED-CARD Charge creditCard === B', 'semantic_runtime');
+upay_assert_eq(is_array($selected_charge) && ($selected_charge['paymentGateway']['src'] ?? null) === 'cc', true, 'SP-SELECTED-CARD paymentGateway.src=cc', 'semantic_runtime');
+upay_assert_eq(is_array($selected_charge) && ($selected_charge['isSaveCard'] ?? null) === false, true, 'SP-SELECTED-CARD isSaveCard=false', 'semantic_runtime');
+upay_assert_eq(strpos($selected_charge_str, '3333333344444444') === false, true, 'SP-SELECTED-CARD hostile Classic card absent', 'semantic_runtime');
+upay_assert_eq(strpos($selected_charge_str, 'HOSTILE_SELECTED') === false, true, 'SP-SELECTED-CARD hostile sentinel absent', 'semantic_runtime');
 
 // ===========================================================================
-// SP-CARD-MISMATCH: Retrieve authorization gate — card not in customerCards.
-//
-// Same valid identity/provenance fixture as SP-SELECTED-CARD but
-// Retrieve returns customerCards WITHOUT the submitted card.
-//
-// Requires:
-//   - Retrieve = 1 (membership check attempted)
-//   - Create = 0
-//   - Charge = 0 (membership fails → no Charge dispatched)
-//   - result = failure
-//   - identity writes = 0
-//   - provenance writes = 0
+// SP-CARD-MISMATCH: Retrieve authorization gate.
+// A = 8-digit customer token, B = 16-digit selected card, C = 16-digit mismatch
+// Retrieve request uses A, customerCards contains C (not B), submitted is B.
 // ===========================================================================
 
-$result_card_mismatch = upay_run_store_api_child(
-    'SP-CARD-MISMATCH', true, '/wc/store/v1/checkout', 'POST',
-    $selected_card_body, $selected_card_setup, 'mismatch'
-);
+$CARD_TOKEN_C = '7654321098765432';
+$mismatch_hostile = [
+    'upayment_payment_type' => 'knet', 'card_token' => '5555555566666666',
+    'save_card' => '1', 'upay_subscription_plan' => 'monthly',
+    'upay_subscription_interval' => '2', 'upay_unique_id' => 'HOSTILE_MISMATCH',
+];
+$result_card_mismatch = upay_run_store_api_child('SP-CARD-MISMATCH', true, '/wc/store/v1/checkout', 'POST', $selected_card_body, $selected_card_setup, 'mismatch', $mismatch_hostile);
 
-// Path classification.
-upay_assert_eq($result_card_mismatch['path'] ?? null, 'store_api',
-    'SP-CARD-MISMATCH → path=store_api', 'semantic_runtime');
-// Retrieve = 1 (membership check attempted).
-upay_assert_eq((int) ($result_card_mismatch['retrieve_calls'] ?? 0), 1,
-    'SP-CARD-MISMATCH RetrieveCards called exactly once', 'semantic_runtime');
-// Create = 0.
-upay_assert_eq((int) ($result_card_mismatch['create_token_calls'] ?? 0), 0,
-    'SP-CARD-MISMATCH CreateToken not called', 'semantic_runtime');
-// Charge = 0 (membership fails → no Charge dispatched).
-upay_assert_eq((int) ($result_card_mismatch['charge_calls'] ?? 0), 0,
-    'SP-CARD-MISMATCH Charge not dispatched (membership failed)', 'semantic_runtime');
-// Final result = failure.
-upay_assert_eq($result_card_mismatch['process_payment_result']['result'] ?? null, 'failure',
-    'SP-CARD-MISMATCH final result === failure', 'semantic_runtime');
-// identity writes = 0.
-upay_assert_eq((int) ($result_card_mismatch['identity_writes'] ?? 0), 0,
-    'SP-CARD-MISMATCH zero identity writes (no unauthorized mutation)', 'semantic_runtime');
-// provenance writes = 0.
-upay_assert_eq((int) ($result_card_mismatch['provenance_writes'] ?? 0), 0,
-    'SP-CARD-MISMATCH zero provenance writes (no unauthorized mutation)', 'semantic_runtime');
-// usermeta writes = 0.
-upay_assert_eq((int) ($result_card_mismatch['usermeta_writes'] ?? 0), 0,
-    'SP-CARD-MISMATCH zero usermeta writes (no unauthorized mutation)', 'semantic_runtime');
-// No thrown exception.
-upay_assert_eq($result_card_mismatch['process_payment_exception'] ?? 'none', 'none',
-    'SP-CARD-MISMATCH no thrown exception during process_payment', 'semantic_runtime');
+upay_assert_eq($result_card_mismatch['path'] ?? null, 'store_api', 'SP-CARD-MISMATCH path=store_api', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['retrieve_calls'] ?? 0), 1, 'SP-CARD-MISMATCH Retrieve=1', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['create_token_calls'] ?? 0), 0, 'SP-CARD-MISMATCH Create=0', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['charge_calls'] ?? 0), 0, 'SP-CARD-MISMATCH Charge=0', 'semantic_runtime');
+upay_assert_eq($result_card_mismatch['process_payment_result']['result'] ?? null, 'failure', 'SP-CARD-MISMATCH result=failure', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['identity_writes'] ?? 0), 0, 'SP-CARD-MISMATCH identity_writes=0', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['provenance_writes'] ?? 0), 0, 'SP-CARD-MISMATCH provenance_writes=0', 'semantic_runtime');
+upay_assert_eq((int) ($result_card_mismatch['usermeta_writes'] ?? 0), 0, 'SP-CARD-MISMATCH usermeta_writes=0', 'semantic_runtime');
+$mismatch_a = (string) ($result_card_mismatch['established_token'] ?? '');
+upay_assert($mismatch_a !== $CARD_TOKEN_B, 'SP-CARD-MISMATCH A !== B', 'semantic_runtime');
+upay_assert($mismatch_a !== $CARD_TOKEN_C, 'SP-CARD-MISMATCH A !== C', 'semantic_runtime');
+upay_assert($CARD_TOKEN_B !== $CARD_TOKEN_C, 'SP-CARD-MISMATCH B !== C', 'semantic_runtime');
 
 
 // ===========================================================================

@@ -4,6 +4,52 @@ All notable changes maintained by Simplix Innovations will be documented here. H
 
 ## Unreleased
 
+### Residual Correction #24 — SP token-role fixes, hostile Classic per-scenario, wpdb->prepare type-sensitive
+
+**Parent**: `ab8e19970f16d753248c20296e366f08db6294f5`
+
+#### Fixes
+
+1. **UPayments.php restored to #22**: Eliminated unintended production churn. Final blob: `64c789e81ae4d292ef9b1d7382812c319a44bc25`.
+
+2. **PR_BODY scratch files deleted**: Removed PR_BODY_20.md, PR_BODY_21.md, PR_BODY_22.md.
+
+3. **SP-SELECTED-CARD token roles fixed**: A (8-digit customer token) ≠ B (16-digit saved card). Retrieve receives A, returns customerCards containing B. Charge proves customerUniqueToken===A AND creditCard===B AND A!==B.
+
+4. **SP-CARD-MISMATCH deterministic**: A/B/C all distinct. Retrieve returns C, submitted is B, Charge=0, failure.
+
+5. **SP-SAVE-CARD persistence proof**: Added identity context state, provenance state/token/kind assertions.
+
+6. **Hostile Classic POST per-scenario**: Each SP test has contradictory hostile Classic values.
+
+7. **Token-null assertions**: `array_key_exists()===null` for tokens. Added isSaveCard checks.
+
+8. **wpdb->prepare type-sensitive**: %s→quoted, %d→unquoted integer. Self-tests verify.
+
+9. **test_mode option map**: Added to WC_Upayments_Testable fallback.
+
+10. **Retrieve callback stores response**: Cards stored in state for parent assertions.
+
+#### Final counts
+
+| Category | PASS | FAIL |
+|----------|------|------|
+| semantic_runtime | 647 | 0 |
+| helper_unit_runtime | 677 | 0 |
+| static_source | 46 | 0 |
+| harness_self_test | 146 | 0 |
+| lint_tooling | 10 | 0 |
+| **Total PHP** | **1526** | **0** |
+
+| Category | PASS | FAIL |
+|----------|------|------|
+| runtime | 86 | 0 |
+| static | 15 | 0 |
+| harness | 41 | 0 |
+| **Total Blocks** | **142** | **0** |
+
+Semantic runtime gate: **647 ≥ 560** ✓
+
 ### Residual Correction #22 — Deep reclassification, dynamic Retrieve, production code cleanup
 
 **Parent**: `2ca148ada1583546b1e0c5332a3f2eea8c0dc92a` (the #21 commit)
